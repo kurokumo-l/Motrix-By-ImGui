@@ -17,6 +17,8 @@ export struct CoordinatorOptions {
     bool populatePreviewTasks = false;
     bool openAddModal = false;
     bool openAboutModal = false;
+    bool openPrefsSection = false;
+    bool openDetailDemo = false;
     bool enableEngine = true;
     bool loadPersistedConfig = true;
     bool themeOverride = false;
@@ -54,8 +56,14 @@ private:
                                 const motrix::engine::EngineSyncSnapshot* sync,
                                 std::string_view enginePath,
                                 std::string_view errorMsg);
-    void PersistConfigs(const AppStateSnapshot& state);
+    void HandleEngineDetailUpdate(std::optional<motrix::engine::TaskDetailResult> detail,
+                                  std::vector<motrix::domain::TaskPeerView> peers);
+    void PersistConfigs(const AppStateSnapshot& state,
+                        bool saveUser = true,
+                        bool saveSys = true,
+                        bool overwrite = false);
     static void SeedPreviewTasks(AppStateSnapshot& state);
+    static void RefreshMockDetail(AppStateSnapshot& state);
     [[nodiscard]] const motrix::domain::DownloadTaskView*
     FindTaskByGid(const AppStateSnapshot& state, std::string_view gid) const noexcept;
 

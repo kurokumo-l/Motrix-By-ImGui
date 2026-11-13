@@ -27,6 +27,18 @@ export struct AddUriRequest {
     std::optional<int> position;
 };
 
+export struct AddTorrentRequest {
+    std::string torrentBase64;
+    std::vector<std::string> uris;
+    std::vector<EngineOptionPair> options;
+    std::optional<int> position;
+};
+
+export struct TaskDetailResult {
+    motrix::domain::DownloadTaskView task;
+    std::vector<std::string> trackers;
+};
+
 export struct EngineProbeResult {
     std::string fileName;
     std::uint64_t totalLength = 0;
@@ -78,7 +90,17 @@ public:
     [[nodiscard]] virtual motrix::core::Result<EngineSyncSnapshot> SyncAll(int waitingLimit = 100,
                                                                            int stoppedLimit = 100) = 0;
 
+    [[nodiscard]] virtual motrix::core::Result<TaskDetailResult> TellStatus(std::string_view gid) = 0;
+    [[nodiscard]] virtual motrix::core::Result<std::vector<motrix::domain::TaskFileView>>
+    GetFiles(std::string_view gid) = 0;
+    [[nodiscard]] virtual motrix::core::Result<std::vector<motrix::domain::TaskPeerView>>
+    GetPeers(std::string_view gid) = 0;
+
     [[nodiscard]] virtual motrix::core::Result<std::string> AddUri(const AddUriRequest& request) = 0;
+    [[nodiscard]] virtual motrix::core::Result<std::string>
+    AddTorrent(const AddTorrentRequest& request) = 0;
+    [[nodiscard]] virtual motrix::core::Result<void>
+    ChangeTaskOption(std::string_view gid, std::span<const EngineOptionPair> options) = 0;
     [[nodiscard]] virtual motrix::core::Result<void> Pause(std::string_view gid) = 0;
     [[nodiscard]] virtual motrix::core::Result<void> Unpause(std::string_view gid) = 0;
     [[nodiscard]] virtual motrix::core::Result<void> ForceRemove(std::string_view gid) = 0;

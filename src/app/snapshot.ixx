@@ -41,6 +41,12 @@ export struct AppStateSnapshot {
     std::vector<motrix::domain::DownloadTaskView> downloadingTasks;
     std::vector<motrix::domain::DownloadTaskView> waitingTasks;
     std::vector<motrix::domain::DownloadTaskView> stoppedTasks;
+
+    std::optional<motrix::domain::DownloadTaskView> detailedTask;
+    std::vector<std::string> detailedTrackers;
+    std::vector<motrix::domain::TaskPeerView> detailedPeers;
+    std::string pendingDroppedTorrentPath;
+    std::uint64_t dropSeq = 0;
 };
 
 }  // namespace motrix::app

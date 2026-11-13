@@ -97,6 +97,18 @@ MotrixPalette BuildMotrixPalette(bool dark) noexcept {
         p.inputBg = HexColor(0x373737);
         p.inputBorder = HexColor(0x5F5F5F);
         p.borderSubtle = HexColor(0x565656);
+        p.graphicBoxBg = HexColor(0x3F3F3F);
+        p.graphicAtomOutline = HexColor(0x1B1F23, 0.24f);
+        p.graphicS0 = HexColor(0x161B22);
+        p.graphicS1 = HexColor(0x0E4429);
+        p.graphicS2 = HexColor(0x006D32);
+        p.graphicS3 = HexColor(0x26A641);
+        p.graphicS4 = HexColor(0x39D353);
+        p.tableHeaderBg = HexColor(0x1F2122);
+        p.tableRowBg = HexColor(0x2A2B2C);
+        p.tableRowAltBg = HexColor(0x1F2122);
+        p.tableHoverBg = HexColor(0x565656);
+        p.tableText = HexColor(0x9B9B9B);
     } else {
         p.asideBg = HexColor(0x333333);
         p.subnavBg = HexColor(0xF4F5F7);
@@ -133,6 +145,18 @@ MotrixPalette BuildMotrixPalette(bool dark) noexcept {
         p.inputBg = HexColor(0xFFFFFF);
         p.inputBorder = HexColor(0xDCDFE6);
         p.borderSubtle = HexColor(0xEBEEF5);
+        p.graphicBoxBg = HexColor(0xFFFFFF);
+        p.graphicAtomOutline = HexColor(0x1B1F23, 0.08f);
+        p.graphicS0 = HexColor(0xEBEDF0);
+        p.graphicS1 = HexColor(0x9BE9A8);
+        p.graphicS2 = HexColor(0x40C463);
+        p.graphicS3 = HexColor(0x30A14E);
+        p.graphicS4 = HexColor(0x39D353);
+        p.tableHeaderBg = HexColor(0xFAFAFA);
+        p.tableRowBg = HexColor(0xFFFFFF);
+        p.tableRowAltBg = HexColor(0xFAFAFA);
+        p.tableHoverBg = HexColor(0xF5F7FA);
+        p.tableText = HexColor(0x606266);
     }
     return p;
 }
@@ -190,6 +214,18 @@ bool ThemeController::Update(float dt) {
     current_.inputBg = LerpRgba(current_.inputBg, target_.inputBg, t);
     current_.inputBorder = LerpRgba(current_.inputBorder, target_.inputBorder, t);
     current_.borderSubtle = LerpRgba(current_.borderSubtle, target_.borderSubtle, t);
+    current_.graphicBoxBg = LerpRgba(current_.graphicBoxBg, target_.graphicBoxBg, t);
+    current_.graphicAtomOutline = LerpRgba(current_.graphicAtomOutline, target_.graphicAtomOutline, t);
+    current_.graphicS0 = LerpRgba(current_.graphicS0, target_.graphicS0, t);
+    current_.graphicS1 = LerpRgba(current_.graphicS1, target_.graphicS1, t);
+    current_.graphicS2 = LerpRgba(current_.graphicS2, target_.graphicS2, t);
+    current_.graphicS3 = LerpRgba(current_.graphicS3, target_.graphicS3, t);
+    current_.graphicS4 = LerpRgba(current_.graphicS4, target_.graphicS4, t);
+    current_.tableHeaderBg = LerpRgba(current_.tableHeaderBg, target_.tableHeaderBg, t);
+    current_.tableRowBg = LerpRgba(current_.tableRowBg, target_.tableRowBg, t);
+    current_.tableRowAltBg = LerpRgba(current_.tableRowAltBg, target_.tableRowAltBg, t);
+    current_.tableHoverBg = LerpRgba(current_.tableHoverBg, target_.tableHoverBg, t);
+    current_.tableText = LerpRgba(current_.tableText, target_.tableText, t);
     return true;
 }
 
@@ -253,6 +289,14 @@ void ThemeController::ApplyImGuiStyleColors() const {
     c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.0f, 0.0f, 0.0f, 0.40f);
     c[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.0f, 0.0f, 0.0f, 0.50f);
     c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.0f, 0.0f, p.isDark ? 0.55f : 0.35f);
+    c[ImGuiCol_TableHeaderBg] = ToImVec4(p.tableHeaderBg);
+    c[ImGuiCol_TableBorderStrong] = ToImVec4(p.borderSubtle);
+    c[ImGuiCol_TableBorderLight] = ToImVec4(p.borderSubtle);
+    c[ImGuiCol_TableRowBg] = ToImVec4(p.tableRowBg);
+    c[ImGuiCol_TableRowBgAlt] = ToImVec4(p.tableRowAltBg);
+    c[ImGuiCol_Header] = ToImVec4(p.subnavActiveBg);
+    c[ImGuiCol_HeaderHovered] = ToImVec4(p.tableHoverBg);
+    c[ImGuiCol_HeaderActive] = ToImVec4(p.subnavActiveBg);
 }
 
 bool ResolveThemeIsDark(motrix::domain::ThemePreference pref, bool systemDark) noexcept {

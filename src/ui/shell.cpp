@@ -20,6 +20,8 @@ struct MotrixUiShell::Impl {
     AnimState anim;
     motrix::core::Translator translator;
     AddTaskFormState addForm;
+    DrawerUiState drawerState;
+    PrefsFormState prefsForm;
     int prefTab = 0;
     float lastDpiScale = 0.0f;
 };
@@ -118,7 +120,7 @@ void MotrixUiShell::RenderFrame(const motrix::app::AppStateSnapshot& state,
                 RenderTaskPanel(ctx, curX, topY, mainW, totalH);
                 RenderSpeedometer(ctx, vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
             } else {
-                RenderPreferencesPanel(ctx, curX, topY, mainW, totalH, impl_->prefTab);
+                RenderPreferencesView(ctx, curX, topY, mainW, totalH, impl_->prefTab, impl_->prefsForm);
             }
 
             if (state.prefs.hideAppMenu) {
@@ -127,6 +129,7 @@ void MotrixUiShell::RenderFrame(const motrix::app::AppStateSnapshot& state,
         }
     }
 
+    RenderTaskDetailDrawer(ctx, impl_->drawerState);
     RenderModals(ctx, impl_->addForm);
 
     if (themeMoving || impl_->anim.AnyActive()) {

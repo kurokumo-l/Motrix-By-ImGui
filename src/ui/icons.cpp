@@ -312,6 +312,51 @@ void DrawMetaAndWindowIcons(MotrixIcon icon, const IconCanvas& c, float dpiScale
             c.dl->AddLine(c.Pt(10.5f, 1.5f), c.Pt(1.5f, 10.5f), c.col, w);
             break;
         }
+        case MotrixIcon::Inbox: {
+            // Tray box + down arrow (SelectTorrent dropzone)
+            const ImVec2 tray[6] = {c.Pt(3.0f, 14.0f),
+                                    c.Pt(3.0f, 20.0f),
+                                    c.Pt(21.0f, 20.0f),
+                                    c.Pt(21.0f, 14.0f),
+                                    c.Pt(16.0f, 14.0f),
+                                    c.Pt(14.5f, 16.5f)};
+            DrawRoundPolyline(c, tray, 4, false);
+            DrawRoundLine(c, 3.0f, 14.0f, 8.5f, 14.0f);
+            DrawRoundLine(c, 8.5f, 14.0f, 10.0f, 16.5f);
+            DrawRoundLine(c, 10.0f, 16.5f, 14.0f, 16.5f);
+            DrawRoundLine(c, 14.0f, 16.5f, 15.5f, 14.0f);
+            DrawRoundLine(c, 15.5f, 14.0f, 21.0f, 14.0f);
+            DrawRoundLine(c, 12.0f, 3.0f, 12.0f, 12.5f);
+            const ImVec2 arr[3] = {c.Pt(8.5f, 9.0f), c.Pt(12.0f, 12.5f), c.Pt(15.5f, 9.0f)};
+            DrawRoundPolyline(c, arr, 3, false);
+            break;
+        }
+        case MotrixIcon::Video: {
+            c.dl->AddRect(c.Pt(2.5f, 5.5f), c.Pt(16.0f, 18.5f), c.col, 2.0f * c.sx, 0, c.sw);
+            const ImVec2 tri[4] = {
+                c.Pt(16.5f, 10.0f), c.Pt(21.5f, 7.0f), c.Pt(21.5f, 17.0f), c.Pt(16.5f, 14.0f)};
+            DrawRoundPolyline(c, tri, 4, true);
+            break;
+        }
+        case MotrixIcon::Audio: {
+            DrawRoundLine(c, 9.0f, 17.5f, 9.0f, 5.5f);
+            DrawRoundLine(c, 9.0f, 5.5f, 19.0f, 3.5f);
+            DrawRoundLine(c, 19.0f, 3.5f, 19.0f, 15.5f);
+            c.dl->AddCircle(c.Pt(6.5f, 17.5f), 2.5f * c.sx, c.col, 16, c.sw);
+            c.dl->AddCircle(c.Pt(16.5f, 15.5f), 2.5f * c.sx, c.col, 16, c.sw);
+            break;
+        }
+        case MotrixIcon::Image: {
+            c.dl->AddRect(c.Pt(3.0f, 4.0f), c.Pt(21.0f, 20.0f), c.col, 2.0f * c.sx, 0, c.sw);
+            c.dl->AddCircleFilled(c.Pt(8.2f, 9.0f), 1.6f * c.sx, c.col, 12);
+            const ImVec2 mtn[5] = {c.Pt(4.0f, 18.5f),
+                                   c.Pt(9.5f, 12.5f),
+                                   c.Pt(13.5f, 16.0f),
+                                   c.Pt(16.5f, 13.0f),
+                                   c.Pt(20.0f, 18.5f)};
+            DrawRoundPolyline(c, mtn, 5, false);
+            break;
+        }
         default: break;
     }
 }

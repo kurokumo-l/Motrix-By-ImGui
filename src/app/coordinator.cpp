@@ -62,9 +62,18 @@ AppCoordinator::AppCoordinator(CoordinatorOptions options,
     } else if (options.openAboutModal) {
         mutableState_.activeModal = ActiveModal::About;
     }
+    if (options.openPrefsSection) {
+        mutableState_.activeSection = 1;
+    }
 
     if (options.populatePreviewTasks) {
         SeedPreviewTasks(mutableState_);
+        if (options.openDetailDemo) {
+            mutableState_.selectedTaskGid = "0001000000000002";
+            mutableState_.detailedTaskGid = "0001000000000002";
+            mutableState_.activeCategory = motrix::domain::TaskCategory::Waiting;
+            RefreshMockDetail(mutableState_);
+        }
     } else if (!options.enableEngine) {
         mutableState_.engineState = EngineConnectionState::Offline;
     }
@@ -97,6 +106,10 @@ AppCoordinator::AppCoordinator(CoordinatorOptions options,
                    const motrix::engine::EngineSyncSnapshot* sync,
                    std::string_view binPath,
                    std::string_view err) { HandleEngineSyncUpdate(conn, ver, sync, binPath, err); });
+        engineRuntime_->SetDetailCallback([this](std::optional<motrix::engine::TaskDetailResult> detail,
+                                                 std::vector<motrix::domain::TaskPeerView> peers) {
+            HandleEngineDetailUpdate(std::move(detail), std::move(peers));
+        });
         engineRuntime_->Start();
     }
 }
@@ -115,6 +128,7 @@ std::shared_ptr<const AppStateSnapshot> AppCoordinator::Snapshot() const noexcep
 
 void AppCoordinator::Dispatch(Command cmd) {
     bool saveUserCfg = false;
+    bool saveSystemCfg = false;
     std::optional<EngineWorkCommand> engineWork;
 
     PublishMutated([&](AppStateSnapshot& state) {
@@ -139,6 +153,25 @@ void AppCoordinator::Dispatch(Command cmd) {
             state.selectedTaskGid = c->gid;
             if (c->openDrawer) {
                 state.detailedTaskGid = (state.detailedTaskGid == c->gid) ? "" : c->gid;
+                if (state.detailedTaskGid.empty()) {
+                    state.detailedTask.reset();
+                    state.detailedTrackers.clear();
+                    state.detailedPeers.clear();
+                    if (engineRuntime_) {
+                        engineRuntime_->SetDetailGid({});
+                    }
+                } else if (previewMockMode_ || !engineRuntime_) {
+                    RefreshMockDetail(state);
+                } else {
+                    if (const auto* existing = FindTaskByGid(state, state.detailedTaskGid)) {
+                        state.detailedTask = *existing;
+                    }
+                    state.detailedTrackers.clear();
+                    state.detailedPeers.clear();
+                    engineRuntime_->SetDetailGid(state.detailedTaskGid);
+                    engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::FetchDetail,
+                                                   .gid = state.detailedTaskGid};
+                }
             }
             return;
         }
@@ -161,6 +194,35 @@ void AppCoordinator::Dispatch(Command cmd) {
         if (const auto* c = std::get_if<SetLocaleCmd>(&cmd)) {
             state.prefs.locale = c->locale;
             saveUserCfg = persistConfig_;
+            return;
+        }
+        if (const auto* dropCmd = std::get_if<QueueDroppedFilesCmd>(&cmd)) {
+            for (const auto& path : dropCmd->paths) {
+                const std::string lower = motrix::core::AsciiLower(path);
+                if (lower.ends_with(".torrent")) {
+                    state.pendingDroppedTorrentPath = path;
+                    ++state.dropSeq;
+                    state.activeModal = ActiveModal::AddTask;
+                    break;
+                }
+            }
+            return;
+        }
+        if (const auto* savePrefsCmd = std::get_if<SavePreferencesCmd>(&cmd)) {
+            state.prefs = savePrefsCmd->prefs;
+            state.sysConfig = savePrefsCmd->sysConfig;
+            state.activeModal = ActiveModal::None;
+            saveUserCfg = persistConfig_;
+            saveSystemCfg = persistConfig_;
+            if (auto* host = windowHost_.load(std::memory_order_acquire)) {
+                host->SetDarkFrame(state.prefs.theme == motrix::domain::ThemePreference::Dark);
+            }
+            if (!previewMockMode_ && engineRuntime_) {
+                engineWork = EngineWorkCommand{
+                    .kind = EngineWorkCommand::Kind::ApplyGlobalOptions,
+                    .options = motrix::domain::SystemConfigToOptionPairs(state.sysConfig),
+                };
+            }
             return;
         }
         if (const auto* c = std::get_if<CopyTaskLinkCmd>(&cmd)) {
@@ -227,17 +289,49 @@ void AppCoordinator::Dispatch(Command cmd) {
                 state.activeCategory = motrix::domain::TaskCategory::Downloading;
                 state.activeSection = 0;
             }
+        } else if (const auto* addTorCmd = std::get_if<SubmitAddTorrentCmd>(&cmd)) {
+            engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::AddTorrent,
+                                           .torrentBase64 = addTorCmd->torrentBase64,
+                                           .selectedIndices = addTorCmd->selectedIndices,
+                                           .totalFiles = addTorCmd->totalFiles,
+                                           .outName = addTorCmd->outName,
+                                           .dir = addTorCmd->dir,
+                                           .split = addTorCmd->split};
+            state.activeModal = ActiveModal::None;
+            if (state.prefs.newTaskShowDownloading) {
+                state.activeCategory = motrix::domain::TaskCategory::Downloading;
+                state.activeSection = 0;
+            }
+        } else if (const auto* fileSelCmd = std::get_if<ApplyTaskFileSelectionCmd>(&cmd)) {
+            engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::ChangeTaskOption,
+                                           .gid = fileSelCmd->gid,
+                                           .selectedIndices = fileSelCmd->selectedIndices};
         }
     });
 
-    if (saveUserCfg) {
-        const auto snap = Snapshot();
-        (void)motrix::core::WriteTextAtomic(appDataDir_ / "user.json",
-                                            motrix::domain::SerializeUserPreferencesJson(snap->prefs));
+    if (saveUserCfg || saveSystemCfg) {
+        PersistConfigs(*Snapshot(), saveUserCfg, saveSystemCfg, true);
     }
     if (engineWork && engineRuntime_) {
         engineRuntime_->Enqueue(std::move(*engineWork));
     }
+}
+
+void AppCoordinator::HandleEngineDetailUpdate(std::optional<motrix::engine::TaskDetailResult> detail,
+                                              std::vector<motrix::domain::TaskPeerView> peers) {
+    PublishMutated([&](AppStateSnapshot& state) {
+        if (state.detailedTaskGid.empty()) {
+            state.detailedTask.reset();
+            state.detailedTrackers.clear();
+            state.detailedPeers.clear();
+            return;
+        }
+        if (detail && detail->task.gid == state.detailedTaskGid) {
+            state.detailedTask = std::move(detail->task);
+            state.detailedTrackers = std::move(detail->trackers);
+            state.detailedPeers = std::move(peers);
+        }
+    });
 }
 
 void AppCoordinator::HandleEngineSyncUpdate(EngineConnectionState connState,
@@ -265,19 +359,36 @@ void AppCoordinator::HandleEngineSyncUpdate(EngineConnectionState connState,
                 .numWaiting = sync->globalStat.numWaiting,
                 .numStopped = sync->globalStat.numStopped,
             };
+            if (!state.detailedTaskGid.empty() && !FindTaskByGid(state, state.detailedTaskGid)) {
+                state.detailedTaskGid.clear();
+                state.detailedTask.reset();
+                state.detailedTrackers.clear();
+                state.detailedPeers.clear();
+                if (engineRuntime_) {
+                    engineRuntime_->SetDetailGid({});
+                }
+            }
         }
     });
 }
 
-void AppCoordinator::PersistConfigs(const AppStateSnapshot& state) {
+void AppCoordinator::PersistConfigs(const AppStateSnapshot& state,
+                                    bool saveUser,
+                                    bool saveSys,
+                                    bool overwrite) {
+    if (appDataDir_.empty()) {
+        return;
+    }
     std::error_code ec;
     std::filesystem::create_directories(appDataDir_, ec);
-    if (!std::filesystem::exists(appDataDir_ / "user.json", ec)) {
-        (void)motrix::core::WriteTextAtomic(appDataDir_ / "user.json",
+    const auto userPath = appDataDir_ / "user.json";
+    const auto sysPath = appDataDir_ / "system.json";
+    if (saveUser && (overwrite || !std::filesystem::exists(userPath, ec))) {
+        (void)motrix::core::WriteTextAtomic(userPath,
                                             motrix::domain::SerializeUserPreferencesJson(state.prefs));
     }
-    if (!std::filesystem::exists(appDataDir_ / "system.json", ec)) {
-        (void)motrix::core::WriteTextAtomic(appDataDir_ / "system.json",
+    if (saveSys && (overwrite || !std::filesystem::exists(sysPath, ec))) {
+        (void)motrix::core::WriteTextAtomic(sysPath,
                                             motrix::domain::SerializeSystemConfigJson(state.sysConfig));
     }
 }

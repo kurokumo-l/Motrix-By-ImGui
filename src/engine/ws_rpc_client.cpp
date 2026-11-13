@@ -105,70 +105,85 @@ public:
 
     motrix::core::Result<EngineVersionInfo> GetVersion() override {
         const std::string id = NextId();
-        auto raw = CallRaw(id, BuildSimpleRpcRequest(id, "aria2.getVersion", options_.secret));
-        if (!raw) {
-            return std::unexpected(raw.error());
-        }
-        return ParseEngineVersionJson(*raw);
+        return CallJson(
+            id, BuildSimpleRpcRequest(id, "aria2.getVersion", options_.secret), ParseEngineVersionJson);
     }
 
     motrix::core::Result<EngineGlobalStat> GetGlobalStat() override {
         const std::string id = NextId();
-        auto raw = CallRaw(id, BuildSimpleRpcRequest(id, "aria2.getGlobalStat", options_.secret));
-        if (!raw) {
-            return std::unexpected(raw.error());
-        }
-        return ParseGlobalStatJson(*raw);
+        return CallJson(
+            id, BuildSimpleRpcRequest(id, "aria2.getGlobalStat", options_.secret), ParseGlobalStatJson);
     }
 
     motrix::core::Result<std::vector<motrix::domain::DownloadTaskView>> TellActive() override {
         const std::string id = NextId();
-        auto raw = CallRaw(id, BuildSimpleRpcRequest(id, "aria2.tellActive", options_.secret));
-        if (!raw) {
-            return std::unexpected(raw.error());
-        }
-        return ParseTaskListJson(*raw);
+        return CallJson(
+            id, BuildSimpleRpcRequest(id, "aria2.tellActive", options_.secret), ParseTaskListJson);
     }
 
     motrix::core::Result<std::vector<motrix::domain::DownloadTaskView>> TellWaiting(int offset,
                                                                                     int num) override {
         const std::string id = NextId();
-        auto raw =
-            CallRaw(id, BuildTellSliceRpcRequest(id, "aria2.tellWaiting", options_.secret, offset, num));
-        if (!raw) {
-            return std::unexpected(raw.error());
-        }
-        return ParseTaskListJson(*raw);
+        return CallJson(id,
+                        BuildTellSliceRpcRequest(id, "aria2.tellWaiting", options_.secret, offset, num),
+                        ParseTaskListJson);
     }
 
     motrix::core::Result<std::vector<motrix::domain::DownloadTaskView>> TellStopped(int offset,
                                                                                     int num) override {
         const std::string id = NextId();
-        auto raw =
-            CallRaw(id, BuildTellSliceRpcRequest(id, "aria2.tellStopped", options_.secret, offset, num));
-        if (!raw) {
-            return std::unexpected(raw.error());
-        }
-        return ParseTaskListJson(*raw);
+        return CallJson(id,
+                        BuildTellSliceRpcRequest(id, "aria2.tellStopped", options_.secret, offset, num),
+                        ParseTaskListJson);
     }
 
     motrix::core::Result<EngineSyncSnapshot> SyncAll(int waitingLimit, int stoppedLimit) override {
         const std::string id = NextId();
-        auto raw =
-            CallRaw(id, BuildMulticallSyncRequest(id, options_.secret, waitingLimit, stoppedLimit));
-        if (!raw) {
-            return std::unexpected(raw.error());
-        }
-        return ParseMulticallSyncJson(*raw);
+        return CallJson(id,
+                        BuildMulticallSyncRequest(id, options_.secret, waitingLimit, stoppedLimit),
+                        ParseMulticallSyncJson);
+    }
+
+    motrix::core::Result<TaskDetailResult> TellStatus(std::string_view gid) override {
+        const std::string id = NextId();
+        return CallJson(
+            id, BuildGidRpcRequest(id, "aria2.tellStatus", options_.secret, gid), ParseTaskDetailJson);
+    }
+
+    motrix::core::Result<std::vector<motrix::domain::TaskFileView>>
+    GetFiles(std::string_view gid) override {
+        const std::string id = NextId();
+        return CallJson(
+            id, BuildGidRpcRequest(id, "aria2.getFiles", options_.secret, gid), ParseTaskFilesJson);
+    }
+
+    motrix::core::Result<std::vector<motrix::domain::TaskPeerView>>
+    GetPeers(std::string_view gid) override {
+        const std::string id = NextId();
+        return CallJson(id,
+                        BuildGidRpcRequest(id, "aria2.getPeers", options_.secret, gid),
+                        [](std::string_view json) { return ParsePeersJson(json, 0); });
     }
 
     motrix::core::Result<std::string> AddUri(const AddUriRequest& request) override {
         const std::string id = NextId();
-        auto raw = CallRaw(id, BuildAddUriRpcRequest(id, options_.secret, request));
+        return CallJson(id, BuildAddUriRpcRequest(id, options_.secret, request), ParseStringResultJson);
+    }
+
+    motrix::core::Result<std::string> AddTorrent(const AddTorrentRequest& request) override {
+        const std::string id = NextId();
+        return CallJson(
+            id, BuildAddTorrentRpcRequest(id, options_.secret, request), ParseStringResultJson);
+    }
+
+    motrix::core::Result<void> ChangeTaskOption(std::string_view gid,
+                                                std::span<const EngineOptionPair> options) override {
+        const std::string id = NextId();
+        auto raw = CallRaw(id, BuildChangeTaskOptionRpcRequest(id, options_.secret, gid, options));
         if (!raw) {
             return std::unexpected(raw.error());
         }
-        return ParseStringResultJson(*raw);
+        return {};
     }
 
     motrix::core::Result<void> Pause(std::string_view gid) override {
@@ -217,6 +232,16 @@ public:
 private:
     [[nodiscard]] std::string NextId() {
         return std::format("mn-{}", nextId_.fetch_add(1, std::memory_order_relaxed));
+    }
+
+    template <typename Fn>
+    auto CallJson(const std::string& id, const std::string& payload, Fn&& parser)
+        -> decltype(parser(std::string_view{})) {
+        auto raw = CallRaw(id, payload);
+        if (!raw) {
+            return std::unexpected(raw.error());
+        }
+        return parser(*raw);
     }
 
     motrix::core::Result<void> CallVoidSimple(std::string_view method) {

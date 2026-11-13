@@ -18,6 +18,16 @@ namespace {
     return params;
 }
 
+[[nodiscard]] nlohmann::json BuildOptionsObject(std::span<const EngineOptionPair> options) {
+    nlohmann::json opts = nlohmann::json::object();
+    for (const auto& kv : options) {
+        if (!kv.key.empty()) {
+            opts[kv.key] = kv.value;
+        }
+    }
+    return opts;
+}
+
 [[nodiscard]] std::string
 DumpRpcCall(std::string_view id, std::string_view method, nlohmann::json params) {
     nlohmann::json req = {
@@ -57,31 +67,42 @@ std::string
 BuildAddUriRpcRequest(std::string_view id, std::string_view secret, const AddUriRequest& request) {
     nlohmann::json params = MakeTokenArray(secret);
     params.push_back(request.uris);
-    nlohmann::json opts = nlohmann::json::object();
-    for (const auto& kv : request.options) {
-        if (!kv.key.empty()) {
-            opts[kv.key] = kv.value;
-        }
-    }
-    params.push_back(std::move(opts));
+    params.push_back(BuildOptionsObject(request.options));
     if (request.position.has_value()) {
         params.push_back(*request.position);
     }
     return DumpRpcCall(id, "aria2.addUri", std::move(params));
 }
 
+std::string BuildAddTorrentRpcRequest(std::string_view id,
+                                      std::string_view secret,
+                                      const AddTorrentRequest& request) {
+    nlohmann::json params = MakeTokenArray(secret);
+    params.push_back(request.torrentBase64);
+    params.push_back(request.uris);
+    params.push_back(BuildOptionsObject(request.options));
+    if (request.position.has_value()) {
+        params.push_back(*request.position);
+    }
+    return DumpRpcCall(id, "aria2.addTorrent", std::move(params));
+}
+
 std::string BuildChangeGlobalOptionRpcRequest(std::string_view id,
                                               std::string_view secret,
                                               std::span<const EngineOptionPair> options) {
     nlohmann::json params = MakeTokenArray(secret);
-    nlohmann::json opts = nlohmann::json::object();
-    for (const auto& kv : options) {
-        if (!kv.key.empty()) {
-            opts[kv.key] = kv.value;
-        }
-    }
-    params.push_back(std::move(opts));
+    params.push_back(BuildOptionsObject(options));
     return DumpRpcCall(id, "aria2.changeGlobalOption", std::move(params));
+}
+
+std::string BuildChangeTaskOptionRpcRequest(std::string_view id,
+                                            std::string_view secret,
+                                            std::string_view gid,
+                                            std::span<const EngineOptionPair> options) {
+    nlohmann::json params = MakeTokenArray(secret);
+    params.push_back(gid);
+    params.push_back(BuildOptionsObject(options));
+    return DumpRpcCall(id, "aria2.changeOption", std::move(params));
 }
 
 std::string BuildMulticallSyncRequest(std::string_view id,

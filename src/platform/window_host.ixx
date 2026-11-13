@@ -13,6 +13,7 @@ export struct WindowHostConfig {
     bool initialDark = false;
     std::string screenshotPath;
     int screenshotFrames = 8;
+    std::function<void(std::vector<std::string>)> onFilesDropped;
 };
 
 export struct TitlebarRect {
@@ -53,6 +54,8 @@ public:
     virtual void RegisterTitlebarInteractiveRect(TitlebarRect rect) = 0;
     virtual void CopyTextToClipboard(std::string_view utf8) = 0;
     virtual void OpenPathInExplorer(std::string_view utf8Path) = 0;
+    [[nodiscard]] virtual std::optional<std::string> PickTorrentFile() = 0;
+    [[nodiscard]] virtual std::optional<std::string> PickFolder(std::string_view initialDir = {}) = 0;
 };
 
 }  // namespace motrix::platform

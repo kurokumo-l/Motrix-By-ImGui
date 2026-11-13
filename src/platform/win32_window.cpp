@@ -63,6 +63,7 @@ constexpr int kDwmRoundCorner = 2;
         case WM_DPICHANGED:
         case WM_ACTIVATE:
         case WM_SETCURSOR:
+        case WM_DROPFILES:
         case kWmAppWakeup: return true;
         default: return false;
     }
@@ -91,6 +92,45 @@ constexpr int kDwmRoundCorner = 2;
     if (right)
         return HTRIGHT;
     return HTCLIENT;
+}
+
+WNDPROC gPrevWndProcForDrop = nullptr;
+Win32WindowState* gDropWindowState = nullptr;
+
+void DispatchDroppedFiles(Win32WindowState* state, HDROP hDrop) {
+    if (!hDrop) {
+        return;
+    }
+    const UINT count = ::DragQueryFileW(hDrop, 0xFFFFFFFFu, nullptr, 0);
+    std::vector<std::string> paths;
+    paths.reserve(count);
+    for (UINT i = 0; i < count; ++i) {
+        const UINT len = ::DragQueryFileW(hDrop, i, nullptr, 0);
+        if (len == 0) {
+            continue;
+        }
+        std::wstring buf(len + 1, L'\0');
+        if (::DragQueryFileW(hDrop, i, buf.data(), len + 1) > 0) {
+            buf.resize(len);
+            paths.push_back(motrix::core::WideToUtf8(buf));
+        }
+    }
+    ::DragFinish(hDrop);
+    if (state && !paths.empty() && state->config.onFilesDropped) {
+        state->config.onFilesDropped(std::move(paths));
+        state->activeFramesRemaining = std::max(state->activeFramesRemaining, 3);
+    }
+}
+
+LRESULT CALLBACK DropAwareWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_DROPFILES) {
+        DispatchDroppedFiles(gDropWindowState, reinterpret_cast<HDROP>(wParam));
+        return 0;
+    }
+    if (gPrevWndProcForDrop) {
+        return ::CallWindowProcW(gPrevWndProcForDrop, hWnd, msg, wParam, lParam);
+    }
+    return ::DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
 [[nodiscard]] LRESULT HandleNcHitTest(const Win32WindowState& state, HWND hWnd, LPARAM lParam) {
@@ -272,6 +312,13 @@ motrix::core::Result<void> Win32CreateWindow(Win32WindowState& state) {
                                                        "Failed to create Win32 window"));
     }
     state.hwnd = created;
+    gDropWindowState = &state;
+    ::DragAcceptFiles(created, TRUE);
+    const LONG_PTR prevProc =
+        ::SetWindowLongPtrW(created, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(DropAwareWndProc));
+    if (prevProc && prevProc != reinterpret_cast<LONG_PTR>(DropAwareWndProc)) {
+        gPrevWndProcForDrop = reinterpret_cast<WNDPROC>(prevProc);
+    }
     Win32ApplyDwmChrome(created, state.darkFrame);
     ::SetWindowPos(
         created, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
@@ -279,6 +326,9 @@ motrix::core::Result<void> Win32CreateWindow(Win32WindowState& state) {
 }
 
 void Win32DestroyWindow(Win32WindowState& state) noexcept {
+    if (gDropWindowState == &state) {
+        gDropWindowState = nullptr;
+    }
     if (state.hwnd) {
         ::DestroyWindow(static_cast<HWND>(state.hwnd));
         state.hwnd = nullptr;
@@ -337,49 +387,6 @@ void Win32ApplyDwmChrome(void* hwnd, bool dark) noexcept {
 
     const int cornerPref = kDwmRoundCorner;
     ::DwmSetWindowAttribute(h, kDwmWindowCornerPreference, &cornerPref, sizeof(cornerPref));
-}
-
-void Win32SetWindowTitle(void* hwnd, std::string_view utf8Title) {
-    if (hwnd) {
-        const std::wstring wide = motrix::core::Utf8ToWide(utf8Title);
-        ::SetWindowTextW(static_cast<HWND>(hwnd), wide.c_str());
-    }
-}
-
-bool Win32IsWindowZoomed(void* hwnd) noexcept {
-    return hwnd != nullptr && ::IsZoomed(static_cast<HWND>(hwnd)) != FALSE;
-}
-
-bool Win32IsWindowIconic(void* hwnd) noexcept {
-    return hwnd != nullptr && ::IsIconic(static_cast<HWND>(hwnd)) != FALSE;
-}
-
-void Win32CopyTextToClipboard(void* hwnd, std::string_view utf8) {
-    if (!::OpenClipboard(static_cast<HWND>(hwnd))) {
-        return;
-    }
-    ::EmptyClipboard();
-    const std::wstring wide = motrix::core::Utf8ToWide(utf8);
-    const std::size_t bytes = (wide.size() + 1) * sizeof(wchar_t);
-    HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (mem) {
-        if (void* ptr = ::GlobalLock(mem)) {
-            std::memcpy(ptr, wide.c_str(), bytes);
-            ::GlobalUnlock(mem);
-            ::SetClipboardData(CF_UNICODETEXT, mem);
-        } else {
-            ::GlobalFree(mem);
-        }
-    }
-    ::CloseClipboard();
-}
-
-void Win32OpenPathInExplorer(std::string_view utf8Path) {
-    if (utf8Path.empty()) {
-        return;
-    }
-    const std::wstring wide = motrix::core::Utf8ToWide(utf8Path);
-    ::ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 }  // namespace motrix::platform

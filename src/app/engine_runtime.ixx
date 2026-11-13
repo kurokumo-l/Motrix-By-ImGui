@@ -12,6 +12,10 @@ export struct EngineWorkCommand {
     enum class Kind {
         Sync,
         AddUri,
+        AddTorrent,
+        ChangeTaskOption,
+        ApplyGlobalOptions,
+        FetchDetail,
         Pause,
         Resume,
         Remove,
@@ -23,10 +27,14 @@ export struct EngineWorkCommand {
     Kind kind = Kind::Sync;
     std::string gid;
     std::vector<std::string> uris;
+    std::string torrentBase64;
+    std::vector<int> selectedIndices;
+    std::size_t totalFiles = 0;
     std::string outName;
     std::string dir;
     int split = 64;
     bool taskInStopped = false;
+    std::vector<std::pair<std::string, std::string>> options;
 };
 
 export struct EngineRuntimeConfig {
@@ -42,6 +50,8 @@ public:
                                             const motrix::engine::EngineSyncSnapshot* sync,
                                             std::string_view enginePath,
                                             std::string_view errorMsg)>;
+    using DetailCallback = std::function<void(std::optional<motrix::engine::TaskDetailResult> detail,
+                                              std::vector<motrix::domain::TaskPeerView> peers)>;
 
     EngineRuntime(motrix::core::Logger& logger, EngineRuntimeConfig cfg, SyncCallback onSync);
     ~EngineRuntime();
@@ -52,16 +62,22 @@ public:
     void Start();
     void Stop();
     void Enqueue(EngineWorkCommand cmd);
+    void SetDetailCallback(DetailCallback cb);
+    void SetDetailGid(std::string gid);
 
 private:
     void RunLoop(std::stop_token st);
     [[nodiscard]] bool TryStartAndConnect(std::stop_token st);
     void ProcessCommand(const EngineWorkCommand& cmd, bool& needSync, std::string& lastErr);
     void ApplySyncSnapshot(const motrix::engine::EngineSyncSnapshot& snap, std::string_view err);
+    void FetchAndPublishDetail(std::string_view gid);
 
     motrix::core::Logger& logger_;
     EngineRuntimeConfig config_;
     SyncCallback onSync_;
+    std::mutex detailMutex_;
+    std::string detailGid_;
+    DetailCallback onDetail_;
 
     std::unique_ptr<motrix::engine::IEngineProcessManager> proc_;
     std::unique_ptr<motrix::engine::IEngineRpcClient> rpc_;

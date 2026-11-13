@@ -288,4 +288,16 @@ void Win32WindowHost::OpenPathInExplorer(std::string_view utf8Path) {
     Win32OpenPathInExplorer(utf8Path);
 }
 
+std::optional<std::string> Win32WindowHost::PickTorrentFile() {
+    auto chosen = Win32PickTorrentFile(impl_->state.hwnd);
+    RequestFrame();
+    return chosen;
+}
+
+std::optional<std::string> Win32WindowHost::PickFolder(std::string_view initialDir) {
+    auto chosen = Win32PickFolder(impl_->state.hwnd, initialDir);
+    RequestFrame();
+    return chosen;
+}
+
 }  // namespace motrix::platform

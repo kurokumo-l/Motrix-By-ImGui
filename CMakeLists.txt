@@ -194,6 +194,9 @@ add_library(motrix_domain STATIC
     src/domain/config_schema.cpp
     src/domain/formatters.cpp
     src/domain/uri.cpp
+    src/domain/bencode_crypto.cpp
+    src/domain/bencode.cpp
+    src/domain/bencode_helpers.cpp
 )
 target_sources(motrix_domain PUBLIC
     FILE_SET CXX_MODULES
@@ -204,6 +207,7 @@ target_sources(motrix_domain PUBLIC
         src/domain/config_schema.ixx
         src/domain/formatters.ixx
         src/domain/uri.ixx
+        src/domain/bencode.ixx
 )
 target_link_libraries(motrix_domain
     PUBLIC
@@ -220,6 +224,7 @@ add_library(motrix_engine STATIC
     src/engine/dialect.cpp
     src/engine/json_codec.cpp
     src/engine/json_codec_build.cpp
+    src/engine/json_codec_tasks.cpp
     src/engine/ws_rpc_client.cpp
     src/engine/win32_util.cpp
     src/engine/process_manager.cpp
@@ -271,6 +276,7 @@ add_library(motrix_platform STATIC
     src/platform/win32_raii.cpp
     src/platform/win32_dx11.cpp
     src/platform/win32_window.cpp
+    src/platform/win32_dialogs.cpp
     src/platform/win32_host.cpp
 )
 target_sources(motrix_platform
@@ -312,6 +318,7 @@ add_library(motrix_app STATIC
     src/app/coordinator.cpp
     src/app/coordinator_mock.cpp
     src/app/engine_runtime.cpp
+    src/app/engine_runtime_detail.cpp
 )
 target_sources(motrix_app
     PUBLIC
@@ -347,6 +354,11 @@ add_library(motrix_ui STATIC
     src/ui/view_task_card.cpp
     src/ui/view_task_list.cpp
     src/ui/view_speedometer.cpp
+    src/ui/view_drawer.cpp
+    src/ui/view_drawer_activity.cpp
+    src/ui/view_drawer_tabs.cpp
+    src/ui/view_prefs.cpp
+    src/ui/view_add_torrent.cpp
     src/ui/view_modals.cpp
     src/ui/shell.cpp
 )
@@ -405,6 +417,7 @@ add_custom_command(TARGET motrix_native POST_BUILD
 add_executable(motrix_tests
     tests/test_core.cpp
     tests/test_domain.cpp
+    tests/test_bencode.cpp
     tests/test_dialect.cpp
     tests/test_engine_rpc.cpp
 )

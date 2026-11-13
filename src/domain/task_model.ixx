@@ -35,13 +35,16 @@ export struct TaskFileView {
 
 export struct TaskPeerView {
     std::string peerId;
+    std::string client;
     std::string ip;
     std::uint16_t port = 0;
-    bool seeding = false;
+    std::string bitfieldHex;
     std::uint64_t downloadSpeed = 0;
     std::uint64_t uploadSpeed = 0;
+    bool amChoking = false;
+    bool peerChoking = false;
+    bool seeder = false;
     float progress = 0.0f;
-    std::string client;
 };
 
 export struct TaskTrackerView {

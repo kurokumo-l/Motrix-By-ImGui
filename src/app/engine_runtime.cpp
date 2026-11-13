@@ -282,6 +282,67 @@ void EngineRuntime::ProcessCommand(const EngineWorkCommand& cmd, bool& needSync,
             needSync = true;
             break;
         }
+        case K::AddTorrent: {
+            auto rawOpts = BuildAddUriOptions(cmd);
+            if (!cmd.selectedIndices.empty() && cmd.selectedIndices.size() < cmd.totalFiles) {
+                rawOpts.push_back(
+                    {"select-file", motrix::domain::FormatSelectFileOption(cmd.selectedIndices)});
+            }
+            const motrix::engine::AddTorrentRequest req{
+                .torrentBase64 = cmd.torrentBase64,
+                .uris = {},
+                .options = dialect_->FilterTaskOptions(rawOpts),
+                .position = std::nullopt,
+            };
+            if (auto res = rpc_->AddTorrent(req); !res) {
+                lastErr = res.error().message;
+                logger_.Warn("rpc", "addTorrent failed: {}", lastErr);
+            }
+            needSync = true;
+            break;
+        }
+        case K::ChangeTaskOption: {
+            if (!cmd.gid.empty() && !cmd.selectedIndices.empty()) {
+                const std::vector<motrix::engine::EngineOptionPair> opts{
+                    {"select-file", motrix::domain::FormatSelectFileOption(cmd.selectedIndices)}};
+                if (auto res = rpc_->ChangeTaskOption(cmd.gid, dialect_->FilterTaskOptions(opts));
+                    !res) {
+                    lastErr = res.error().message;
+                    logger_.Warn("rpc", "changeOption failed: {}", lastErr);
+                }
+            }
+            needSync = true;
+            break;
+        }
+        case K::ApplyGlobalOptions: {
+            std::vector<motrix::engine::EngineOptionPair> runtimeOpts;
+            for (const auto& [k, v] : cmd.options) {
+                if (k != "rpc-listen-port" && k != "rpc-secret" && k != "listen-port"
+                    && k != "dht-listen-port" && k != "continue" && k != "follow-torrent") {
+                    runtimeOpts.push_back({k, v});
+                }
+            }
+            const auto filtered = dialect_->FilterGlobalOptions(runtimeOpts);
+            if (!filtered.empty()) {
+                if (auto res = rpc_->ChangeGlobalOption(filtered); !res) {
+                    lastErr = res.error().message;
+                    logger_.Warn("rpc", "changeGlobalOption failed: {}", lastErr);
+                }
+            }
+            needSync = true;
+            break;
+        }
+        case K::FetchDetail: {
+            std::string activeGid;
+            {
+                std::scoped_lock lock(detailMutex_);
+                activeGid = detailGid_;
+            }
+            if (!activeGid.empty()) {
+                FetchAndPublishDetail(activeGid);
+            }
+            break;
+        }
         case K::Pause: {
             if (auto res = rpc_->Pause(cmd.gid); !res) {
                 lastErr = res.error().message;
@@ -341,6 +402,14 @@ void EngineRuntime::ApplySyncSnapshot(const motrix::engine::EngineSyncSnapshot& 
                                       std::string_view err) {
     hasActiveTasks_ = !snap.active.empty() || snap.globalStat.numActive > 0;
     onSync_(EngineConnectionState::Connected, &versionInfo_, &snap, resolvedPath_, err);
+    std::string activeDetailGid;
+    {
+        std::scoped_lock lock(detailMutex_);
+        activeDetailGid = detailGid_;
+    }
+    if (!activeDetailGid.empty()) {
+        FetchAndPublishDetail(activeDetailGid);
+    }
 }
 
 }  // namespace motrix::app

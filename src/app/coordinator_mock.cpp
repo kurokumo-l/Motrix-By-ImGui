@@ -60,7 +60,33 @@ void AppCoordinator::SeedPreviewTasks(AppStateSnapshot& state) {
     waitingTask.taskType = TaskType::BitTorrent;
     waitingTask.totalLength = 1288490188ull;
     waitingTask.completedLength = 515396075ull;
+    waitingTask.uploadLength = 148897792ull;
+    waitingTask.connections = 19;
+    waitingTask.numSeeders = 28;
+    waitingTask.numPieces = 48;
+    waitingTask.pieceLength = 26843546ull;
+    waitingTask.bitfieldHex = "fff8c7a24e19";
     waitingTask.dir = "C:/Users/Public/Downloads";
+    waitingTask.uri = "magnet:?xt=urn:btih:3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0&dn=archlinux-2026."
+                      "11.01-x86_64.iso";
+    waitingTask.btInfo = TaskBittorrentInfo{
+        .name = "archlinux-2026.11.01-x86_64",
+        .infoHash = "3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0",
+        .creationDate = "2026-11-01 08:30:00",
+        .comment = "Arch Linux Official ISO & Release Bundle",
+    };
+    waitingTask.files = {
+        TaskFileView{1,
+                     "archlinux-2026.11.01-x86_64/archlinux-2026.11.01-x86_64.iso",
+                     1170210816ull,
+                     476053504ull,
+                     true},
+        TaskFileView{
+            2, "archlinux-2026.11.01-x86_64/showcase-walkthrough.mp4", 88080384ull, 34955264ull, true},
+        TaskFileView{3, "archlinux-2026.11.01-x86_64/release-soundtrack.flac", 25811968ull, 0ull, false},
+        TaskFileView{4, "archlinux-2026.11.01-x86_64/cover-art.png", 4387020ull, 4387307ull, true},
+    };
+    waitingTask.filesTotal = waitingTask.files.size();
     state.waitingTasks.push_back(std::move(waitingTask));
 
     DownloadTaskView stoppedTask{};
@@ -99,16 +125,127 @@ void AppCoordinator::HandleTaskAction(AppStateSnapshot& state, const Command& cm
                              false);
         return;
     }
-    if (const auto* c = std::get_if<RemoveTaskCmd>(&cmd)) {
-        std::erase_if(state.downloadingTasks, [&](const auto& t) { return t.gid == c->gid; });
-        std::erase_if(state.waitingTasks, [&](const auto& t) { return t.gid == c->gid; });
-        std::erase_if(state.stoppedTasks, [&](const auto& t) { return t.gid == c->gid; });
-        if (state.detailedTaskGid == c->gid) {
+    if (const auto* removeCmd = std::get_if<RemoveTaskCmd>(&cmd)) {
+        std::erase_if(state.downloadingTasks, [&](const auto& t) { return t.gid == removeCmd->gid; });
+        std::erase_if(state.waitingTasks, [&](const auto& t) { return t.gid == removeCmd->gid; });
+        std::erase_if(state.stoppedTasks, [&](const auto& t) { return t.gid == removeCmd->gid; });
+        if (state.detailedTaskGid == removeCmd->gid) {
             state.detailedTaskGid.clear();
+            state.detailedTask.reset();
+            state.detailedTrackers.clear();
+            state.detailedPeers.clear();
         }
         return;
     }
+    if (const auto* selCmd = std::get_if<ApplyTaskFileSelectionCmd>(&cmd)) {
+        const auto applyTo = [&](std::vector<motrix::domain::DownloadTaskView>& list) {
+            for (auto& t : list) {
+                if (t.gid != selCmd->gid) {
+                    continue;
+                }
+                for (auto& f : t.files) {
+                    f.selected = std::ranges::find(selCmd->selectedIndices, f.index)
+                                 != selCmd->selectedIndices.end();
+                }
+            }
+        };
+        applyTo(state.downloadingTasks);
+        applyTo(state.waitingTasks);
+        applyTo(state.stoppedTasks);
+        RefreshMockDetail(state);
+        return;
+    }
     HandleBulkAndSubmit(state, cmd);
+}
+
+void AppCoordinator::RefreshMockDetail(AppStateSnapshot& state) {
+    using namespace motrix::domain;
+    if (state.detailedTaskGid.empty()) {
+        state.detailedTask.reset();
+        state.detailedTrackers.clear();
+        state.detailedPeers.clear();
+        return;
+    }
+
+    const auto findIn = [&](const std::vector<DownloadTaskView>& list) -> const DownloadTaskView* {
+        for (const auto& t : list) {
+            if (t.gid == state.detailedTaskGid) {
+                return &t;
+            }
+        }
+        return nullptr;
+    };
+    const DownloadTaskView* found = findIn(state.downloadingTasks);
+    if (!found) {
+        found = findIn(state.waitingTasks);
+    }
+    if (!found) {
+        found = findIn(state.stoppedTasks);
+    }
+    if (!found) {
+        state.detailedTask.reset();
+        state.detailedTrackers.clear();
+        state.detailedPeers.clear();
+        return;
+    }
+
+    state.detailedTask = *found;
+    if (found->taskType == TaskType::BitTorrent) {
+        state.detailedTrackers = {
+            "udp://tracker.opentrackr.org:1337/announce",
+            "https://tracker.tamersunion.org:443/announce",
+            "udp://open.stealth.si:80/announce",
+        };
+        state.detailedPeers = {
+            TaskPeerView{"-qB4650-mock1",
+                         "qBittorrent 4.6.5",
+                         "185.125.190.58",
+                         51413,
+                         "ffff",
+                         1420000ull,
+                         84000ull,
+                         false,
+                         false,
+                         true,
+                         1.0f},
+            TaskPeerView{"-TR4050-mock2",
+                         "Transmission 4.0.5",
+                         "91.189.91.157",
+                         51414,
+                         "ffc0",
+                         680000ull,
+                         124000ull,
+                         false,
+                         false,
+                         false,
+                         0.625f},
+            TaskPeerView{"-DE2110-mock3",
+                         "Deluge 2.1.1",
+                         "203.0.113.42",
+                         58846,
+                         "f800",
+                         310000ull,
+                         0ull,
+                         false,
+                         true,
+                         false,
+                         0.3125f},
+            TaskPeerView{"aria2/1.37.0",
+                         "aria2",
+                         "198.51.100.77",
+                         6881,
+                         "fff0",
+                         950000ull,
+                         52000ull,
+                         false,
+                         false,
+                         false,
+                         0.75f},
+        };
+    } else {
+        state.detailedTrackers.clear();
+        state.detailedPeers.clear();
+    }
 }
 
 void AppCoordinator::HandleBulkAndSubmit(AppStateSnapshot& state, const Command& cmd) {
@@ -134,13 +271,13 @@ void AppCoordinator::HandleBulkAndSubmit(AppStateSnapshot& state, const Command&
         state.waitingTasks.clear();
         return;
     }
-    if (const auto* c = std::get_if<SubmitAddUriCmd>(&cmd)) {
-        for (const auto& uri : c->uris) {
+    if (const auto* addUriCmd = std::get_if<SubmitAddUriCmd>(&cmd)) {
+        for (const auto& uri : addUriCmd->uris) {
             motrix::domain::DownloadTaskView task{};
             task.gid = std::format("{:016x}", nextLocalGid_++);
-            task.name = !c->outName.empty() ? c->outName : uri;
+            task.name = !addUriCmd->outName.empty() ? addUriCmd->outName : uri;
             task.uri = uri;
-            task.dir = c->dir;
+            task.dir = addUriCmd->dir;
             task.status = motrix::domain::TaskStatus::Active;
             task.taskType = motrix::domain::IsMagnetUri(uri) ? motrix::domain::TaskType::BitTorrent
                                                              : motrix::domain::TaskType::Http;
@@ -151,7 +288,23 @@ void AppCoordinator::HandleBulkAndSubmit(AppStateSnapshot& state, const Command&
             state.activeCategory = motrix::domain::TaskCategory::Downloading;
             state.activeSection = 0;
         }
-        logger_.Info("app", "Submitted {} URI(s) (mock)", c->uris.size());
+        logger_.Info("app", "Submitted {} URI(s) (mock)", addUriCmd->uris.size());
+        return;
+    }
+    if (const auto* addTorCmd = std::get_if<SubmitAddTorrentCmd>(&cmd)) {
+        motrix::domain::DownloadTaskView task{};
+        task.gid = std::format("{:016x}", nextLocalGid_++);
+        task.name = !addTorCmd->outName.empty() ? addTorCmd->outName : "torrent-task";
+        task.dir = addTorCmd->dir;
+        task.status = motrix::domain::TaskStatus::Active;
+        task.taskType = motrix::domain::TaskType::BitTorrent;
+        state.downloadingTasks.push_back(std::move(task));
+        state.activeModal = ActiveModal::None;
+        if (state.prefs.newTaskShowDownloading) {
+            state.activeCategory = motrix::domain::TaskCategory::Downloading;
+            state.activeSection = 0;
+        }
+        logger_.Info("app", "Submitted torrent '{}' (mock)", addTorCmd->outName);
     }
 }
 

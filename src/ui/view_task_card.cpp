@@ -169,9 +169,13 @@ void RenderTaskCard(UiFrameContext& ctx, const motrix::domain::DownloadTaskView&
     if (ImGui::InvisibleButton("##task_card", ImVec2(width, cardH))) {
         ctx.sink.Dispatch(motrix::app::SelectTaskCmd{task.gid, false});
     }
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        ctx.sink.Dispatch(motrix::app::SelectTaskCmd{task.gid, true});
+    }
 
     const bool hovered = ImGui::IsMouseHoveringRect(cardPos, cardMax, false);
-    const bool selected = (ctx.state.selectedTaskGid == task.gid);
+    const bool selected =
+        (ctx.state.selectedTaskGid == task.gid || ctx.state.detailedTaskGid == task.gid);
     const RgbaColor borderCol =
         (hovered || selected) ? ctx.palette.taskCardHoverBorder : ctx.palette.taskCardBorder;
 

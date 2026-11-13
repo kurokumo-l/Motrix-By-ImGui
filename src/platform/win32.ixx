@@ -117,6 +117,8 @@ public:
     void RegisterTitlebarInteractiveRect(TitlebarRect rect) override;
     void CopyTextToClipboard(std::string_view utf8) override;
     void OpenPathInExplorer(std::string_view utf8Path) override;
+    [[nodiscard]] std::optional<std::string> PickTorrentFile() override;
+    [[nodiscard]] std::optional<std::string> PickFolder(std::string_view initialDir = {}) override;
 
     // Called from WndProc bridge inside win32_host.cpp
     struct Impl;

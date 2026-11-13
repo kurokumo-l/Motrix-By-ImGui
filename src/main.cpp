@@ -86,6 +86,14 @@ struct CliOptions {
             opts.prefillUri = argv[++i];
         } else if (arg == "--about") {
             opts.app.openAboutModal = true;
+        } else if (arg == "--prefs") {
+            opts.app.openPrefsSection = true;
+        } else if (arg == "--detail") {
+            opts.app.openDetailDemo = true;
+            opts.app.populatePreviewTasks = true;
+        } else if (arg == "--detail-tab" && i + 1 < argc) {
+            // handled after coordinator init if needed
+            (void)argv[++i];
         } else if (arg == "--engine" && i + 1 < argc) {
             opts.app.enginePathOverride = argv[++i];
             opts.forceEngine = true;
@@ -141,6 +149,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     motrix::platform::Win32WindowHost host;
     motrix::app::AppCoordinator coordinator(cli.app, logger, &host);
+    cli.host.onFilesDropped = [&](std::vector<std::string> paths) {
+        coordinator.Dispatch(motrix::app::QueueDroppedFilesCmd{std::move(paths)});
+    };
     const bool startDark = coordinator.Snapshot()->prefs.theme == motrix::domain::ThemePreference::Dark;
     cli.host.initialDark = startDark;
 

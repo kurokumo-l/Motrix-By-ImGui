@@ -36,6 +36,10 @@ export enum class MotrixIcon {
     WinMaximize,
     WinRestore,
     WinClose,
+    Inbox,
+    Video,
+    Audio,
+    Image,
 };
 
 export void DrawMotrixIcon(MotrixIcon icon,

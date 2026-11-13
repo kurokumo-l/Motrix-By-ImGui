@@ -82,6 +82,30 @@ export struct ShowInFolderCmd {
     std::string gid;
 };
 
+export struct SubmitAddTorrentCmd {
+    std::string torrentBase64;
+    std::vector<int> selectedIndices;
+    std::size_t totalFiles = 0;
+    std::string outName;
+    std::string dir;
+    int split = 64;
+};
+
+export struct ApplyTaskFileSelectionCmd {
+    std::string gid;
+    std::vector<int> selectedIndices;
+};
+
+export struct SavePreferencesCmd {
+    motrix::domain::UserPreferences prefs;
+    motrix::domain::SystemConfig sysConfig;
+    bool restartEngineIfNeeded = false;
+};
+
+export struct QueueDroppedFilesCmd {
+    std::vector<std::string> paths;
+};
+
 export using Command = std::variant<SelectCategoryCmd,
                                     SelectSectionCmd,
                                     OpenModalCmd,
@@ -100,6 +124,10 @@ export using Command = std::variant<SelectCategoryCmd,
                                     ToggleThemeCmd,
                                     SetLocaleCmd,
                                     SubmitAddUriCmd,
+                                    SubmitAddTorrentCmd,
+                                    ApplyTaskFileSelectionCmd,
+                                    SavePreferencesCmd,
+                                    QueueDroppedFilesCmd,
                                     CopyTaskLinkCmd,
                                     ShowInFolderCmd>;
 

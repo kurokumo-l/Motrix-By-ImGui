@@ -93,6 +93,18 @@ export struct MotrixPalette {
     RgbaColor inputBg;
     RgbaColor inputBorder;
     RgbaColor borderSubtle;
+    RgbaColor graphicBoxBg;
+    RgbaColor graphicAtomOutline;
+    RgbaColor graphicS0;
+    RgbaColor graphicS1;
+    RgbaColor graphicS2;
+    RgbaColor graphicS3;
+    RgbaColor graphicS4;
+    RgbaColor tableHeaderBg;
+    RgbaColor tableRowBg;
+    RgbaColor tableRowAltBg;
+    RgbaColor tableHoverBg;
+    RgbaColor tableText;
 };
 
 export struct LayoutMetrics {

@@ -36,5 +36,8 @@ export [[nodiscard]] bool Win32IsWindowZoomed(void* hwnd) noexcept;
 export [[nodiscard]] bool Win32IsWindowIconic(void* hwnd) noexcept;
 export void Win32CopyTextToClipboard(void* hwnd, std::string_view utf8);
 export void Win32OpenPathInExplorer(std::string_view utf8Path);
+export [[nodiscard]] std::optional<std::string> Win32PickTorrentFile(void* ownerHwnd);
+export [[nodiscard]] std::optional<std::string> Win32PickFolder(void* ownerHwnd,
+                                                                std::string_view initialDir);
 
 }  // namespace motrix::platform
