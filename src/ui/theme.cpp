@@ -1,0 +1,267 @@
+module;
+
+#include "imgui.h"
+
+module motrix.ui;
+
+import std;
+import motrix.domain;
+
+namespace motrix::ui {
+
+namespace {
+
+[[nodiscard]] float ExpFactor(float speed, float dt) noexcept {
+    if (dt <= 0.0f) {
+        return 0.0f;
+    }
+    return 1.0f - std::exp(-speed * std::min(dt, 0.1f));
+}
+
+[[nodiscard]] RgbaColor LerpRgba(RgbaColor a, RgbaColor b, float t) noexcept {
+    return RgbaColor{
+        .r = a.r + (b.r - a.r) * t,
+        .g = a.g + (b.g - a.g) * t,
+        .b = a.b + (b.b - a.b) * t,
+        .a = a.a + (b.a - a.a) * t,
+    };
+}
+
+[[nodiscard]] bool ColorNearlyEqual(RgbaColor a, RgbaColor b) noexcept {
+    constexpr float kEps = 0.002f;
+    return std::fabs(a.r - b.r) < kEps && std::fabs(a.g - b.g) < kEps && std::fabs(a.b - b.b) < kEps
+           && std::fabs(a.a - b.a) < kEps;
+}
+
+[[nodiscard]] ImVec4 ToImVec4(RgbaColor c) noexcept {
+    return ImVec4(c.r, c.g, c.b, c.a);
+}
+
+}  // namespace
+
+MotrixPalette BuildMotrixPalette(bool dark) noexcept {
+    MotrixPalette p{};
+    p.isDark = dark;
+    p.primary = HexColor(0x5B5BFA);
+    p.primaryProgress = HexColor(0x5B5BEA);
+    p.progressActive = HexColor(0x5B5BEA);
+    p.progressWaiting = HexColor(0x737373);
+    p.progressComplete = HexColor(0x2ACB42);
+    p.progressError = HexColor(0xFF6157);
+    p.asideHoverBg = HexColor(0xFFFFFF, 0.15f);
+    p.asideIcon = HexColor(0xFFFFFF);
+    p.taskCardHoverBorder = HexColor(0x5B5BFA);
+    p.taskMetaText = HexColor(0x9B9B9B);
+    p.pillHoverBg = HexColor(0x5B5BFA);
+    p.pillHoverBorder = HexColor(0x5B5BFA);
+    p.pillHoverIcon = HexColor(0xFFFFFF);
+    p.speedometerHoverBorder = HexColor(0x9B9B9B);
+    p.speedometerIdleIcon = HexColor(0x9B9B9B);
+    p.speedometerUpText = HexColor(0x9B9B9B);
+    p.titlebarCloseHoverBg = HexColor(0xFD0007);
+    p.titlebarCloseHoverFg = HexColor(0xFFFFFF);
+
+    if (dark) {
+        p.asideBg = HexColor(0x1F1F1F);
+        p.subnavBg = HexColor(0x2D2D2D);
+        p.subnavTitle = HexColor(0xFFFFFF);
+        p.subnavItemText = HexColor(0xAAAAAA);
+        p.subnavActiveBg = HexColor(0x444444);
+        p.subnavActiveText = HexColor(0xFFFFFF);
+
+        p.mainBg = HexColor(0x343434);
+        p.panelTitle = HexColor(0xFFFFFF);
+        p.panelBorder = HexColor(0xFFFFFF, 0.10f);
+        p.headerAction = HexColor(0xEEEEEE);
+        p.headerActionHover = HexColor(0x5B5BFA);
+        p.headerActionDisabled = HexColor(0xEEEEEE, 0.35f);
+
+        p.taskCardBg = HexColor(0x2D2D2D);
+        p.taskCardBorder = HexColor(0x555555);
+        p.taskNameText = HexColor(0xEEEEEE);
+
+        p.pillBg = HexColor(0x4A4A4A);
+        p.pillBorder = HexColor(0x5F5F5F);
+        p.pillIcon = HexColor(0xC0C0C0);
+
+        p.progressTrack = HexColor(0x4A4A4A);
+        p.emptyText = HexColor(0xAAAAAA);
+        p.speedometerBg = HexColor(0x333333);
+        p.speedometerBorder = HexColor(0x5F5F5F);
+
+        p.titlebarActionFg = HexColor(0xEEEEEE);
+        p.titlebarActionHoverBg = HexColor(0x444444);
+
+        p.modalBg = HexColor(0x2D2D2D);
+        p.modalFooterBg = HexColor(0x262626);
+        p.inputBg = HexColor(0x373737);
+        p.inputBorder = HexColor(0x5F5F5F);
+        p.borderSubtle = HexColor(0x565656);
+    } else {
+        p.asideBg = HexColor(0x333333);
+        p.subnavBg = HexColor(0xF4F5F7);
+        p.subnavTitle = HexColor(0x303133);
+        p.subnavItemText = HexColor(0x4D515A);
+        p.subnavActiveBg = HexColor(0xEAECF0);
+        p.subnavActiveText = HexColor(0x5B5BFA);
+
+        p.mainBg = HexColor(0xFFFFFF);
+        p.panelTitle = HexColor(0x303133);
+        p.panelBorder = HexColor(0x000000, 0.10f);
+        p.headerAction = HexColor(0x4D515A);
+        p.headerActionHover = HexColor(0x5B5BFA);
+        p.headerActionDisabled = HexColor(0x4D515A, 0.50f);
+
+        p.taskCardBg = HexColor(0xFFFFFF);
+        p.taskCardBorder = HexColor(0xCCCCCC);
+        p.taskNameText = HexColor(0x505753);
+
+        p.pillBg = HexColor(0xFFFFFF);
+        p.pillBorder = HexColor(0xE8E8E8);
+        p.pillIcon = HexColor(0x9B9B9B);
+
+        p.progressTrack = HexColor(0xEBEEF5);
+        p.emptyText = HexColor(0x555555);
+        p.speedometerBg = HexColor(0xFFFFFF);
+        p.speedometerBorder = HexColor(0xCCCCCC);
+
+        p.titlebarActionFg = HexColor(0x1F1F1F);
+        p.titlebarActionHoverBg = HexColor(0xEEEEEE);
+
+        p.modalBg = HexColor(0xFFFFFF);
+        p.modalFooterBg = HexColor(0xF5F5F5);
+        p.inputBg = HexColor(0xFFFFFF);
+        p.inputBorder = HexColor(0xDCDFE6);
+        p.borderSubtle = HexColor(0xEBEEF5);
+    }
+    return p;
+}
+
+ThemeController::ThemeController(bool initialDark)
+    : targetDark_(initialDark), current_(BuildMotrixPalette(initialDark)), target_(current_) {
+}
+
+void ThemeController::SetDark(bool dark, bool immediate) {
+    if (targetDark_ == dark && !immediate) {
+        return;
+    }
+    targetDark_ = dark;
+    target_ = BuildMotrixPalette(dark);
+    if (immediate) {
+        current_ = target_;
+    }
+}
+
+bool ThemeController::Update(float dt) {
+    current_.isDark = target_.isDark;
+    if (ColorNearlyEqual(current_.mainBg, target_.mainBg)
+        && ColorNearlyEqual(current_.subnavBg, target_.subnavBg)) {
+        current_ = target_;
+        return false;
+    }
+    const float t = ExpFactor(16.0f, dt);
+    current_.asideBg = LerpRgba(current_.asideBg, target_.asideBg, t);
+    current_.subnavBg = LerpRgba(current_.subnavBg, target_.subnavBg, t);
+    current_.subnavTitle = LerpRgba(current_.subnavTitle, target_.subnavTitle, t);
+    current_.subnavItemText = LerpRgba(current_.subnavItemText, target_.subnavItemText, t);
+    current_.subnavActiveBg = LerpRgba(current_.subnavActiveBg, target_.subnavActiveBg, t);
+    current_.subnavActiveText = LerpRgba(current_.subnavActiveText, target_.subnavActiveText, t);
+    current_.mainBg = LerpRgba(current_.mainBg, target_.mainBg, t);
+    current_.panelTitle = LerpRgba(current_.panelTitle, target_.panelTitle, t);
+    current_.panelBorder = LerpRgba(current_.panelBorder, target_.panelBorder, t);
+    current_.headerAction = LerpRgba(current_.headerAction, target_.headerAction, t);
+    current_.headerActionDisabled =
+        LerpRgba(current_.headerActionDisabled, target_.headerActionDisabled, t);
+    current_.taskCardBg = LerpRgba(current_.taskCardBg, target_.taskCardBg, t);
+    current_.taskCardBorder = LerpRgba(current_.taskCardBorder, target_.taskCardBorder, t);
+    current_.taskNameText = LerpRgba(current_.taskNameText, target_.taskNameText, t);
+    current_.pillBg = LerpRgba(current_.pillBg, target_.pillBg, t);
+    current_.pillBorder = LerpRgba(current_.pillBorder, target_.pillBorder, t);
+    current_.pillIcon = LerpRgba(current_.pillIcon, target_.pillIcon, t);
+    current_.progressTrack = LerpRgba(current_.progressTrack, target_.progressTrack, t);
+    current_.emptyText = LerpRgba(current_.emptyText, target_.emptyText, t);
+    current_.speedometerBg = LerpRgba(current_.speedometerBg, target_.speedometerBg, t);
+    current_.speedometerBorder = LerpRgba(current_.speedometerBorder, target_.speedometerBorder, t);
+    current_.titlebarActionFg = LerpRgba(current_.titlebarActionFg, target_.titlebarActionFg, t);
+    current_.titlebarActionHoverBg =
+        LerpRgba(current_.titlebarActionHoverBg, target_.titlebarActionHoverBg, t);
+    current_.modalBg = LerpRgba(current_.modalBg, target_.modalBg, t);
+    current_.modalFooterBg = LerpRgba(current_.modalFooterBg, target_.modalFooterBg, t);
+    current_.inputBg = LerpRgba(current_.inputBg, target_.inputBg, t);
+    current_.inputBorder = LerpRgba(current_.inputBorder, target_.inputBorder, t);
+    current_.borderSubtle = LerpRgba(current_.borderSubtle, target_.borderSubtle, t);
+    return true;
+}
+
+void ThemeController::ApplyImGuiStyleGeometry(float dpiScale) const {
+    ImGuiStyle& style = ImGui::GetStyle();
+    style = ImGuiStyle();
+    style.FontSizeBase = 15.0f;
+    style.WindowPadding = ImVec2(16.0f, 16.0f);
+    style.FramePadding = ImVec2(10.0f, 7.0f);
+    style.ItemSpacing = ImVec2(8.0f, 8.0f);
+    style.ItemInnerSpacing = ImVec2(6.0f, 6.0f);
+    style.ScrollbarSize = 10.0f;
+    style.ScrollbarRounding = 8.0f;
+    style.InputTextCursorSize = 1.5f;
+    style.WindowRounding = 6.0f;
+    style.ChildRounding = 0.0f;
+    style.FrameRounding = 4.0f;
+    style.PopupRounding = 6.0f;
+    style.WindowBorderSize = 1.0f;
+    style.ChildBorderSize = 0.0f;
+    style.FrameBorderSize = 1.0f;
+    style.PopupBorderSize = 1.0f;
+    style.AntiAliasedLines = true;
+    style.AntiAliasedFill = true;
+    style.ScaleAllSizes(dpiScale);
+    style.InputTextCursorSize = std::max(1.5f, style.InputTextCursorSize);
+    style.FontScaleDpi = dpiScale;
+}
+
+void ThemeController::ApplyImGuiStyleColors() const {
+    ImGuiStyle& style = ImGui::GetStyle();
+    ImVec4* c = style.Colors;
+    const MotrixPalette& p = current_;
+
+    c[ImGuiCol_Text] = ToImVec4(p.panelTitle);
+    c[ImGuiCol_TextDisabled] = ToImVec4(p.taskMetaText);
+    c[ImGuiCol_TextSelectedBg] = ToImVec4(WithAlpha(p.primary, 0.28f));
+    c[ImGuiCol_InputTextCursor] = ToImVec4(p.panelTitle);
+    c[ImGuiCol_WindowBg] = ToImVec4(p.mainBg);
+    c[ImGuiCol_ChildBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    c[ImGuiCol_PopupBg] = ToImVec4(p.modalBg);
+    c[ImGuiCol_Border] = ToImVec4(p.inputBorder);
+    c[ImGuiCol_BorderShadow] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    c[ImGuiCol_FrameBg] = ToImVec4(p.inputBg);
+    c[ImGuiCol_FrameBgHovered] = ToImVec4(p.inputBg);
+    c[ImGuiCol_FrameBgActive] = ToImVec4(p.inputBg);
+
+    c[ImGuiCol_Button] = ToImVec4(p.primary);
+    c[ImGuiCol_ButtonHovered] =
+        HexColor(0x6E6EFF).r > 0 ? ToImVec4(HexColor(0x6E6EFF)) : ToImVec4(p.primary);
+    c[ImGuiCol_ButtonActive] = ToImVec4(HexColor(0x4A4AE8));
+    c[ImGuiCol_SliderGrab] = ToImVec4(p.primary);
+    c[ImGuiCol_SliderGrabActive] = ToImVec4(HexColor(0x4A4AE8));
+    c[ImGuiCol_CheckMark] = ToImVec4(p.primary);
+
+    c[ImGuiCol_TitleBg] = ToImVec4(p.modalBg);
+    c[ImGuiCol_TitleBgActive] = ToImVec4(p.modalBg);
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    c[ImGuiCol_ScrollbarGrab] = ImVec4(0.0f, 0.0f, 0.0f, 0.25f);
+    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.0f, 0.0f, 0.0f, 0.40f);
+    c[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.0f, 0.0f, 0.0f, 0.50f);
+    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.0f, 0.0f, p.isDark ? 0.55f : 0.35f);
+}
+
+bool ResolveThemeIsDark(motrix::domain::ThemePreference pref, bool systemDark) noexcept {
+    switch (pref) {
+        case motrix::domain::ThemePreference::Dark: return true;
+        case motrix::domain::ThemePreference::Light: return false;
+        case motrix::domain::ThemePreference::Auto: return systemDark;
+    }
+    return false;
+}
+
+}  // namespace motrix::ui

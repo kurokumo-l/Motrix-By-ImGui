@@ -1,0 +1,33 @@
+export module motrix.platform:dx11_internal;
+
+import std;
+import motrix.core;
+
+namespace motrix::platform {
+
+export class Dx11Context {
+public:
+    Dx11Context();
+    ~Dx11Context();
+
+    Dx11Context(const Dx11Context&) = delete;
+    Dx11Context& operator=(const Dx11Context&) = delete;
+
+    [[nodiscard]] motrix::core::Result<void> Initialize(void* hwnd);
+    void Shutdown();
+
+    void Resize(std::uint32_t width, std::uint32_t height);
+    void BeginRenderPass(float r, float g, float b, float a);
+    [[nodiscard]] bool PresentFrame(bool vsync);
+    [[nodiscard]] bool IsOccludedStillActive();
+    [[nodiscard]] bool CaptureSwapChainPng(const std::filesystem::path& outputPath);
+
+    [[nodiscard]] void* DeviceRaw() const noexcept;
+    [[nodiscard]] void* ContextRaw() const noexcept;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+}  // namespace motrix::platform

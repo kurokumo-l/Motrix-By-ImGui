@@ -1,0 +1,385 @@
+module;
+
+// clang-format off
+#include <windows.h>
+#include <windowsx.h>
+#include <dwmapi.h>
+#include <shellapi.h>
+// clang-format on
+
+#include "imgui.h"
+#include "imgui_impl_win32.h"
+
+module motrix.platform;
+
+import std;
+import motrix.core;
+import :window_host;
+import :win32_internal;
+
+extern "C++" IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd,
+                                                                   UINT msg,
+                                                                   WPARAM wParam,
+                                                                   LPARAM lParam);
+
+namespace motrix::platform {
+
+namespace {
+
+constexpr wchar_t kWindowClassName[] = L"MotrixNativeWindowClass";
+constexpr UINT kWmAppWakeup = WM_APP + 101;
+constexpr DWORD kDwmUseImmersiveDarkMode = 20;
+constexpr DWORD kDwmWindowCornerPreference = 33;
+constexpr int kDwmRoundCorner = 2;
+
+[[nodiscard]] bool ShouldWakeFrameForMessage(UINT msg) noexcept {
+    switch (msg) {
+        case WM_PAINT:
+        case WM_MOUSEMOVE:
+        case WM_NCMOUSEMOVE:
+        case WM_MOUSELEAVE:
+        case WM_NCMOUSELEAVE:
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_LBUTTONDBLCLK:
+        case WM_RBUTTONDOWN:
+        case WM_RBUTTONUP:
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONUP:
+        case WM_MOUSEWHEEL:
+        case WM_MOUSEHWHEEL:
+        case WM_KEYDOWN:
+        case WM_KEYUP:
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP:
+        case WM_CHAR:
+        case WM_IME_CHAR:
+        case WM_IME_COMPOSITION:
+        case WM_IME_STARTCOMPOSITION:
+        case WM_IME_ENDCOMPOSITION:
+        case WM_SETFOCUS:
+        case WM_KILLFOCUS:
+        case WM_SIZE:
+        case WM_DPICHANGED:
+        case WM_ACTIVATE:
+        case WM_SETCURSOR:
+        case kWmAppWakeup: return true;
+        default: return false;
+    }
+}
+
+[[nodiscard]] LRESULT HitTestBorder(POINT pt, const RECT& rc, int border) noexcept {
+    const bool left = pt.x < border;
+    const bool right = pt.x >= rc.right - border;
+    const bool top = pt.y < border;
+    const bool bottom = pt.y >= rc.bottom - border;
+
+    if (top && left)
+        return HTTOPLEFT;
+    if (top && right)
+        return HTTOPRIGHT;
+    if (bottom && left)
+        return HTBOTTOMLEFT;
+    if (bottom && right)
+        return HTBOTTOMRIGHT;
+    if (top)
+        return HTTOP;
+    if (bottom)
+        return HTBOTTOM;
+    if (left)
+        return HTLEFT;
+    if (right)
+        return HTRIGHT;
+    return HTCLIENT;
+}
+
+[[nodiscard]] LRESULT HandleNcHitTest(const Win32WindowState& state, HWND hWnd, LPARAM lParam) {
+    POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+    ::ScreenToClient(hWnd, &pt);
+
+    RECT rc{};
+    ::GetClientRect(hWnd, &rc);
+
+    if (!::IsZoomed(hWnd)) {
+        const int border = static_cast<int>(6.0f * state.dpiScale);
+        const LRESULT edge = HitTestBorder(pt, rc, border);
+        if (edge != HTCLIENT) {
+            return edge;
+        }
+    }
+
+    const int barH = static_cast<int>(state.titlebarHeightPx * state.dpiScale);
+    if (pt.y >= 0 && pt.y < barH) {
+        if (ImGui::GetCurrentContext() && ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
+            return HTCLIENT;
+        }
+        for (const auto& r : state.titlebarRects) {
+            if (static_cast<float>(pt.x) >= r.x0 && static_cast<float>(pt.x) <= r.x1
+                && static_cast<float>(pt.y) >= r.y0 && static_cast<float>(pt.y) <= r.y1) {
+                return HTCLIENT;
+            }
+        }
+        return HTCAPTION;
+    }
+    return HTCLIENT;
+}
+
+LRESULT HandleMessage(Win32WindowState& state, HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (ShouldWakeFrameForMessage(msg)) {
+        state.activeFramesRemaining = std::max(state.activeFramesRemaining, 3);
+    }
+
+    switch (msg) {
+        case WM_NCCALCSIZE: {
+            if (wParam == TRUE && ::IsZoomed(hWnd)) {
+                auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+                const UINT dpi = ::GetDpiForWindow(hWnd);
+                const int pad = ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+                const int cx = ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + pad;
+                const int cy = ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) + pad;
+                params->rgrc[0].left += cx;
+                params->rgrc[0].right -= cx;
+                params->rgrc[0].top += cy;
+                params->rgrc[0].bottom -= cy;
+            }
+            return (wParam == TRUE) ? 0 : ::DefWindowProcW(hWnd, msg, wParam, lParam);
+        }
+        case WM_NCHITTEST: return HandleNcHitTest(state, hWnd, lParam);
+        case WM_GETMINMAXINFO: {
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            mmi->ptMinTrackSize.x =
+                static_cast<LONG>(static_cast<float>(state.config.minWidth) * state.dpiScale);
+            mmi->ptMinTrackSize.y =
+                static_cast<LONG>(static_cast<float>(state.config.minHeight) * state.dpiScale);
+            return 0;
+        }
+        case WM_DPICHANGED: {
+            const auto* suggested = reinterpret_cast<const RECT*>(lParam);
+            ::SetWindowPos(hWnd,
+                           nullptr,
+                           suggested->left,
+                           suggested->top,
+                           suggested->right - suggested->left,
+                           suggested->bottom - suggested->top,
+                           SWP_NOZORDER | SWP_NOACTIVATE);
+            return 0;
+        }
+        case WM_SIZE:
+            if (wParam != SIZE_MINIMIZED) {
+                state.pendingResizeW = static_cast<std::uint32_t>(LOWORD(lParam));
+                state.pendingResizeH = static_cast<std::uint32_t>(HIWORD(lParam));
+            }
+            return 0;
+        case WM_SYSCOMMAND:
+            if ((wParam & 0xFFF0u) == SC_KEYMENU) {
+                return 0;
+            }
+            break;
+        case WM_DESTROY: ::PostQuitMessage(0); return 0;
+        default: break;
+    }
+    return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        auto* state = static_cast<Win32WindowState*>(cs->lpCreateParams);
+        ::SetWindowLongPtrW(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        state->hwnd = hWnd;
+    }
+
+    auto* state = reinterpret_cast<Win32WindowState*>(::GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+    if (ImGui::GetCurrentContext() != nullptr
+        && ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) {
+        if (state) {
+            state->activeFramesRemaining = std::max(state->activeFramesRemaining, 3);
+        }
+        return TRUE;
+    }
+
+    if (state) {
+        return HandleMessage(*state, hWnd, msg, wParam, lParam);
+    }
+    return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+}  // namespace
+
+void Win32EnableDpiAwareness() noexcept {
+    ImGui_ImplWin32_EnableDpiAwareness();
+}
+
+float Win32GetPrimaryMonitorDpiScale() noexcept {
+    const float scale =
+        ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
+    return scale > 0.0f ? scale : 1.0f;
+}
+
+float Win32GetWindowDpiScale(void* hwnd) noexcept {
+    if (!hwnd) {
+        return 1.0f;
+    }
+    const float scale = ImGui_ImplWin32_GetDpiScaleForMonitor(
+        ::MonitorFromWindow(static_cast<HWND>(hwnd), MONITOR_DEFAULTTONEAREST));
+    return scale > 0.0f ? scale : 1.0f;
+}
+
+motrix::core::Result<void> Win32CreateWindow(Win32WindowState& state) {
+    HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    state.hInstance = hInst;
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_CLASSDC | CS_DBLCLKS;
+    wc.lpfnWndProc = MainWndProc;
+    wc.hInstance = hInst;
+    wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = kWindowClassName;
+    ::RegisterClassExW(&wc);
+
+    RECT workArea{};
+    ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    const int logicalWorkW =
+        static_cast<int>(static_cast<float>(workArea.right - workArea.left) / state.dpiScale);
+    const int logicalWorkH =
+        static_cast<int>(static_cast<float>(workArea.bottom - workArea.top) / state.dpiScale);
+    const float wScale = (logicalWorkW > 0 && logicalWorkW < 1280) ? 0.875f : 1.0f;
+    const float hScale = (logicalWorkH > 0 && logicalWorkH < 800) ? 0.875f : 1.0f;
+
+    const int winW = static_cast<int>(static_cast<float>(state.config.width) * wScale * state.dpiScale);
+    const int winH = static_cast<int>(static_cast<float>(state.config.height) * hScale * state.dpiScale);
+    const int winX = workArea.left + std::max<LONG>(0, ((workArea.right - workArea.left) - winW) / 2);
+    const int winY = workArea.top + std::max<LONG>(0, ((workArea.bottom - workArea.top) - winH) / 2);
+
+    const std::wstring wideTitle = motrix::core::Utf8ToWide(state.config.title);
+    HWND created = ::CreateWindowExW(0,
+                                     kWindowClassName,
+                                     wideTitle.c_str(),
+                                     WS_OVERLAPPEDWINDOW,
+                                     winX,
+                                     winY,
+                                     winW,
+                                     winH,
+                                     nullptr,
+                                     nullptr,
+                                     hInst,
+                                     &state);
+    if (!created) {
+        ::UnregisterClassW(kWindowClassName, hInst);
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Platform,
+                                                       motrix::core::ErrorCode::IoFailure,
+                                                       "Failed to create Win32 window"));
+    }
+    state.hwnd = created;
+    Win32ApplyDwmChrome(created, state.darkFrame);
+    ::SetWindowPos(
+        created, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+    return {};
+}
+
+void Win32DestroyWindow(Win32WindowState& state) noexcept {
+    if (state.hwnd) {
+        ::DestroyWindow(static_cast<HWND>(state.hwnd));
+        state.hwnd = nullptr;
+    }
+    if (state.hInstance) {
+        ::UnregisterClassW(kWindowClassName, static_cast<HINSTANCE>(state.hInstance));
+        state.hInstance = nullptr;
+    }
+}
+
+void Win32ShowWindow(void* hwnd, bool show, bool activate) noexcept {
+    if (!hwnd) {
+        return;
+    }
+    HWND h = static_cast<HWND>(hwnd);
+    if (!show) {
+        ::ShowWindow(h, SW_HIDE);
+        return;
+    }
+    ::ShowWindow(h, activate ? SW_SHOWDEFAULT : SW_SHOWNOACTIVATE);
+    if (activate) {
+        ::SetForegroundWindow(h);
+    }
+    ::UpdateWindow(h);
+}
+
+void Win32MinimizeWindow(void* hwnd) noexcept {
+    if (hwnd) {
+        ::ShowWindow(static_cast<HWND>(hwnd), SW_MINIMIZE);
+    }
+}
+
+void Win32ToggleMaximizeWindow(void* hwnd) noexcept {
+    if (hwnd) {
+        HWND h = static_cast<HWND>(hwnd);
+        ::ShowWindow(h, ::IsZoomed(h) ? SW_RESTORE : SW_MAXIMIZE);
+    }
+}
+
+void Win32PostCloseWindow(void* hwnd) noexcept {
+    if (hwnd) {
+        ::PostMessageW(static_cast<HWND>(hwnd), WM_CLOSE, 0, 0);
+    }
+}
+
+void Win32ApplyDwmChrome(void* hwnd, bool dark) noexcept {
+    if (!hwnd) {
+        return;
+    }
+    HWND h = static_cast<HWND>(hwnd);
+    MARGINS margins = {0, 0, 0, 1};
+    ::DwmExtendFrameIntoClientArea(h, &margins);
+
+    const BOOL useDark = dark ? TRUE : FALSE;
+    ::DwmSetWindowAttribute(h, kDwmUseImmersiveDarkMode, &useDark, sizeof(useDark));
+
+    const int cornerPref = kDwmRoundCorner;
+    ::DwmSetWindowAttribute(h, kDwmWindowCornerPreference, &cornerPref, sizeof(cornerPref));
+}
+
+void Win32SetWindowTitle(void* hwnd, std::string_view utf8Title) {
+    if (hwnd) {
+        const std::wstring wide = motrix::core::Utf8ToWide(utf8Title);
+        ::SetWindowTextW(static_cast<HWND>(hwnd), wide.c_str());
+    }
+}
+
+bool Win32IsWindowZoomed(void* hwnd) noexcept {
+    return hwnd != nullptr && ::IsZoomed(static_cast<HWND>(hwnd)) != FALSE;
+}
+
+bool Win32IsWindowIconic(void* hwnd) noexcept {
+    return hwnd != nullptr && ::IsIconic(static_cast<HWND>(hwnd)) != FALSE;
+}
+
+void Win32CopyTextToClipboard(void* hwnd, std::string_view utf8) {
+    if (!::OpenClipboard(static_cast<HWND>(hwnd))) {
+        return;
+    }
+    ::EmptyClipboard();
+    const std::wstring wide = motrix::core::Utf8ToWide(utf8);
+    const std::size_t bytes = (wide.size() + 1) * sizeof(wchar_t);
+    HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (mem) {
+        if (void* ptr = ::GlobalLock(mem)) {
+            std::memcpy(ptr, wide.c_str(), bytes);
+            ::GlobalUnlock(mem);
+            ::SetClipboardData(CF_UNICODETEXT, mem);
+        } else {
+            ::GlobalFree(mem);
+        }
+    }
+    ::CloseClipboard();
+}
+
+void Win32OpenPathInExplorer(std::string_view utf8Path) {
+    if (utf8Path.empty()) {
+        return;
+    }
+    const std::wstring wide = motrix::core::Utf8ToWide(utf8Path);
+    ::ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+}  // namespace motrix::platform

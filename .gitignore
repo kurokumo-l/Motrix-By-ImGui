@@ -1,0 +1,18 @@
+# Build directories & generated CMake artifacts
+/build/
+/out/
+/cmake-build-*/
+/.vs/
+/.vscode/
+/.cache/
+
+# IDE & user-specific files
+*.user
+*.suo
+*.sln
+*.vcxproj*
+compile_commands.json
+
+# Runtime logs & captured test screenshots
+*.log
+/screenshots/
