@@ -23,6 +23,8 @@ export struct CoordinatorOptions {
     bool loadPersistedConfig = true;
     bool themeOverride = false;
     bool localeOverride = false;
+    bool enableOsIntegration = false;
+    bool openedAtLogin = false;
     std::uint16_t rpcPortOverride = 0;
     std::filesystem::path appDataDir;
     std::string defaultDownloadDir;
@@ -62,6 +64,12 @@ private:
                         bool saveUser = true,
                         bool saveSys = true,
                         bool overwrite = false);
+    void ApplyDesktopIntegration(const AppStateSnapshot& state);
+    void UpdateLivePlatformStatus(const AppStateSnapshot& state);
+    void DetectAndNotifyCompletions(const AppStateSnapshot& state);
+    void StartTrackerSyncAsync(std::vector<std::string> sources, std::string proxyUrl);
+    void HandleTrayAction(motrix::platform::TrayMenuAction action);
+    void HandleStartupPayload(const HandleStartupPayloadCmd& cmd);
     static void SeedPreviewTasks(AppStateSnapshot& state);
     static void RefreshMockDetail(AppStateSnapshot& state);
     [[nodiscard]] const motrix::domain::DownloadTaskView*
@@ -71,12 +79,17 @@ private:
     std::atomic<motrix::platform::IWindowHost*> windowHost_{nullptr};
     std::filesystem::path appDataDir_;
     bool persistConfig_ = false;
+    bool enableOsIntegration_ = false;
     bool previewMockMode_ = false;
+    bool sleepBlockerActive_ = false;
+    bool initialSyncSeen_ = false;
+    std::unordered_map<std::string, motrix::domain::TaskStatus> lastTaskStatuses_;
     std::mutex writeMutex_;
     AppStateSnapshot mutableState_;
     std::atomic<std::shared_ptr<const AppStateSnapshot>> published_;
     std::uint64_t nextLocalGid_ = 1000;
     std::unique_ptr<EngineRuntime> engineRuntime_;
+    std::jthread trackerSyncWorker_;
 };
 
 }  // namespace motrix::app

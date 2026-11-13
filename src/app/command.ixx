@@ -3,6 +3,7 @@ export module motrix.app:command;
 import std;
 import motrix.core;
 import motrix.domain;
+import motrix.platform;
 
 namespace motrix::app {
 
@@ -106,6 +107,29 @@ export struct QueueDroppedFilesCmd {
     std::vector<std::string> paths;
 };
 
+export struct SyncTrackersCmd {
+    std::vector<std::string> sources;
+};
+
+export struct HandleStartupPayloadCmd {
+    std::vector<std::string> uris;
+    std::vector<std::string> torrentFiles;
+    std::vector<std::string> deepLinks;
+    bool activateWindow = true;
+};
+
+export struct HideToTrayCmd {};
+export struct ShowFromTrayCmd {};
+export struct QuitAppCmd {};
+
+export struct UpdateWindowBoundsCmd {
+    motrix::platform::WindowBounds bounds;
+};
+
+export struct HandleTrayActionCmd {
+    motrix::platform::TrayMenuAction action = motrix::platform::TrayMenuAction::ShowWindow;
+};
+
 export using Command = std::variant<SelectCategoryCmd,
                                     SelectSectionCmd,
                                     OpenModalCmd,
@@ -129,7 +153,14 @@ export using Command = std::variant<SelectCategoryCmd,
                                     SavePreferencesCmd,
                                     QueueDroppedFilesCmd,
                                     CopyTaskLinkCmd,
-                                    ShowInFolderCmd>;
+                                    ShowInFolderCmd,
+                                    SyncTrackersCmd,
+                                    HandleStartupPayloadCmd,
+                                    HideToTrayCmd,
+                                    ShowFromTrayCmd,
+                                    QuitAppCmd,
+                                    UpdateWindowBoundsCmd,
+                                    HandleTrayActionCmd>;
 
 export class ICommandSink {
 public:

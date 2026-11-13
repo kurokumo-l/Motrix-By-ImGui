@@ -37,8 +37,19 @@ void RenderAddTaskModal(UiFrameContext& ctx, AddTaskFormState& form) {
     }
     if (ctx.state.dropSeq != form.seenDropSeq && !ctx.state.pendingDroppedTorrentPath.empty()) {
         form.seenDropSeq = ctx.state.dropSeq;
-        form.activeTab = 1;
-        LoadTorrentFileIntoForm(form, ctx.state.pendingDroppedTorrentPath);
+        if (ctx.state.pendingDroppedTorrentPath == "__TAB_TORRENT__") {
+            form.activeTab = 1;
+        } else if (ctx.state.pendingDroppedTorrentPath == "__TAB_URI__") {
+            form.activeTab = 0;
+        } else {
+            form.activeTab = 1;
+            LoadTorrentFileIntoForm(form, ctx.state.pendingDroppedTorrentPath);
+        }
+    }
+    if (ctx.state.prefillUriSeq != form.seenPrefillSeq && !ctx.state.pendingPrefillUri.empty()) {
+        form.seenPrefillSeq = ctx.state.prefillUriSeq;
+        form.activeTab = 0;
+        CopyUtf8ToBuffer(ctx.state.pendingPrefillUri, form.uriBuffer.data(), form.uriBuffer.size());
     }
 
     const float s = ctx.dpiScale;

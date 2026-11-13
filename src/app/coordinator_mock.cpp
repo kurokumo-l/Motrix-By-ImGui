@@ -308,4 +308,61 @@ void AppCoordinator::HandleBulkAndSubmit(AppStateSnapshot& state, const Command&
     }
 }
 
+void AppCoordinator::PersistConfigs(const AppStateSnapshot& state,
+                                    bool saveUser,
+                                    bool saveSys,
+                                    bool overwrite) {
+    if (appDataDir_.empty()) {
+        return;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(appDataDir_, ec);
+    const auto userPath = appDataDir_ / "user.json";
+    const auto sysPath = appDataDir_ / "system.json";
+    if (saveUser && (overwrite || !std::filesystem::exists(userPath, ec))) {
+        (void)motrix::core::WriteTextAtomic(userPath,
+                                            motrix::domain::SerializeUserPreferencesJson(state.prefs));
+    }
+    if (saveSys && (overwrite || !std::filesystem::exists(sysPath, ec))) {
+        (void)motrix::core::WriteTextAtomic(sysPath,
+                                            motrix::domain::SerializeSystemConfigJson(state.sysConfig));
+    }
+}
+
+void AppCoordinator::RecomputeStats(AppStateSnapshot& state) {
+    std::uint64_t down = 0;
+    std::uint64_t up = 0;
+    for (const auto& t : state.downloadingTasks) {
+        down += t.downloadSpeed;
+        up += t.uploadSpeed;
+    }
+    state.globalStat = GlobalStatSnapshot{
+        .downloadSpeed = down,
+        .uploadSpeed = up,
+        .numActive = static_cast<int>(state.downloadingTasks.size()),
+        .numWaiting = static_cast<int>(state.waitingTasks.size()),
+        .numStopped = static_cast<int>(state.stoppedTasks.size()),
+    };
+}
+
+const motrix::domain::DownloadTaskView*
+AppCoordinator::FindTaskByGid(const AppStateSnapshot& state, std::string_view gid) const noexcept {
+    const auto findIn = [&](const std::vector<motrix::domain::DownloadTaskView>& list)
+        -> const motrix::domain::DownloadTaskView* {
+        for (const auto& t : list) {
+            if (t.gid == gid) {
+                return &t;
+            }
+        }
+        return nullptr;
+    };
+    if (const auto* p = findIn(state.downloadingTasks)) {
+        return p;
+    }
+    if (const auto* p = findIn(state.waitingTasks)) {
+        return p;
+    }
+    return findIn(state.stoppedTasks);
+}
+
 }  // namespace motrix::app

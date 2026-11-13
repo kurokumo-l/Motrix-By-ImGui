@@ -47,6 +47,10 @@ export struct AppStateSnapshot {
     std::vector<motrix::domain::TaskPeerView> detailedPeers;
     std::string pendingDroppedTorrentPath;
     std::uint64_t dropSeq = 0;
+    std::string pendingPrefillUri;
+    std::uint64_t prefillUriSeq = 0;
+    bool isSyncingTrackers = false;
+    std::string trackerSyncStatus;
 };
 
 }  // namespace motrix::app

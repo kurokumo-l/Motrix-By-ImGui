@@ -6,17 +6,29 @@ import :window_host;
 
 namespace motrix::platform {
 
+export inline constexpr std::uint32_t kWmTrayCallback = 0x8000u + 102u;  // WM_APP + 102
+
 export struct Win32WindowState {
     WindowHostConfig config;
     void* hwnd = nullptr;
     void* hInstance = nullptr;
+    void* trayIdleIcon = nullptr;
+    void* trayActiveIcon = nullptr;
     float dpiScale = 1.0f;
     float titlebarHeightPx = 36.0f;
     bool darkFrame = false;
     bool hiddenToTray = false;
+    bool bindCloseToHide = false;
+    bool autoHideOnBlur = false;
+    bool enableTrayIcon = true;
+    bool trayInstalled = false;
+    bool trayActiveDownloads = false;
+    bool trayIsZhCn = false;
+    bool explicitQuitRequested = false;
     std::uint32_t pendingResizeW = 0;
     std::uint32_t pendingResizeH = 0;
     int activeFramesRemaining = 3;
+    std::string lastToastTargetDir;
     std::vector<TitlebarRect> titlebarRects;
 };
 
@@ -34,10 +46,42 @@ export void Win32ApplyDwmChrome(void* hwnd, bool dark) noexcept;
 export void Win32SetWindowTitle(void* hwnd, std::string_view utf8Title);
 export [[nodiscard]] bool Win32IsWindowZoomed(void* hwnd) noexcept;
 export [[nodiscard]] bool Win32IsWindowIconic(void* hwnd) noexcept;
+export [[nodiscard]] WindowBounds Win32ReadWindowBounds(void* hwnd) noexcept;
+export void
+Win32ApplyInitialWindowBounds(void* hwnd, const WindowHostConfig& cfg, float dpiScale) noexcept;
 export void Win32CopyTextToClipboard(void* hwnd, std::string_view utf8);
 export void Win32OpenPathInExplorer(std::string_view utf8Path);
 export [[nodiscard]] std::optional<std::string> Win32PickTorrentFile(void* ownerHwnd);
 export [[nodiscard]] std::optional<std::string> Win32PickFolder(void* ownerHwnd,
                                                                 std::string_view initialDir);
+
+export void Win32SetWindowIcons(Win32WindowState& state) noexcept;
+export void Win32DestroyTrayIcons(Win32WindowState& state) noexcept;
+export void Win32InstallOrUpdateTray(Win32WindowState& state) noexcept;
+export void Win32RemoveTray(Win32WindowState& state) noexcept;
+export void Win32ShowTrayBalloon(Win32WindowState& state,
+                                 std::string_view title,
+                                 std::string_view body,
+                                 std::string_view clickTargetDir);
+export void Win32HandleTrayCallback(Win32WindowState& state, std::uint64_t lParam);
+export void Win32UpdateTaskbarProgress(void* hwnd,
+                                       TaskbarProgressMode mode,
+                                       std::uint64_t completed,
+                                       std::uint64_t total) noexcept;
+export class ScopedComInit {
+public:
+    ScopedComInit() noexcept;
+    ~ScopedComInit();
+    ScopedComInit(const ScopedComInit&) = delete;
+    ScopedComInit& operator=(const ScopedComInit&) = delete;
+    [[nodiscard]] bool IsUsable() const noexcept { return usable_; }
+
+private:
+    bool shouldUninit_ = false;
+    bool usable_ = false;
+};
+
+export void Win32ShowWindowMode(void* hwnd, bool maximized, bool activate) noexcept;
+export void Win32SetSleepBlocker(bool active) noexcept;
 
 }  // namespace motrix::platform

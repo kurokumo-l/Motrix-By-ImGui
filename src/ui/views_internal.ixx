@@ -22,6 +22,7 @@ export struct AddTaskFormState {
     std::string torrentBase64;
     std::string torrentError;
     std::uint64_t seenDropSeq = 0;
+    std::uint64_t seenPrefillSeq = 0;
     std::optional<motrix::domain::TorrentMetadata> torrentMeta;
     std::vector<bool> torrentFileSelected;
     int torrentFileFilter = 0;  // 0=All, 1=Video, 2=Audio, 3=Image
@@ -54,7 +55,7 @@ export struct PrefsFormState {
     bool keepSeeding = false;
     std::array<char, 512> allProxyBuffer{};
     std::array<char, 1024> noProxyBuffer{};
-    std::array<char, 2048> btTrackerBuffer{};
+    std::array<char, 8192> btTrackerBuffer{};
     std::array<char, 512> userAgentBuffer{};
     std::array<char, 512> enginePathBuffer{};
     float seedRatio = 1.0f;
@@ -63,6 +64,20 @@ export struct PrefsFormState {
     std::array<char, 256> rpcSecretBuffer{};
     int btPort = 21301;
     int dhtPort = 26701;
+    int runModeIndex = 0;  // 0=Standard, 1=Tray, 2=HideTray
+    bool keepWindowState = false;
+    bool autoHideWindow = false;
+    bool openAtLogin = false;
+    bool resumeAllWhenAppLaunched = false;
+    bool showProgressBar = true;
+    bool taskNotification = true;
+    bool traySpeedometer = false;
+    bool autoSyncTracker = true;
+    std::vector<bool> trackerSourceSelected;
+    bool protocolMagnet = true;
+    bool protocolThunder = true;
+    bool protocolMotrix = true;
+    std::int64_t loadedSyncTrackerTime = -1;
 };
 
 export struct UiFrameContext {
@@ -94,6 +109,10 @@ RenderFilesTab(UiFrameContext& ctx, DrawerUiState& ds, const motrix::domain::Dow
 export void RenderTaskDetailDrawer(UiFrameContext& ctx, DrawerUiState& drawerState);
 export void RenderAddTorrentTab(UiFrameContext& ctx, AddTaskFormState& form);
 export void LoadTorrentFileIntoForm(AddTaskFormState& form, std::string_view utf8Path);
+export void CopyUtf8ToBuffer(std::string_view src, char* dst, std::size_t cap) noexcept;
+export void DrawPrefsFieldLabel(UiFrameContext& ctx, std::string_view text);
+export void RenderPrefsAdvancedTab(UiFrameContext& ctx, PrefsFormState& ps);
+export void RenderPrefsLabTab(UiFrameContext& ctx, PrefsFormState& ps);
 export void RenderPreferencesView(
     UiFrameContext& ctx, float x, float y, float w, float h, int prefTab, PrefsFormState& prefsState);
 export void RenderModals(UiFrameContext& ctx, AddTaskFormState& addForm);

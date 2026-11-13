@@ -194,13 +194,13 @@ LRESULT HandleMessage(Win32WindowState& state, HWND hWnd, UINT msg, WPARAM wPara
             return 0;
         }
         case WM_DPICHANGED: {
-            const auto* suggested = reinterpret_cast<const RECT*>(lParam);
+            const auto* s = reinterpret_cast<const RECT*>(lParam);
             ::SetWindowPos(hWnd,
                            nullptr,
-                           suggested->left,
-                           suggested->top,
-                           suggested->right - suggested->left,
-                           suggested->bottom - suggested->top,
+                           s->left,
+                           s->top,
+                           s->right - s->left,
+                           s->bottom - s->top,
                            SWP_NOZORDER | SWP_NOACTIVATE);
             return 0;
         }
@@ -208,8 +208,47 @@ LRESULT HandleMessage(Win32WindowState& state, HWND hWnd, UINT msg, WPARAM wPara
             if (wParam != SIZE_MINIMIZED) {
                 state.pendingResizeW = static_cast<std::uint32_t>(LOWORD(lParam));
                 state.pendingResizeH = static_cast<std::uint32_t>(HIWORD(lParam));
+                if ((wParam == SIZE_MAXIMIZED || wParam == SIZE_RESTORED) && state.config.onBoundsChanged
+                    && ::IsWindowVisible(hWnd)) {
+                    state.config.onBoundsChanged(Win32ReadWindowBounds(hWnd));
+                }
             }
             return 0;
+        case WM_EXITSIZEMOVE:
+            if (state.config.onBoundsChanged && !::IsIconic(hWnd)) {
+                state.config.onBoundsChanged(Win32ReadWindowBounds(hWnd));
+            }
+            return 0;
+        case WM_ACTIVATE:
+            if (LOWORD(wParam) == WA_INACTIVE && state.autoHideOnBlur
+                && state.config.screenshotPath.empty() && ::IsWindowVisible(hWnd) && !::IsIconic(hWnd)) {
+                HWND next = reinterpret_cast<HWND>(lParam);
+                DWORD nextPid = 0;
+                if (next) {
+                    ::GetWindowThreadProcessId(next, &nextPid);
+                }
+                if (!next || nextPid != ::GetCurrentProcessId()) {
+                    Win32ShowWindow(hWnd, false, false);
+                    state.hiddenToTray = true;
+                }
+            }
+            break;
+        case kWmTrayCallback:
+            Win32HandleTrayCallback(state, static_cast<std::uint64_t>(lParam));
+            return 0;
+        case WM_CLOSE:
+            if (state.config.onBoundsChanged) {
+                state.config.onBoundsChanged(Win32ReadWindowBounds(hWnd));
+            }
+            if (state.bindCloseToHide && !state.explicitQuitRequested) {
+                Win32ShowWindow(hWnd, false, false);
+                state.hiddenToTray = true;
+                return 0;
+            }
+            if (state.config.onQuitRequested) {
+                state.config.onQuitRequested();
+            }
+            break;
         case WM_SYSCOMMAND:
             if ((wParam & 0xFFF0u) == SC_KEYMENU) {
                 return 0;
@@ -320,6 +359,9 @@ motrix::core::Result<void> Win32CreateWindow(Win32WindowState& state) {
         gPrevWndProcForDrop = reinterpret_cast<WNDPROC>(prevProc);
     }
     Win32ApplyDwmChrome(created, state.darkFrame);
+    Win32ApplyInitialWindowBounds(created, state.config, state.dpiScale);
+    state.dpiScale = Win32GetWindowDpiScale(created);
+    Win32SetWindowIcons(state);
     ::SetWindowPos(
         created, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
     return {};
@@ -329,6 +371,7 @@ void Win32DestroyWindow(Win32WindowState& state) noexcept {
     if (gDropWindowState == &state) {
         gDropWindowState = nullptr;
     }
+    Win32DestroyTrayIcons(state);
     if (state.hwnd) {
         ::DestroyWindow(static_cast<HWND>(state.hwnd));
         state.hwnd = nullptr;
@@ -348,7 +391,13 @@ void Win32ShowWindow(void* hwnd, bool show, bool activate) noexcept {
         ::ShowWindow(h, SW_HIDE);
         return;
     }
-    ::ShowWindow(h, activate ? SW_SHOWDEFAULT : SW_SHOWNOACTIVATE);
+    int showCmd = activate ? SW_SHOW : SW_SHOWNOACTIVATE;
+    if (::IsIconic(h)) {
+        showCmd = activate ? SW_RESTORE : SW_SHOWNOACTIVATE;
+    } else if (::IsZoomed(h) && activate) {
+        showCmd = SW_SHOWMAXIMIZED;
+    }
+    ::ShowWindow(h, showCmd);
     if (activate) {
         ::SetForegroundWindow(h);
     }

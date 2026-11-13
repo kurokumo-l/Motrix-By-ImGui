@@ -3,6 +3,7 @@ module;
 // clang-format off
 #include <windows.h>
 #include <dbghelp.h>
+#include <objbase.h>
 #include <shlobj.h>
 // clang-format on
 
@@ -10,6 +11,7 @@ module motrix.platform;
 
 import std;
 import motrix.core;
+import :win32_internal;
 
 namespace motrix::platform {
 
@@ -162,6 +164,18 @@ std::filesystem::path ResolveDefaultDownloadsDir() {
         return profile / "Downloads";
     }
     return std::filesystem::temp_directory_path();
+}
+
+ScopedComInit::ScopedComInit() noexcept {
+    const HRESULT hr = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    shouldUninit_ = (hr == S_OK || hr == S_FALSE);
+    usable_ = SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
+}
+
+ScopedComInit::~ScopedComInit() {
+    if (shouldUninit_) {
+        ::CoUninitialize();
+    }
 }
 
 std::filesystem::path ResolveAppDataDir() {

@@ -41,6 +41,8 @@ export struct EngineRuntimeConfig {
     std::filesystem::path appDataDir;
     std::string enginePathOverride;
     motrix::domain::SystemConfig sysConfig;
+    bool enableUpnp = true;
+    bool resumeAllWhenLaunched = false;
 };
 
 export class EngineRuntime {
@@ -64,6 +66,7 @@ public:
     void Enqueue(EngineWorkCommand cmd);
     void SetDetailCallback(DetailCallback cb);
     void SetDetailGid(std::string gid);
+    void UpdateUpnpPreference(bool enabled, int btPort, int dhtPort);
 
 private:
     void RunLoop(std::stop_token st);
@@ -71,6 +74,7 @@ private:
     void ProcessCommand(const EngineWorkCommand& cmd, bool& needSync, std::string& lastErr);
     void ApplySyncSnapshot(const motrix::engine::EngineSyncSnapshot& snap, std::string_view err);
     void FetchAndPublishDetail(std::string_view gid);
+    void StartOrRefreshUpnpAsync(bool enabled, int btPort, int dhtPort);
 
     motrix::core::Logger& logger_;
     EngineRuntimeConfig config_;
@@ -82,6 +86,7 @@ private:
     std::unique_ptr<motrix::engine::IEngineProcessManager> proc_;
     std::unique_ptr<motrix::engine::IEngineRpcClient> rpc_;
     std::unique_ptr<motrix::engine::IEngineDialect> dialect_;
+    std::unique_ptr<motrix::engine::IUpnpPortMapper> upnp_;
     motrix::engine::EngineVersionInfo versionInfo_;
     std::string resolvedPath_;
 
@@ -91,6 +96,8 @@ private:
     std::atomic<bool> wakeSync_{false};
     std::atomic<bool> disconnectedFlag_{false};
     bool hasActiveTasks_ = false;
+    bool didLaunchResume_ = false;
+    std::jthread upnpWorker_;
     std::jthread worker_;
 };
 

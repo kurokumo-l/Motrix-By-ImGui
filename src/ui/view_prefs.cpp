@@ -14,15 +14,33 @@ import :icons;
 import :scope_guard;
 
 namespace motrix::ui {
-namespace {
 
-void CopyStringToBuf(std::string_view src, char* dst, std::size_t cap) noexcept {
+void CopyUtf8ToBuffer(std::string_view src, char* dst, std::size_t cap) noexcept {
     if (cap == 0) {
         return;
     }
     const std::size_t n = std::min(src.size(), cap - 1);
     std::memcpy(dst, src.data(), n);
     dst[n] = '\0';
+}
+
+void DrawPrefsFieldLabel(UiFrameContext& ctx, std::string_view text) {
+    FontGuard fg(ctx.fonts, FontRole::Medium, 13.5f);
+    StyleColorGuard cg(ImGuiCol_Text, ctx.palette.panelTitle);
+    ImGui::TextUnformatted(text.data(), text.data() + text.size());
+}
+
+namespace {
+
+[[nodiscard]] std::vector<std::string> CollectSelectedTrackerUrls(const PrefsFormState& ps) {
+    const auto allOpts = motrix::domain::AllTrackerSourceOptions();
+    std::vector<std::string> out;
+    for (std::size_t i = 0; i < allOpts.size() && i < ps.trackerSourceSelected.size(); ++i) {
+        if (ps.trackerSourceSelected[i]) {
+            out.emplace_back(allOpts[i].url);
+        }
+    }
+    return out;
 }
 
 void LoadFromSnapshot(PrefsFormState& ps,
@@ -33,7 +51,8 @@ void LoadFromSnapshot(PrefsFormState& ps,
     ps.loadedRevision = rev;
     ps.themeIndex = static_cast<int>(prefs.theme);
     ps.localeIndex = (prefs.locale == motrix::core::Locale::ZhCN) ? 1 : 0;
-    CopyStringToBuf(sys.dir, ps.dirBuffer.data(), ps.dirBuffer.size());
+    ps.runModeIndex = std::clamp(static_cast<int>(prefs.runMode) - 1, 0, 2);
+    CopyUtf8ToBuffer(sys.dir, ps.dirBuffer.data(), ps.dirBuffer.size());
     ps.maxConcurrent = std::clamp(sys.maxConcurrentDownloads, 1, 64);
     ps.maxConnPerServer = std::clamp(sys.maxConnectionPerServer, 1, 64);
     ps.dlLimitKbps = static_cast<int>(sys.maxOverallDownloadLimit / 1024u);
@@ -42,33 +61,51 @@ void LoadFromSnapshot(PrefsFormState& ps,
     ps.newTaskShowDownloading = prefs.newTaskShowDownloading;
     ps.noConfirmBeforeDelete = prefs.noConfirmBeforeDeleteTask;
     ps.followTorrent = sys.followTorrent;
+    ps.keepWindowState = prefs.keepWindowState;
+    ps.autoHideWindow = prefs.autoHideWindow;
+    ps.openAtLogin = prefs.openAtLogin;
+    ps.resumeAllWhenAppLaunched = prefs.resumeAllWhenAppLaunched;
+    ps.showProgressBar = prefs.showProgressBar;
+    ps.taskNotification = prefs.taskNotification;
+    ps.traySpeedometer = prefs.traySpeedometer;
     ps.enableUpnp = prefs.enableUpnp;
+    ps.autoSyncTracker = prefs.autoSyncTracker;
     ps.useProxy = prefs.useProxy;
     ps.keepSeeding = prefs.keepSeeding;
-    CopyStringToBuf(sys.allProxy, ps.allProxyBuffer.data(), ps.allProxyBuffer.size());
-    CopyStringToBuf(sys.noProxy, ps.noProxyBuffer.data(), ps.noProxyBuffer.size());
-    CopyStringToBuf(sys.btTracker, ps.btTrackerBuffer.data(), ps.btTrackerBuffer.size());
-    CopyStringToBuf(sys.userAgent, ps.userAgentBuffer.data(), ps.userAgentBuffer.size());
-    CopyStringToBuf(prefs.engineBinPath, ps.enginePathBuffer.data(), ps.enginePathBuffer.size());
+    ps.protocolMagnet = prefs.protocolMagnet;
+    ps.protocolThunder = prefs.protocolThunder;
+    ps.protocolMotrix = prefs.protocolMotrix;
+    CopyUtf8ToBuffer(sys.allProxy, ps.allProxyBuffer.data(), ps.allProxyBuffer.size());
+    CopyUtf8ToBuffer(sys.noProxy, ps.noProxyBuffer.data(), ps.noProxyBuffer.size());
+    CopyUtf8ToBuffer(motrix::domain::ConvertTrackerDataToLine(sys.btTracker),
+                     ps.btTrackerBuffer.data(),
+                     ps.btTrackerBuffer.size());
+    ps.loadedSyncTrackerTime = prefs.lastSyncTrackerTime;
+    CopyUtf8ToBuffer(sys.userAgent, ps.userAgentBuffer.data(), ps.userAgentBuffer.size());
+    CopyUtf8ToBuffer(prefs.engineBinPath, ps.enginePathBuffer.data(), ps.enginePathBuffer.size());
     ps.seedRatio = static_cast<float>(sys.seedRatio);
     ps.seedTime = sys.seedTime;
     ps.rpcPort = static_cast<int>(sys.rpcListenPort);
-    CopyStringToBuf(sys.rpcSecret, ps.rpcSecretBuffer.data(), ps.rpcSecretBuffer.size());
+    CopyUtf8ToBuffer(sys.rpcSecret, ps.rpcSecretBuffer.data(), ps.rpcSecretBuffer.size());
     ps.btPort = sys.listenPort;
     ps.dhtPort = sys.dhtListenPort;
-}
 
-void FieldLabel(UiFrameContext& ctx, std::string_view text) {
-    FontGuard fg(ctx.fonts, FontRole::Medium, 13.5f);
-    StyleColorGuard cg(ImGuiCol_Text, ctx.palette.panelTitle);
-    ImGui::TextUnformatted(text.data(), text.data() + text.size());
+    const auto allOpts = motrix::domain::AllTrackerSourceOptions();
+    ps.trackerSourceSelected.assign(allOpts.size(), false);
+    for (std::size_t i = 0; i < allOpts.size(); ++i) {
+        const auto found =
+            std::find(prefs.trackerSource.begin(), prefs.trackerSource.end(), allOpts[i].url);
+        if (found != prefs.trackerSource.end()) {
+            ps.trackerSourceSelected[i] = true;
+        }
+    }
 }
 
 void RenderBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
     const float s = ctx.dpiScale;
     const float inputW = std::min(460.0f * s, ImGui::GetContentRegionAvail().x - 16.0f * s);
 
-    FieldLabel(ctx, ctx.tr.Tr("prefs.appearance"));
+    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.appearance"));
     const std::array<std::string_view, 3> themeKeys{
         "prefs.theme_auto",
         "prefs.theme_light",
@@ -89,7 +126,7 @@ void RenderBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
     }
     ImGui::Dummy(ImVec2(0.0f, 10.0f * s));
 
-    FieldLabel(ctx, ctx.tr.Tr("prefs.language"));
+    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.language"));
     ImGui::SetNextItemWidth(200.0f * s);
     static constexpr const char* kLangItems[] = {"English", "简体中文"};
     {
@@ -98,7 +135,31 @@ void RenderBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
     }
     ImGui::Dummy(ImVec2(0.0f, 10.0f * s));
 
-    FieldLabel(ctx, ctx.tr.Tr("prefs.default_dir"));
+    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.run_mode"));
+    ImGui::SetNextItemWidth(240.0f * s);
+    {
+        const std::array<const char*, 3> runModeLabels{
+            ctx.tr.Tr("prefs.run_mode_standard").data(),
+            ctx.tr.Tr("prefs.run_mode_tray").data(),
+            ctx.tr.Tr("prefs.run_mode_hide_tray").data(),
+        };
+        FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
+        ImGui::Combo("##pref_run_mode", &ps.runModeIndex, runModeLabels.data(), 3);
+    }
+    ImGui::Dummy(ImVec2(0.0f, 8.0f * s));
+
+    {
+        FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
+        ImGui::Checkbox(ctx.tr.Tr("prefs.open_at_login").data(), &ps.openAtLogin);
+        ImGui::Checkbox(ctx.tr.Tr("prefs.keep_window_state").data(), &ps.keepWindowState);
+        ImGui::Checkbox(ctx.tr.Tr("prefs.auto_hide_window").data(), &ps.autoHideWindow);
+        ImGui::Checkbox(ctx.tr.Tr("prefs.resume_all_launch").data(), &ps.resumeAllWhenAppLaunched);
+        ImGui::Checkbox(ctx.tr.Tr("prefs.show_progress_bar").data(), &ps.showProgressBar);
+        ImGui::Checkbox(ctx.tr.Tr("prefs.task_notification").data(), &ps.taskNotification);
+    }
+    ImGui::Dummy(ImVec2(0.0f, 10.0f * s));
+
+    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.default_dir"));
     const float browseW = 84.0f * s;
     ImGui::SetNextItemWidth(std::max(160.0f * s, inputW - browseW - 8.0f * s));
     {
@@ -112,13 +173,13 @@ void RenderBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
         FontGuard fnt(ctx.fonts, FontRole::Regular, 13.0f);
         if (ImGui::Button(ctx.tr.Tr("task.browse").data(), ImVec2(browseW, 30.0f * s))) {
             if (auto chosen = ctx.host.PickFolder(ps.dirBuffer.data())) {
-                CopyStringToBuf(*chosen, ps.dirBuffer.data(), ps.dirBuffer.size());
+                CopyUtf8ToBuffer(*chosen, ps.dirBuffer.data(), ps.dirBuffer.size());
             }
         }
     }
     ImGui::Dummy(ImVec2(0.0f, 10.0f * s));
 
-    FieldLabel(ctx, ctx.tr.Tr("prefs.concurrency"));
+    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.concurrency"));
     ImGui::SetNextItemWidth(inputW);
     {
         FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
@@ -126,7 +187,7 @@ void RenderBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
     }
     ImGui::Dummy(ImVec2(0.0f, 8.0f * s));
 
-    FieldLabel(ctx, ctx.tr.Tr("prefs.split"));
+    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.split"));
     ImGui::SetNextItemWidth(inputW);
     {
         FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
@@ -134,7 +195,7 @@ void RenderBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
     }
     ImGui::Dummy(ImVec2(0.0f, 8.0f * s));
 
-    FieldLabel(ctx, ctx.tr.Tr("prefs.max_dl_limit"));
+    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.max_dl_limit"));
     ImGui::SetNextItemWidth(200.0f * s);
     {
         FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
@@ -144,7 +205,7 @@ void RenderBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
     }
     ImGui::Dummy(ImVec2(0.0f, 6.0f * s));
 
-    FieldLabel(ctx, ctx.tr.Tr("prefs.max_ul_limit"));
+    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.max_ul_limit"));
     ImGui::SetNextItemWidth(200.0f * s);
     {
         FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
@@ -161,105 +222,28 @@ void RenderBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
     ImGui::Checkbox(ctx.tr.Tr("prefs.follow_torrent").data(), &ps.followTorrent);
 }
 
-void RenderAdvancedTab(UiFrameContext& ctx, PrefsFormState& ps) {
-    const float s = ctx.dpiScale;
-    const float inputW = std::min(460.0f * s, ImGui::GetContentRegionAvail().x - 16.0f * s);
-    FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
-
-    ImGui::Checkbox(ctx.tr.Tr("prefs.use_proxy").data(), &ps.useProxy);
-    if (ps.useProxy) {
-        FieldLabel(ctx, ctx.tr.Tr("prefs.all_proxy"));
-        ImGui::SetNextItemWidth(inputW);
-        ImGui::InputText("##pref_proxy", ps.allProxyBuffer.data(), ps.allProxyBuffer.size());
-
-        FieldLabel(ctx, ctx.tr.Tr("prefs.no_proxy"));
-        ImGui::SetNextItemWidth(inputW);
-        ImGui::InputText("##pref_noproxy", ps.noProxyBuffer.data(), ps.noProxyBuffer.size());
-    }
-    ImGui::Dummy(ImVec2(0.0f, 8.0f * s));
-
-    FieldLabel(ctx, ctx.tr.Tr("prefs.seed_ratio"));
-    ImGui::SetNextItemWidth(200.0f * s);
-    if (ImGui::InputFloat("##pref_seed_ratio", &ps.seedRatio, 0.1f, 0.5f, "%.2f")) {
-        ps.seedRatio = std::clamp(ps.seedRatio, 0.0f, 100.0f);
-    }
-
-    FieldLabel(ctx, ctx.tr.Tr("prefs.seed_time"));
-    ImGui::SetNextItemWidth(200.0f * s);
-    if (ImGui::InputInt("##pref_seed_time", &ps.seedTime, 10, 60)) {
-        ps.seedTime = std::max(0, ps.seedTime);
-    }
-    ImGui::Dummy(ImVec2(0.0f, 8.0f * s));
-
-    FieldLabel(ctx, ctx.tr.Tr("prefs.bt_trackers"));
-    ImGui::InputTextMultiline("##pref_trackers",
-                              ps.btTrackerBuffer.data(),
-                              ps.btTrackerBuffer.size(),
-                              ImVec2(inputW, 92.0f * s));
-    ImGui::Dummy(ImVec2(0.0f, 8.0f * s));
-
-    FieldLabel(ctx, ctx.tr.Tr("prefs.user_agent"));
-    ImGui::SetNextItemWidth(inputW);
-    ImGui::InputText("##pref_ua", ps.userAgentBuffer.data(), ps.userAgentBuffer.size());
-    ImGui::Dummy(ImVec2(0.0f, 10.0f * s));
-
-    FieldLabel(ctx, ctx.tr.Tr("prefs.rpc_port"));
-    ImGui::SetNextItemWidth(160.0f * s);
-    if (ImGui::InputInt("##pref_rpc_port", &ps.rpcPort, 1, 10)) {
-        ps.rpcPort = std::clamp(ps.rpcPort, 1024, 65535);
-    }
-    FieldLabel(ctx, ctx.tr.Tr("prefs.rpc_secret"));
-    ImGui::SetNextItemWidth(inputW);
-    ImGui::InputText("##pref_rpc_secret",
-                     ps.rpcSecretBuffer.data(),
-                     ps.rpcSecretBuffer.size(),
-                     ImGuiInputTextFlags_Password);
-
-    FieldLabel(ctx, ctx.tr.Tr("prefs.bt_port"));
-    ImGui::SetNextItemWidth(160.0f * s);
-    if (ImGui::InputInt("##pref_bt_port", &ps.btPort, 1, 10)) {
-        ps.btPort = std::clamp(ps.btPort, 1024, 65535);
-    }
-    FieldLabel(ctx, ctx.tr.Tr("prefs.dht_port"));
-    ImGui::SetNextItemWidth(160.0f * s);
-    if (ImGui::InputInt("##pref_dht_port", &ps.dhtPort, 1, 10)) {
-        ps.dhtPort = std::clamp(ps.dhtPort, 1024, 65535);
-    }
-}
-
-void RenderLabTab(UiFrameContext& ctx, PrefsFormState& ps) {
-    const float s = ctx.dpiScale;
-    const float inputW = std::min(460.0f * s, ImGui::GetContentRegionAvail().x - 16.0f * s);
-    FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
-
-    FieldLabel(ctx, ctx.tr.Tr("prefs.engine_path"));
-    ImGui::SetNextItemWidth(inputW);
-    ImGui::InputText("##pref_engine_bin", ps.enginePathBuffer.data(), ps.enginePathBuffer.size());
-
-    if (!ctx.state.resolvedEnginePath.empty()) {
-        StyleColorGuard cg(ImGuiCol_Text, ctx.palette.taskMetaText);
-        const std::string engineBanner =
-            std::format("Active Engine: {} {} ({})",
-                        ctx.state.engineInfo.product.empty() ? "aria2" : ctx.state.engineInfo.product,
-                        ctx.state.engineInfo.version,
-                        ctx.state.resolvedEnginePath);
-        ImGui::TextWrapped("%s", engineBanner.c_str());
-    }
-    ImGui::Dummy(ImVec2(0.0f, 10.0f * s));
-
-    ImGui::Checkbox("UPnP / NAT-PMP", &ps.enableUpnp);
-    ImGui::Checkbox(ctx.tr.Tr("prefs.keep_seeding").data(), &ps.keepSeeding);
-}
-
 void ApplyDraftToCommands(const UiFrameContext& ctx, const PrefsFormState& ps) {
     auto newPrefs = ctx.state.prefs;
     newPrefs.theme = static_cast<motrix::domain::ThemePreference>(std::clamp(ps.themeIndex, 0, 2));
     newPrefs.locale = (ps.localeIndex == 1) ? motrix::core::Locale::ZhCN : motrix::core::Locale::EnUS;
+    newPrefs.runMode = static_cast<motrix::domain::RunMode>(std::clamp(ps.runModeIndex, 0, 2) + 1);
+    newPrefs.keepWindowState = ps.keepWindowState;
+    newPrefs.autoHideWindow = ps.autoHideWindow;
+    newPrefs.openAtLogin = ps.openAtLogin;
+    newPrefs.resumeAllWhenAppLaunched = ps.resumeAllWhenAppLaunched;
+    newPrefs.showProgressBar = ps.showProgressBar;
+    newPrefs.taskNotification = ps.taskNotification;
+    newPrefs.traySpeedometer = ps.traySpeedometer;
     newPrefs.newTaskShowDownloading = ps.newTaskShowDownloading;
     newPrefs.noConfirmBeforeDeleteTask = ps.noConfirmBeforeDelete;
     newPrefs.enableUpnp = ps.enableUpnp;
+    newPrefs.autoSyncTracker = ps.autoSyncTracker;
     newPrefs.useProxy = ps.useProxy;
     newPrefs.keepSeeding = ps.keepSeeding;
+    newPrefs.protocolMagnet = ps.protocolMagnet;
+    newPrefs.protocolThunder = ps.protocolThunder;
+    newPrefs.protocolMotrix = ps.protocolMotrix;
+    newPrefs.trackerSource = CollectSelectedTrackerUrls(ps);
     newPrefs.engineBinPath = ps.enginePathBuffer.data();
 
     auto newSys = ctx.state.sysConfig;
@@ -273,7 +257,7 @@ void ApplyDraftToCommands(const UiFrameContext& ctx, const PrefsFormState& ps) {
     newSys.followTorrent = ps.followTorrent;
     newSys.allProxy = ps.useProxy ? std::string(ps.allProxyBuffer.data()) : std::string{};
     newSys.noProxy = ps.noProxyBuffer.data();
-    newSys.btTracker = ps.btTrackerBuffer.data();
+    newSys.btTracker = motrix::domain::ConvertTrackerDataToComma(ps.btTrackerBuffer.data());
     newSys.userAgent = ps.userAgentBuffer.data();
     newSys.seedRatio = static_cast<double>(ps.seedRatio);
     newSys.seedTime = ps.seedTime;
@@ -291,6 +275,11 @@ void RenderPreferencesView(
     UiFrameContext& ctx, float x, float y, float w, float h, int prefTab, PrefsFormState& ps) {
     if (!ps.initialized) {
         LoadFromSnapshot(ps, ctx.state.prefs, ctx.state.sysConfig, ctx.state.revision);
+    } else if (ctx.state.prefs.lastSyncTrackerTime != ps.loadedSyncTrackerTime) {
+        ps.loadedSyncTrackerTime = ctx.state.prefs.lastSyncTrackerTime;
+        CopyUtf8ToBuffer(motrix::domain::ConvertTrackerDataToLine(ctx.state.sysConfig.btTracker),
+                         ps.btTrackerBuffer.data(),
+                         ps.btTrackerBuffer.size());
     }
 
     const float s = ctx.dpiScale;
@@ -331,9 +320,9 @@ void RenderPreferencesView(
             if (prefTab == 0) {
                 RenderBasicTab(ctx, ps);
             } else if (prefTab == 1) {
-                RenderAdvancedTab(ctx, ps);
+                RenderPrefsAdvancedTab(ctx, ps);
             } else {
-                RenderLabTab(ctx, ps);
+                RenderPrefsLabTab(ctx, ps);
             }
         }
     }
@@ -366,7 +355,7 @@ void RenderPreferencesView(
                              motrix::domain::DefaultSystemConfig(),
                              ctx.state.revision);
             if (!ctx.state.sysConfig.dir.empty()) {
-                CopyStringToBuf(ctx.state.sysConfig.dir, ps.dirBuffer.data(), ps.dirBuffer.size());
+                CopyUtf8ToBuffer(ctx.state.sysConfig.dir, ps.dirBuffer.data(), ps.dirBuffer.size());
             }
         }
     }

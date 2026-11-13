@@ -24,6 +24,7 @@ AppCoordinator::AppCoordinator(CoordinatorOptions options,
                                motrix::platform::IWindowHost* windowHost)
     : logger_(logger), windowHost_(windowHost), appDataDir_(std::move(options.appDataDir)),
       persistConfig_(options.loadPersistedConfig && !appDataDir_.empty()),
+      enableOsIntegration_(options.enableOsIntegration),
       previewMockMode_(options.populatePreviewTasks || !options.enableEngine) {
     mutableState_.revision = 1;
     mutableState_.activeCategory = options.initialCategory;
@@ -97,6 +98,8 @@ AppCoordinator::AppCoordinator(CoordinatorOptions options,
             .appDataDir = engineDataDir,
             .enginePathOverride = binOverride,
             .sysConfig = mutableState_.sysConfig,
+            .enableUpnp = mutableState_.prefs.enableUpnp,
+            .resumeAllWhenLaunched = mutableState_.prefs.resumeAllWhenAppLaunched,
         };
         engineRuntime_ = std::make_unique<EngineRuntime>(
             logger_,
@@ -111,10 +114,25 @@ AppCoordinator::AppCoordinator(CoordinatorOptions options,
             HandleEngineDetailUpdate(std::move(detail), std::move(peers));
         });
         engineRuntime_->Start();
+        const auto nowSec = std::chrono::duration_cast<std::chrono::seconds>(
+                                std::chrono::system_clock::now().time_since_epoch())
+                                .count();
+        if (motrix::domain::ShouldAutoSyncTrackers(mutableState_.prefs, nowSec)) {
+            const std::string proxy =
+                mutableState_.prefs.useProxy ? mutableState_.sysConfig.allProxy : std::string{};
+            StartTrackerSyncAsync(mutableState_.prefs.trackerSource, proxy);
+        }
+    }
+    if (enableOsIntegration_) {
+        ApplyDesktopIntegration(mutableState_);
     }
 }
 
 AppCoordinator::~AppCoordinator() {
+    if (trackerSyncWorker_.joinable()) {
+        trackerSyncWorker_.request_stop();
+        trackerSyncWorker_.join();
+    }
     engineRuntime_.reset();
 }
 
@@ -127,8 +145,59 @@ std::shared_ptr<const AppStateSnapshot> AppCoordinator::Snapshot() const noexcep
 }
 
 void AppCoordinator::Dispatch(Command cmd) {
+    if (const auto* c = std::get_if<SyncTrackersCmd>(&cmd)) {
+        const auto snap = Snapshot();
+        const auto sources = c->sources.empty() ? snap->prefs.trackerSource : c->sources;
+        const std::string proxy = snap->prefs.useProxy ? snap->sysConfig.allProxy : std::string{};
+        StartTrackerSyncAsync(sources, proxy);
+        return;
+    }
+    if (const auto* c = std::get_if<HandleStartupPayloadCmd>(&cmd)) {
+        HandleStartupPayload(*c);
+        return;
+    }
+    if (const auto* c = std::get_if<HandleTrayActionCmd>(&cmd)) {
+        HandleTrayAction(c->action);
+        return;
+    }
+    if (std::holds_alternative<HideToTrayCmd>(cmd)) {
+        if (auto* host = windowHost_.load(std::memory_order_acquire)) {
+            host->HideToTray();
+        }
+        return;
+    }
+    if (std::holds_alternative<ShowFromTrayCmd>(cmd)) {
+        if (auto* host = windowHost_.load(std::memory_order_acquire)) {
+            host->ShowFromTray();
+        }
+        return;
+    }
+    if (std::holds_alternative<QuitAppCmd>(cmd)) {
+        PersistConfigs(*Snapshot(), true, true, true);
+        if (auto* host = windowHost_.load(std::memory_order_acquire)) {
+            host->RequestQuit();
+        }
+        return;
+    }
+    if (const auto* c = std::get_if<UpdateWindowBoundsCmd>(&cmd)) {
+        PublishMutated([&](AppStateSnapshot& s) {
+            s.prefs.windowWidth = c->bounds.width;
+            s.prefs.windowHeight = c->bounds.height;
+            s.prefs.windowMaximized = c->bounds.maximized;
+            if (c->bounds.hasPosition) {
+                s.prefs.windowX = c->bounds.x;
+                s.prefs.windowY = c->bounds.y;
+            }
+        });
+        if (persistConfig_) {
+            PersistConfigs(*Snapshot(), true, false, true);
+        }
+        return;
+    }
+
     bool saveUserCfg = false;
     bool saveSystemCfg = false;
+    bool prefsUpdated = false;
     std::optional<EngineWorkCommand> engineWork;
 
     PublishMutated([&](AppStateSnapshot& state) {
@@ -214,10 +283,13 @@ void AppCoordinator::Dispatch(Command cmd) {
             state.activeModal = ActiveModal::None;
             saveUserCfg = persistConfig_;
             saveSystemCfg = persistConfig_;
+            prefsUpdated = true;
             if (auto* host = windowHost_.load(std::memory_order_acquire)) {
                 host->SetDarkFrame(state.prefs.theme == motrix::domain::ThemePreference::Dark);
             }
             if (!previewMockMode_ && engineRuntime_) {
+                engineRuntime_->UpdateUpnpPreference(
+                    state.prefs.enableUpnp, state.sysConfig.listenPort, state.sysConfig.dhtListenPort);
                 engineWork = EngineWorkCommand{
                     .kind = EngineWorkCommand::Kind::ApplyGlobalOptions,
                     .options = motrix::domain::SystemConfigToOptionPairs(state.sysConfig),
@@ -312,84 +384,13 @@ void AppCoordinator::Dispatch(Command cmd) {
     if (saveUserCfg || saveSystemCfg) {
         PersistConfigs(*Snapshot(), saveUserCfg, saveSystemCfg, true);
     }
+    if (prefsUpdated) {
+        const auto snap = Snapshot();
+        ApplyDesktopIntegration(*snap);
+        UpdateLivePlatformStatus(*snap);
+    }
     if (engineWork && engineRuntime_) {
         engineRuntime_->Enqueue(std::move(*engineWork));
-    }
-}
-
-void AppCoordinator::HandleEngineDetailUpdate(std::optional<motrix::engine::TaskDetailResult> detail,
-                                              std::vector<motrix::domain::TaskPeerView> peers) {
-    PublishMutated([&](AppStateSnapshot& state) {
-        if (state.detailedTaskGid.empty()) {
-            state.detailedTask.reset();
-            state.detailedTrackers.clear();
-            state.detailedPeers.clear();
-            return;
-        }
-        if (detail && detail->task.gid == state.detailedTaskGid) {
-            state.detailedTask = std::move(detail->task);
-            state.detailedTrackers = std::move(detail->trackers);
-            state.detailedPeers = std::move(peers);
-        }
-    });
-}
-
-void AppCoordinator::HandleEngineSyncUpdate(EngineConnectionState connState,
-                                            const motrix::engine::EngineVersionInfo* version,
-                                            const motrix::engine::EngineSyncSnapshot* sync,
-                                            std::string_view enginePath,
-                                            std::string_view errorMsg) {
-    PublishMutated([&](AppStateSnapshot& state) {
-        state.engineState = connState;
-        state.engineError = std::string(errorMsg);
-        if (!enginePath.empty()) {
-            state.resolvedEnginePath = std::string(enginePath);
-        }
-        if (version) {
-            state.engineInfo = *version;
-        }
-        if (sync) {
-            state.downloadingTasks = sync->active;
-            state.waitingTasks = sync->waiting;
-            state.stoppedTasks = sync->stopped;
-            state.globalStat = GlobalStatSnapshot{
-                .downloadSpeed = sync->globalStat.downloadSpeed,
-                .uploadSpeed = sync->globalStat.uploadSpeed,
-                .numActive = sync->globalStat.numActive,
-                .numWaiting = sync->globalStat.numWaiting,
-                .numStopped = sync->globalStat.numStopped,
-            };
-            if (!state.detailedTaskGid.empty() && !FindTaskByGid(state, state.detailedTaskGid)) {
-                state.detailedTaskGid.clear();
-                state.detailedTask.reset();
-                state.detailedTrackers.clear();
-                state.detailedPeers.clear();
-                if (engineRuntime_) {
-                    engineRuntime_->SetDetailGid({});
-                }
-            }
-        }
-    });
-}
-
-void AppCoordinator::PersistConfigs(const AppStateSnapshot& state,
-                                    bool saveUser,
-                                    bool saveSys,
-                                    bool overwrite) {
-    if (appDataDir_.empty()) {
-        return;
-    }
-    std::error_code ec;
-    std::filesystem::create_directories(appDataDir_, ec);
-    const auto userPath = appDataDir_ / "user.json";
-    const auto sysPath = appDataDir_ / "system.json";
-    if (saveUser && (overwrite || !std::filesystem::exists(userPath, ec))) {
-        (void)motrix::core::WriteTextAtomic(userPath,
-                                            motrix::domain::SerializeUserPreferencesJson(state.prefs));
-    }
-    if (saveSys && (overwrite || !std::filesystem::exists(sysPath, ec))) {
-        (void)motrix::core::WriteTextAtomic(sysPath,
-                                            motrix::domain::SerializeSystemConfigJson(state.sysConfig));
     }
 }
 
@@ -407,40 +408,6 @@ void AppCoordinator::PublishMutated(const std::function<void(AppStateSnapshot&)>
     if (auto* host = windowHost_.load(std::memory_order_acquire)) {
         host->RequestFrame();
     }
-}
-
-void AppCoordinator::RecomputeStats(AppStateSnapshot& state) {
-    std::uint64_t down = 0;
-    std::uint64_t up = 0;
-    for (const auto& t : state.downloadingTasks) {
-        down += t.downloadSpeed;
-        up += t.uploadSpeed;
-    }
-    state.globalStat = GlobalStatSnapshot{
-        .downloadSpeed = down,
-        .uploadSpeed = up,
-        .numActive = static_cast<int>(state.downloadingTasks.size()),
-        .numWaiting = static_cast<int>(state.waitingTasks.size()),
-        .numStopped = static_cast<int>(state.stoppedTasks.size()),
-    };
-}
-
-const motrix::domain::DownloadTaskView*
-AppCoordinator::FindTaskByGid(const AppStateSnapshot& state, std::string_view gid) const noexcept {
-    const auto findIn = [&](const std::vector<motrix::domain::DownloadTaskView>& list)
-        -> const motrix::domain::DownloadTaskView* {
-        for (const auto& t : list) {
-            if (t.gid == gid) {
-                return &t;
-            }
-        }
-        return nullptr;
-    };
-    if (const auto* p = findIn(state.downloadingTasks))
-        return p;
-    if (const auto* p = findIn(state.waitingTasks))
-        return p;
-    return findIn(state.stoppedTasks);
 }
 
 }  // namespace motrix::app

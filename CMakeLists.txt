@@ -7,7 +7,7 @@ elseif(CMAKE_VERSION VERSION_GREATER_EQUAL "4.3.0")
     set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
 endif()
 
-project(motrix_native VERSION 0.1.0 LANGUAGES CXX)
+project(motrix_native VERSION 0.1.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_GENERATOR STREQUAL "Ninja")
     message(FATAL_ERROR "Motrix Native requires the Ninja generator for C++23 import std; support.")
@@ -91,7 +91,23 @@ FetchContent_Declare(
     GIT_TAG v3.8.1
     GIT_SHALLOW TRUE
 )
-FetchContent_MakeAvailable(nlohmann_json ixwebsocket Catch2)
+FetchContent_Declare(
+    miniupnpc
+    GIT_REPOSITORY https://github.com/miniupnp/miniupnp.git
+    GIT_TAG miniupnpc_2_3_3
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR miniupnpc
+)
+FetchContent_MakeAvailable(nlohmann_json ixwebsocket Catch2 miniupnpc)
+if(TARGET libminiupnpc-static)
+    set_target_properties(libminiupnpc-static PROPERTIES
+        CXX_SCAN_FOR_MODULES OFF
+        CXX_MODULE_STD OFF
+    )
+    if(MSVC)
+        target_compile_options(libminiupnpc-static PRIVATE /W0 /utf-8)
+    endif()
+endif()
 if(TARGET ixwebsocket)
     set_target_properties(ixwebsocket PROPERTIES
         CXX_STANDARD 20
@@ -194,6 +210,7 @@ add_library(motrix_domain STATIC
     src/domain/config_schema.cpp
     src/domain/formatters.cpp
     src/domain/uri.cpp
+    src/domain/tracker.cpp
     src/domain/bencode_crypto.cpp
     src/domain/bencode.cpp
     src/domain/bencode_helpers.cpp
@@ -207,6 +224,7 @@ target_sources(motrix_domain PUBLIC
         src/domain/config_schema.ixx
         src/domain/formatters.ixx
         src/domain/uri.ixx
+        src/domain/tracker.ixx
         src/domain/bencode.ixx
 )
 target_link_libraries(motrix_domain
@@ -229,6 +247,8 @@ add_library(motrix_engine STATIC
     src/engine/win32_util.cpp
     src/engine/process_manager.cpp
     src/engine/process_probe.cpp
+    src/engine/tracker_winhttp.cpp
+    src/engine/upnp_miniupnpc.cpp
 )
 target_sources(motrix_engine
     PUBLIC
@@ -240,6 +260,8 @@ target_sources(motrix_engine
             src/engine/rpc_client.ixx
             src/engine/process_manager.ixx
             src/engine/json_codec.ixx
+            src/engine/tracker.ixx
+            src/engine/upnp.ixx
     PRIVATE
         FILE_SET internal_modules TYPE CXX_MODULES
         BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -253,20 +275,31 @@ target_link_libraries(motrix_engine
     PRIVATE
         nlohmann_json::nlohmann_json
         ixwebsocket
+        libminiupnpc-static
         ws2_32
+        iphlpapi
+        winhttp
         shell32
         ole32
 )
 motrix_configure_target(motrix_engine)
 
-add_library(motrix_ipc STATIC)
+add_library(motrix_ipc STATIC
+    src/ipc/named_pipe_ipc.cpp
+)
 target_sources(motrix_ipc PUBLIC
     FILE_SET CXX_MODULES
     BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
     FILES
         src/ipc/ipc.ixx
 )
-target_link_libraries(motrix_ipc PUBLIC motrix_core)
+target_link_libraries(motrix_ipc
+    PUBLIC
+        motrix_core
+    PRIVATE
+        nlohmann_json::nlohmann_json
+        kernel32
+)
 motrix_configure_target(motrix_ipc)
 
 # ---------------------------------------------------------------------------
@@ -277,6 +310,9 @@ add_library(motrix_platform STATIC
     src/platform/win32_dx11.cpp
     src/platform/win32_window.cpp
     src/platform/win32_dialogs.cpp
+    src/platform/win32_tray.cpp
+    src/platform/win32_taskbar.cpp
+    src/platform/win32_registry.cpp
     src/platform/win32_host.cpp
 )
 target_sources(motrix_platform
@@ -308,6 +344,7 @@ target_link_libraries(motrix_platform
         gdi32
         shell32
         ole32
+        advapi32
 )
 motrix_configure_target(motrix_platform)
 
@@ -316,6 +353,7 @@ motrix_configure_target(motrix_platform)
 # ---------------------------------------------------------------------------
 add_library(motrix_app STATIC
     src/app/coordinator.cpp
+    src/app/coordinator_desktop.cpp
     src/app/coordinator_mock.cpp
     src/app/engine_runtime.cpp
     src/app/engine_runtime_detail.cpp
@@ -358,6 +396,7 @@ add_library(motrix_ui STATIC
     src/ui/view_drawer_activity.cpp
     src/ui/view_drawer_tabs.cpp
     src/ui/view_prefs.cpp
+    src/ui/view_prefs_advanced.cpp
     src/ui/view_add_torrent.cpp
     src/ui/view_modals.cpp
     src/ui/shell.cpp
@@ -420,9 +459,12 @@ add_executable(motrix_tests
     tests/test_bencode.cpp
     tests/test_dialect.cpp
     tests/test_engine_rpc.cpp
+    tests/test_m4.cpp
 )
 target_link_libraries(motrix_tests PRIVATE
     Catch2::Catch2WithMain
+    motrix_platform
+    motrix_ipc
     motrix_engine
     motrix_domain
     motrix_core

@@ -46,6 +46,10 @@ void MotrixUiShell::PrefillAddTaskUri(std::string_view uri) {
     impl_->addForm.uriBuffer[n] = '\0';
 }
 
+void MotrixUiShell::SetPreferencesTab(int tab) {
+    impl_->prefTab = std::clamp(tab, 0, 2);
+}
+
 void MotrixUiShell::RenderFrame(const motrix::app::AppStateSnapshot& state,
                                 motrix::app::ICommandSink& sink,
                                 motrix::platform::IWindowHost& host) {

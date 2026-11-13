@@ -102,14 +102,28 @@ public:
     [[nodiscard]] bool IsMaximized() const noexcept override;
     [[nodiscard]] bool IsHiddenToTray() const noexcept override;
     [[nodiscard]] HostMetricsSnapshot Metrics() const noexcept override;
+    [[nodiscard]] WindowBounds CurrentWindowBounds() const override;
 
     void Minimize() override;
     void ToggleMaximize() override;
     void Close() override;
+    void RequestQuit() override;
     void ShowFromTray() override;
     void HideToTray() override;
     void SetDarkFrame(bool dark) override;
     void SetWindowTitle(std::string_view utf8Title) override;
+
+    void SetBindCloseToHide(bool enabled) noexcept override;
+    void SetAutoHideOnBlur(bool enabled) noexcept override;
+    void SetTrayEnabled(bool enabled) override;
+    void UpdateTrayStatus(bool hasActiveDownloads, bool isZhCn) override;
+    void UpdateTaskbarProgress(TaskbarProgressMode mode,
+                               std::uint64_t completed,
+                               std::uint64_t total) override;
+    void ShowToastNotification(std::string_view title,
+                               std::string_view body,
+                               std::string_view clickTargetDir = {}) override;
+    void SetSleepBlockerEnabled(bool active) noexcept override;
 
     void RequestFrame() override;
     void NotifyAnimationActive() override;
@@ -130,5 +144,13 @@ private:
 export void InstallCrashMinidumpHandler(const std::filesystem::path& dumpDir);
 export [[nodiscard]] std::filesystem::path ResolveDefaultDownloadsDir();
 export [[nodiscard]] std::filesystem::path ResolveAppDataDir();
+export [[nodiscard]] std::filesystem::path CurrentExecutablePath();
+export [[nodiscard]] motrix::core::Result<void>
+SetOpenAtLoginEnabled(bool enabled, const std::filesystem::path& exePath);
+export [[nodiscard]] bool IsOpenAtLoginEnabled();
+export [[nodiscard]] motrix::core::Result<void> ApplyProtocolAssociations(
+    const std::filesystem::path& exePath, bool enableMotrix, bool enableMagnet, bool enableThunder);
+export [[nodiscard]] bool IsProtocolRegisteredForSelf(std::string_view scheme,
+                                                      const std::filesystem::path& exePath);
 
 }  // namespace motrix::platform

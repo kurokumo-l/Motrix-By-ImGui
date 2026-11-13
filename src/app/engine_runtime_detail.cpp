@@ -51,4 +51,36 @@ void EngineRuntime::FetchAndPublishDetail(std::string_view gid) {
     }
 }
 
+void EngineRuntime::UpdateUpnpPreference(bool enabled, int btPort, int dhtPort) {
+    config_.enableUpnp = enabled;
+    config_.sysConfig.listenPort = btPort;
+    config_.sysConfig.dhtListenPort = dhtPort;
+    const bool nativeUpnp = dialect_ && dialect_->SupportsNativeUpnp();
+    if (!nativeUpnp) {
+        StartOrRefreshUpnpAsync(enabled, btPort, dhtPort);
+    } else if (upnp_) {
+        StartOrRefreshUpnpAsync(false, btPort, dhtPort);
+    }
+}
+
+void EngineRuntime::StartOrRefreshUpnpAsync(bool enabled, int btPort, int dhtPort) {
+    if (upnpWorker_.joinable()) {
+        upnpWorker_.request_stop();
+        upnpWorker_.join();
+    }
+    if (!upnp_) {
+        return;
+    }
+    upnpWorker_ = std::jthread([this, enabled, btPort, dhtPort](std::stop_token) {
+        if (!enabled) {
+            upnp_->UnmapAll();
+            return;
+        }
+        auto res = upnp_->EnsureMapped(btPort, dhtPort);
+        if (!res) {
+            logger_.Info("upnp", "UPnP port mapping skipped/unavailable: {}", res.error().message);
+        }
+    });
+}
+
 }  // namespace motrix::app

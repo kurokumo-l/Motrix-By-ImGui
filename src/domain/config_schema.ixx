@@ -39,6 +39,16 @@ export struct UserPreferences {
     std::string logLevel = "warn";
     std::vector<std::string> favoriteDirectories;
     std::vector<std::string> historyDirectories;
+    std::vector<std::string> trackerSource;
+    std::int64_t lastSyncTrackerTime = 0;
+    bool protocolMagnet = true;
+    bool protocolThunder = true;
+    bool protocolMotrix = true;
+    std::optional<int> windowX;
+    std::optional<int> windowY;
+    int windowWidth = 1024;
+    int windowHeight = 768;
+    bool windowMaximized = false;
 };
 
 export struct SystemConfig {

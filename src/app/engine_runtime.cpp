@@ -42,6 +42,7 @@ EngineRuntime::EngineRuntime(motrix::core::Logger& logger, EngineRuntimeConfig c
     : logger_(logger), config_(std::move(cfg)), onSync_(std::move(onSync)) {
     proc_ = motrix::engine::CreateEngineProcessManager(logger_);
     rpc_ = motrix::engine::CreateWsRpcClient(logger_);
+    upnp_ = motrix::engine::CreateUpnpPortMapper(logger_);
     rpc_->SetNotificationCallback([this](const motrix::engine::EngineNotification& ev) {
         if (ev.kind == motrix::engine::EngineEventKind::Disconnected) {
             disconnectedFlag_.store(true, std::memory_order_release);
@@ -71,6 +72,13 @@ void EngineRuntime::Stop() {
         worker_.request_stop();
         queueCv_.notify_all();
         worker_.join();
+    }
+    if (upnpWorker_.joinable()) {
+        upnpWorker_.request_stop();
+        upnpWorker_.join();
+    }
+    if (upnp_) {
+        upnp_->UnmapAll();
     }
 }
 
@@ -241,6 +249,14 @@ bool EngineRuntime::TryStartAndConnect(std::stop_token st) {
                 }
             }
             (void)rpc_->ChangeGlobalOption(dialect_->FilterGlobalOptions(globalOpts));
+            if (config_.resumeAllWhenLaunched && !didLaunchResume_) {
+                didLaunchResume_ = true;
+                (void)rpc_->UnpauseAll();
+            }
+            if (!dialect_->SupportsNativeUpnp()) {
+                StartOrRefreshUpnpAsync(
+                    config_.enableUpnp, config_.sysConfig.listenPort, config_.sysConfig.dhtListenPort);
+            }
             if (auto initialSync = rpc_->SyncAll(100, 100); initialSync) {
                 ApplySyncSnapshot(*initialSync, {});
             } else {

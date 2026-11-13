@@ -18,8 +18,61 @@ void ReadBool(const nlohmann::json& j, const char* key, bool& out) {
 }
 
 void ReadInt(const nlohmann::json& j, const char* key, int& out) {
-    if (const auto it = j.find(key); it != j.end() && it->is_number_integer()) {
-        out = it->get<int>();
+    const auto it = j.find(key);
+    if (it == j.end()) {
+        return;
+    }
+    if (it->is_number_unsigned()) {
+        const auto val = it->get<std::uint64_t>();
+        if (val <= static_cast<std::uint64_t>((std::numeric_limits<int>::max)())) {
+            out = static_cast<int>(val);
+        }
+    } else if (it->is_number_integer()) {
+        const auto val = it->get<std::int64_t>();
+        if (val >= (std::numeric_limits<int>::min)() && val <= (std::numeric_limits<int>::max)()) {
+            out = static_cast<int>(val);
+        }
+    }
+}
+
+void ReadOptionalInt(const nlohmann::json& j, const char* key, std::optional<int>& out) {
+    const auto it = j.find(key);
+    if (it == j.end()) {
+        return;
+    }
+    if (it->is_null()) {
+        out.reset();
+        return;
+    }
+    int parsedVal = 0;
+    if (it->is_number_unsigned()) {
+        const auto val = it->get<std::uint64_t>();
+        if (val <= static_cast<std::uint64_t>((std::numeric_limits<int>::max)())) {
+            parsedVal = static_cast<int>(val);
+            out = parsedVal;
+        }
+    } else if (it->is_number_integer()) {
+        const auto val = it->get<std::int64_t>();
+        if (val >= (std::numeric_limits<int>::min)() && val <= (std::numeric_limits<int>::max)()) {
+            parsedVal = static_cast<int>(val);
+            out = parsedVal;
+        }
+    }
+}
+
+void ReadInt64(const nlohmann::json& j, const char* key, std::int64_t& out) {
+    const auto it = j.find(key);
+    if (it == j.end()) {
+        return;
+    }
+    if (it->is_number_unsigned()) {
+        const auto val = it->get<std::uint64_t>();
+        constexpr auto kMaxI64 = static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)());
+        if (val <= kMaxI64) {
+            out = static_cast<std::int64_t>(val);
+        }
+    } else if (it->is_number_integer()) {
+        out = it->get<std::int64_t>();
     }
 }
 
@@ -66,7 +119,9 @@ void ReadStringArray(const nlohmann::json& j, const char* key, std::vector<std::
 }  // namespace
 
 UserPreferences DefaultUserPreferences() {
-    return UserPreferences{};
+    UserPreferences prefs{};
+    prefs.trackerSource = DefaultTrackerSources();
+    return prefs;
 }
 
 SystemConfig DefaultSystemConfig() {
@@ -105,6 +160,18 @@ std::vector<std::pair<std::string, std::string>> SystemConfigToOptionPairs(const
 }
 
 std::string SerializeUserPreferencesJson(const UserPreferences& prefs) {
+    nlohmann::json windowState = {
+        {"width", prefs.windowWidth},
+        {"height", prefs.windowHeight},
+        {"maximized", prefs.windowMaximized},
+    };
+    if (prefs.windowX.has_value()) {
+        windowState["x"] = *prefs.windowX;
+    }
+    if (prefs.windowY.has_value()) {
+        windowState["y"] = *prefs.windowY;
+    }
+
     nlohmann::json j = {
         {"theme",
          prefs.theme == ThemePreference::Dark
@@ -130,6 +197,15 @@ std::string SerializeUserPreferencesJson(const UserPreferences& prefs) {
         {"logLevel", prefs.logLevel},
         {"favoriteDirectories", prefs.favoriteDirectories},
         {"historyDirectories", prefs.historyDirectories},
+        {"trackerSource", prefs.trackerSource},
+        {"lastSyncTrackerTime", prefs.lastSyncTrackerTime},
+        {"protocols",
+         {
+             {"magnet", prefs.protocolMagnet},
+             {"thunder", prefs.protocolThunder},
+             {"motrix", prefs.protocolMotrix},
+         }},
+        {"windowState", windowState},
     };
     return j.dump(2);
 }
@@ -185,6 +261,25 @@ motrix::core::Result<UserPreferences> ParseUserPreferencesJson(std::string_view 
     ReadString(parsed, "logLevel", prefs.logLevel);
     ReadStringArray(parsed, "favoriteDirectories", prefs.favoriteDirectories);
     ReadStringArray(parsed, "historyDirectories", prefs.historyDirectories);
+    ReadStringArray(parsed, "trackerSource", prefs.trackerSource);
+    ReadInt64(parsed, "lastSyncTrackerTime", prefs.lastSyncTrackerTime);
+
+    ReadBool(parsed, "protocolMagnet", prefs.protocolMagnet);
+    ReadBool(parsed, "protocolThunder", prefs.protocolThunder);
+    ReadBool(parsed, "protocolMotrix", prefs.protocolMotrix);
+    if (const auto protoIt = parsed.find("protocols"); protoIt != parsed.end() && protoIt->is_object()) {
+        ReadBool(*protoIt, "magnet", prefs.protocolMagnet);
+        ReadBool(*protoIt, "thunder", prefs.protocolThunder);
+        ReadBool(*protoIt, "motrix", prefs.protocolMotrix);
+    }
+
+    if (const auto winIt = parsed.find("windowState"); winIt != parsed.end() && winIt->is_object()) {
+        ReadOptionalInt(*winIt, "x", prefs.windowX);
+        ReadOptionalInt(*winIt, "y", prefs.windowY);
+        ReadInt(*winIt, "width", prefs.windowWidth);
+        ReadInt(*winIt, "height", prefs.windowHeight);
+        ReadBool(*winIt, "maximized", prefs.windowMaximized);
+    }
     return prefs;
 }
 

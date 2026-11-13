@@ -16,28 +16,6 @@ import :win32_internal;
 namespace motrix::platform {
 namespace {
 
-class ScopedComInit {
-public:
-    ScopedComInit() noexcept {
-        const HRESULT hr = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-        shouldUninit_ = (hr == S_OK || hr == S_FALSE);
-        usable_ = SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
-    }
-    ~ScopedComInit() {
-        if (shouldUninit_) {
-            ::CoUninitialize();
-        }
-    }
-    ScopedComInit(const ScopedComInit&) = delete;
-    ScopedComInit& operator=(const ScopedComInit&) = delete;
-
-    [[nodiscard]] bool IsUsable() const noexcept { return usable_; }
-
-private:
-    bool shouldUninit_ = false;
-    bool usable_ = false;
-};
-
 struct CoTaskMemDeleter {
     void operator()(wchar_t* ptr) const noexcept {
         if (ptr) {

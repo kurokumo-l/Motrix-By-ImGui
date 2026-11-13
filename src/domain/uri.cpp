@@ -78,6 +78,63 @@ namespace {
     return out;
 }
 
+[[nodiscard]] bool StartsWithAsciiInsensitive(std::string_view text, std::string_view prefix) noexcept {
+    if (text.size() < prefix.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < prefix.size(); ++i) {
+        char a = text[i];
+        char b = prefix[i];
+        if (a >= 'A' && a <= 'Z') {
+            a = static_cast<char>(a - 'A' + 'a');
+        }
+        if (b >= 'A' && b <= 'Z') {
+            b = static_cast<char>(b - 'A' + 'a');
+        }
+        if (a != b) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool EndsWithAsciiInsensitive(std::string_view text, std::string_view suffix) noexcept {
+    if (text.size() < suffix.size()) {
+        return false;
+    }
+    return StartsWithAsciiInsensitive(text.substr(text.size() - suffix.size()), suffix);
+}
+
+[[nodiscard]] std::string_view TrimStartupArg(std::string_view text) noexcept {
+    text = motrix::core::TrimAscii(text);
+    while (text.size() >= 2
+           && ((text.front() == '"' && text.back() == '"')
+               || (text.front() == '\'' && text.back() == '\''))) {
+        text.remove_prefix(1);
+        text.remove_suffix(1);
+        text = motrix::core::TrimAscii(text);
+    }
+    while (!text.empty() && text.front() == '"') {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && text.back() == '"') {
+        text.remove_suffix(1);
+    }
+    return motrix::core::TrimAscii(text);
+}
+
+[[nodiscard]] bool IsMotrixDeepLinkScheme(std::string_view text, std::size_t& prefixLen) noexcept {
+    if (StartsWithAsciiInsensitive(text, "motrix://")) {
+        prefixLen = 9;
+        return true;
+    }
+    if (StartsWithAsciiInsensitive(text, "mo://")) {
+        prefixLen = 5;
+        return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 motrix::core::Result<std::string> DecodeThunderUri(std::string_view uri) {
@@ -161,6 +218,127 @@ std::string ExtractMagnetDisplayName(std::string_view uri) {
         query.remove_prefix(amp + 1);
     }
     return {};
+}
+
+bool IsSupportedDownloadUri(std::string_view uri) noexcept {
+    const std::string_view trimmed = motrix::core::TrimAscii(uri);
+    if (trimmed.empty()) {
+        return false;
+    }
+    constexpr std::array<std::string_view, 6> kSchemes = {
+        "http://",
+        "https://",
+        "ftp://",
+        "sftp://",
+        "magnet:",
+        "thunder://",
+    };
+    for (const auto scheme : kSchemes) {
+        if (StartsWithAsciiInsensitive(trimmed, scheme)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+ParsedDeepLink ParseMotrixDeepLink(std::string_view uri) {
+    ParsedDeepLink out{};
+    const std::string_view trimmed = motrix::core::TrimAscii(uri);
+    std::size_t prefixLen = 0;
+    if (!IsMotrixDeepLinkScheme(trimmed, prefixLen)) {
+        return out;
+    }
+
+    std::string_view rest = trimmed.substr(prefixLen);
+    if (const std::size_t hashPos = rest.find('#'); hashPos != std::string_view::npos) {
+        rest = rest.substr(0, hashPos);
+    }
+
+    std::string_view route = rest;
+    std::string_view query;
+    if (const std::size_t qPos = rest.find('?'); qPos != std::string_view::npos) {
+        route = rest.substr(0, qPos);
+        query = rest.substr(qPos + 1);
+    }
+
+    while (!route.empty() && route.front() == '/') {
+        route.remove_prefix(1);
+    }
+    while (!route.empty() && route.back() == '/') {
+        route.remove_suffix(1);
+    }
+
+    const std::string routeLower = motrix::core::AsciiLower(route);
+    if (routeLower == "task-list" || routeLower == "tasks") {
+        out.action = DeepLinkAction::TaskList;
+    } else if (routeLower == "new-task") {
+        out.action = DeepLinkAction::NewTask;
+    } else if (routeLower == "new-bt-task") {
+        out.action = DeepLinkAction::NewBtTask;
+    } else if (routeLower == "pause-all-task" || routeLower == "pause-all") {
+        out.action = DeepLinkAction::PauseAll;
+    } else if (routeLower == "resume-all-task" || routeLower == "resume-all") {
+        out.action = DeepLinkAction::ResumeAll;
+    } else if (routeLower == "preferences" || routeLower == "prefs" || routeLower == "settings") {
+        out.action = DeepLinkAction::Preferences;
+    } else if (routeLower == "about") {
+        out.action = DeepLinkAction::About;
+    } else {
+        return out;
+    }
+
+    while (!query.empty()) {
+        const std::size_t amp = query.find('&');
+        const std::string_view part = (amp == std::string_view::npos) ? query : query.substr(0, amp);
+        if (const std::size_t eq = part.find('='); eq != std::string_view::npos) {
+            const std::string keyLower = motrix::core::AsciiLower(part.substr(0, eq));
+            if (keyLower == "uri") {
+                out.uriParam = UrlDecode(part.substr(eq + 1));
+            }
+        }
+        if (amp == std::string_view::npos) {
+            break;
+        }
+        query.remove_prefix(amp + 1);
+    }
+    return out;
+}
+
+ClassifiedStartupArg ClassifyStartupArg(std::string_view arg) {
+    ClassifiedStartupArg out{};
+    const std::string_view cleaned = TrimStartupArg(arg);
+    if (cleaned.empty() || cleaned.starts_with('-')) {
+        return out;
+    }
+
+    std::size_t deepPrefixLen = 0;
+    if (IsMotrixDeepLinkScheme(cleaned, deepPrefixLen)) {
+        out.kind = StartupArgKind::DeepLink;
+        out.uri = std::string(cleaned);
+        out.deepLink = ParseMotrixDeepLink(cleaned);
+        return out;
+    }
+
+    if (IsSupportedDownloadUri(cleaned)) {
+        out.kind = StartupArgKind::ResourceUri;
+        if (StartsWithAsciiInsensitive(cleaned, "thunder://")) {
+            auto decoded = DecodeThunderUri(cleaned);
+            if (decoded && !decoded->empty()) {
+                out.uri = std::move(*decoded);
+                return out;
+            }
+        }
+        out.uri = std::string(cleaned);
+        return out;
+    }
+
+    if (EndsWithAsciiInsensitive(cleaned, ".torrent")) {
+        out.kind = StartupArgKind::TorrentFile;
+        out.filePath = motrix::core::PathFromUtf8(cleaned);
+        return out;
+    }
+
+    return out;
 }
 
 }  // namespace motrix::domain
