@@ -1,8 +1,69 @@
+module;
+
+#include <nlohmann/json.hpp>
+
 module motrix.domain;
 
 import std;
+import motrix.core;
 
 namespace motrix::domain {
+
+namespace {
+
+void ReadBool(const nlohmann::json& j, const char* key, bool& out) {
+    if (const auto it = j.find(key); it != j.end() && it->is_boolean()) {
+        out = it->get<bool>();
+    }
+}
+
+void ReadInt(const nlohmann::json& j, const char* key, int& out) {
+    if (const auto it = j.find(key); it != j.end() && it->is_number_integer()) {
+        out = it->get<int>();
+    }
+}
+
+void ReadUInt16(const nlohmann::json& j, const char* key, std::uint16_t& out) {
+    if (const auto it = j.find(key); it != j.end() && it->is_number_unsigned()) {
+        const auto val = it->get<std::uint64_t>();
+        if (val <= 65535u) {
+            out = static_cast<std::uint16_t>(val);
+        }
+    }
+}
+
+void ReadUInt64(const nlohmann::json& j, const char* key, std::uint64_t& out) {
+    if (const auto it = j.find(key); it != j.end() && it->is_number_unsigned()) {
+        out = it->get<std::uint64_t>();
+    }
+}
+
+void ReadDouble(const nlohmann::json& j, const char* key, double& out) {
+    if (const auto it = j.find(key); it != j.end() && it->is_number()) {
+        out = it->get<double>();
+    }
+}
+
+void ReadString(const nlohmann::json& j, const char* key, std::string& out) {
+    if (const auto it = j.find(key); it != j.end() && it->is_string()) {
+        out = it->get<std::string>();
+    }
+}
+
+void ReadStringArray(const nlohmann::json& j, const char* key, std::vector<std::string>& out) {
+    const auto it = j.find(key);
+    if (it == j.end() || !it->is_array()) {
+        return;
+    }
+    out.clear();
+    for (const auto& item : *it) {
+        if (item.is_string()) {
+            out.push_back(item.get<std::string>());
+        }
+    }
+}
+
+}  // namespace
 
 UserPreferences DefaultUserPreferences() {
     return UserPreferences{};
@@ -41,6 +102,144 @@ std::vector<std::pair<std::string, std::string>> SystemConfigToOptionPairs(const
         out.emplace_back("user-agent", cfg.userAgent);
     }
     return out;
+}
+
+std::string SerializeUserPreferencesJson(const UserPreferences& prefs) {
+    nlohmann::json j = {
+        {"theme",
+         prefs.theme == ThemePreference::Dark
+             ? "dark"
+             : (prefs.theme == ThemePreference::Auto ? "auto" : "light")},
+        {"locale", prefs.locale == motrix::core::Locale::ZhCN ? "zh-CN" : "en-US"},
+        {"runMode", static_cast<int>(prefs.runMode)},
+        {"hideAppMenu", prefs.hideAppMenu},
+        {"keepWindowState", prefs.keepWindowState},
+        {"autoHideWindow", prefs.autoHideWindow},
+        {"openAtLogin", prefs.openAtLogin},
+        {"resumeAllWhenAppLaunched", prefs.resumeAllWhenAppLaunched},
+        {"newTaskShowDownloading", prefs.newTaskShowDownloading},
+        {"noConfirmBeforeDeleteTask", prefs.noConfirmBeforeDeleteTask},
+        {"showProgressBar", prefs.showProgressBar},
+        {"taskNotification", prefs.taskNotification},
+        {"traySpeedometer", prefs.traySpeedometer},
+        {"enableUpnp", prefs.enableUpnp},
+        {"autoSyncTracker", prefs.autoSyncTracker},
+        {"useProxy", prefs.useProxy},
+        {"keepSeeding", prefs.keepSeeding},
+        {"engineBinPath", prefs.engineBinPath},
+        {"logLevel", prefs.logLevel},
+        {"favoriteDirectories", prefs.favoriteDirectories},
+        {"historyDirectories", prefs.historyDirectories},
+    };
+    return j.dump(2);
+}
+
+motrix::core::Result<UserPreferences> ParseUserPreferencesJson(std::string_view jsonText) {
+    const auto parsed = nlohmann::json::parse(jsonText.begin(), jsonText.end(), nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object()) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Domain,
+                                                       motrix::core::ErrorCode::ParseFailure,
+                                                       "Invalid UserPreferences JSON"));
+    }
+
+    UserPreferences prefs = DefaultUserPreferences();
+    std::string themeStr;
+    ReadString(parsed, "theme", themeStr);
+    if (themeStr == "dark") {
+        prefs.theme = ThemePreference::Dark;
+    } else if (themeStr == "auto") {
+        prefs.theme = ThemePreference::Auto;
+    } else if (themeStr == "light") {
+        prefs.theme = ThemePreference::Light;
+    }
+
+    std::string localeStr;
+    ReadString(parsed, "locale", localeStr);
+    if (localeStr == "zh-CN" || localeStr == "zh") {
+        prefs.locale = motrix::core::Locale::ZhCN;
+    } else if (!localeStr.empty()) {
+        prefs.locale = motrix::core::Locale::EnUS;
+    }
+
+    int runModeVal = static_cast<int>(prefs.runMode);
+    ReadInt(parsed, "runMode", runModeVal);
+    if (runModeVal >= 1 && runModeVal <= 3) {
+        prefs.runMode = static_cast<RunMode>(runModeVal);
+    }
+
+    ReadBool(parsed, "hideAppMenu", prefs.hideAppMenu);
+    ReadBool(parsed, "keepWindowState", prefs.keepWindowState);
+    ReadBool(parsed, "autoHideWindow", prefs.autoHideWindow);
+    ReadBool(parsed, "openAtLogin", prefs.openAtLogin);
+    ReadBool(parsed, "resumeAllWhenAppLaunched", prefs.resumeAllWhenAppLaunched);
+    ReadBool(parsed, "newTaskShowDownloading", prefs.newTaskShowDownloading);
+    ReadBool(parsed, "noConfirmBeforeDeleteTask", prefs.noConfirmBeforeDeleteTask);
+    ReadBool(parsed, "showProgressBar", prefs.showProgressBar);
+    ReadBool(parsed, "taskNotification", prefs.taskNotification);
+    ReadBool(parsed, "traySpeedometer", prefs.traySpeedometer);
+    ReadBool(parsed, "enableUpnp", prefs.enableUpnp);
+    ReadBool(parsed, "autoSyncTracker", prefs.autoSyncTracker);
+    ReadBool(parsed, "useProxy", prefs.useProxy);
+    ReadBool(parsed, "keepSeeding", prefs.keepSeeding);
+    ReadString(parsed, "engineBinPath", prefs.engineBinPath);
+    ReadString(parsed, "logLevel", prefs.logLevel);
+    ReadStringArray(parsed, "favoriteDirectories", prefs.favoriteDirectories);
+    ReadStringArray(parsed, "historyDirectories", prefs.historyDirectories);
+    return prefs;
+}
+
+std::string SerializeSystemConfigJson(const SystemConfig& cfg) {
+    nlohmann::json j = {
+        {"rpc-listen-port", cfg.rpcListenPort},
+        {"rpc-secret", cfg.rpcSecret},
+        {"dir", cfg.dir},
+        {"max-concurrent-downloads", cfg.maxConcurrentDownloads},
+        {"max-connection-per-server", cfg.maxConnectionPerServer},
+        {"split", cfg.split},
+        {"listen-port", cfg.listenPort},
+        {"dht-listen-port", cfg.dhtListenPort},
+        {"seed-ratio", cfg.seedRatio},
+        {"seed-time", cfg.seedTime},
+        {"max-overall-download-limit", cfg.maxOverallDownloadLimit},
+        {"max-overall-upload-limit", cfg.maxOverallUploadLimit},
+        {"continue", cfg.continueDownloads},
+        {"follow-torrent", cfg.followTorrent},
+        {"bt-tracker", cfg.btTracker},
+        {"all-proxy", cfg.allProxy},
+        {"no-proxy", cfg.noProxy},
+        {"user-agent", cfg.userAgent},
+    };
+    return j.dump(2);
+}
+
+motrix::core::Result<SystemConfig> ParseSystemConfigJson(std::string_view jsonText) {
+    const auto parsed = nlohmann::json::parse(jsonText.begin(), jsonText.end(), nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object()) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Domain,
+                                                       motrix::core::ErrorCode::ParseFailure,
+                                                       "Invalid SystemConfig JSON"));
+    }
+
+    SystemConfig cfg = DefaultSystemConfig();
+    ReadUInt16(parsed, "rpc-listen-port", cfg.rpcListenPort);
+    ReadString(parsed, "rpc-secret", cfg.rpcSecret);
+    ReadString(parsed, "dir", cfg.dir);
+    ReadInt(parsed, "max-concurrent-downloads", cfg.maxConcurrentDownloads);
+    ReadInt(parsed, "max-connection-per-server", cfg.maxConnectionPerServer);
+    ReadInt(parsed, "split", cfg.split);
+    ReadInt(parsed, "listen-port", cfg.listenPort);
+    ReadInt(parsed, "dht-listen-port", cfg.dhtListenPort);
+    ReadDouble(parsed, "seed-ratio", cfg.seedRatio);
+    ReadInt(parsed, "seed-time", cfg.seedTime);
+    ReadUInt64(parsed, "max-overall-download-limit", cfg.maxOverallDownloadLimit);
+    ReadUInt64(parsed, "max-overall-upload-limit", cfg.maxOverallUploadLimit);
+    ReadBool(parsed, "continue", cfg.continueDownloads);
+    ReadBool(parsed, "follow-torrent", cfg.followTorrent);
+    ReadString(parsed, "bt-tracker", cfg.btTracker);
+    ReadString(parsed, "all-proxy", cfg.allProxy);
+    ReadString(parsed, "no-proxy", cfg.noProxy);
+    ReadString(parsed, "user-agent", cfg.userAgent);
+    return cfg;
 }
 
 }  // namespace motrix::domain

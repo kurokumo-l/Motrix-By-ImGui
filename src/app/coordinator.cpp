@@ -5,72 +5,16 @@ import motrix.core;
 import motrix.domain;
 import motrix.engine;
 import motrix.platform;
+import :engine_runtime;
 
 namespace motrix::app {
 
 namespace {
 
-void SeedPreviewTasks(AppStateSnapshot& state) {
-    using namespace motrix::domain;
-    state.engineState = EngineConnectionState::PreviewMock;
-    state.engineInfo = motrix::engine::EngineVersionInfo{
-        .kind = motrix::engine::EngineKind::Aria2Next,
-        .product = "aria2-next",
-        .version = "3.1.0",
-        .enabledFeatures = {"Async DNS", "BitTorrent", "HTTPS", "SQLiteState"},
-    };
-
-    DownloadTaskView ubuntu{};
-    ubuntu.gid = "0001000000000001";
-    ubuntu.name = "ubuntu-18.04.1.0-live-server-amd64.iso";
-    ubuntu.status = TaskStatus::Active;
-    ubuntu.taskType = TaskType::Http;
-    ubuntu.totalLength = 851443712ull;      // 812.0 MB
-    ubuntu.completedLength = 371510476ull;  // 354.3 MB
-    ubuntu.downloadSpeed = 19922944ull;     // 19.0 MB/s
-    ubuntu.connections = 16;
-    ubuntu.dir = "C:/Users/Public/Downloads";
-    ubuntu.uri = "https://releases.ubuntu.com/18.04/ubuntu-18.04.1.0-live-server-amd64.iso";
-    state.downloadingTasks.push_back(std::move(ubuntu));
-
-    DownloadTaskView waitingTask{};
-    waitingTask.gid = "0001000000000002";
-    waitingTask.name = "archlinux-2026.11.01-x86_64.iso";
-    waitingTask.status = TaskStatus::Paused;
-    waitingTask.taskType = TaskType::BitTorrent;
-    waitingTask.totalLength = 1288490188ull;
-    waitingTask.completedLength = 515396075ull;
-    waitingTask.dir = "C:/Users/Public/Downloads";
-    state.waitingTasks.push_back(std::move(waitingTask));
-
-    DownloadTaskView stoppedTask{};
-    stoppedTask.gid = "0001000000000003";
-    stoppedTask.name = "Motrix-Setup-1.8.19.exe";
-    stoppedTask.status = TaskStatus::Complete;
-    stoppedTask.taskType = TaskType::Http;
-    stoppedTask.totalLength = 83571507ull;
-    stoppedTask.completedLength = 83571507ull;
-    stoppedTask.dir = "C:/Users/Public/Downloads";
-    state.stoppedTasks.push_back(std::move(stoppedTask));
-}
-
-bool MoveTaskBetweenLists(std::vector<motrix::domain::DownloadTaskView>& from,
-                          std::vector<motrix::domain::DownloadTaskView>& to,
-                          std::string_view gid,
-                          motrix::domain::TaskStatus newStatus,
-                          bool zeroSpeed) {
-    auto it = std::find_if(from.begin(), from.end(), [&](const auto& t) { return t.gid == gid; });
-    if (it == from.end()) {
-        return false;
-    }
-    it->status = newStatus;
-    if (zeroSpeed) {
-        it->downloadSpeed = 0;
-        it->uploadSpeed = 0;
-    }
-    to.push_back(std::move(*it));
-    from.erase(it);
-    return true;
+[[nodiscard]] std::string GenerateHexSecret() {
+    std::random_device rd;
+    std::array<std::uint32_t, 4> words{rd(), rd(), rd(), rd()};
+    return std::format("{:08x}{:08x}{:08x}{:08x}", words[0], words[1], words[2], words[3]);
 }
 
 }  // namespace
@@ -78,25 +22,91 @@ bool MoveTaskBetweenLists(std::vector<motrix::domain::DownloadTaskView>& from,
 AppCoordinator::AppCoordinator(CoordinatorOptions options,
                                motrix::core::Logger& logger,
                                motrix::platform::IWindowHost* windowHost)
-    : logger_(logger), windowHost_(windowHost) {
+    : logger_(logger), windowHost_(windowHost), appDataDir_(std::move(options.appDataDir)),
+      persistConfig_(options.loadPersistedConfig && !appDataDir_.empty()),
+      previewMockMode_(options.populatePreviewTasks || !options.enableEngine) {
     mutableState_.revision = 1;
     mutableState_.activeCategory = options.initialCategory;
-    mutableState_.prefs.theme = options.initialTheme;
-    mutableState_.prefs.locale = options.initialLocale;
+
+    if (persistConfig_) {
+        if (auto u = motrix::core::ReadFileUtf8(appDataDir_ / "user.json"); u) {
+            if (auto parsed = motrix::domain::ParseUserPreferencesJson(*u); parsed) {
+                mutableState_.prefs = *parsed;
+            }
+        }
+        if (auto s = motrix::core::ReadFileUtf8(appDataDir_ / "system.json"); s) {
+            if (auto parsed = motrix::domain::ParseSystemConfigJson(*s); parsed) {
+                mutableState_.sysConfig = *parsed;
+            }
+        }
+    }
+
+    if (options.themeOverride || !persistConfig_) {
+        mutableState_.prefs.theme = options.initialTheme;
+    }
+    if (options.localeOverride || !persistConfig_) {
+        mutableState_.prefs.locale = options.initialLocale;
+    }
+    if (options.rpcPortOverride != 0) {
+        mutableState_.sysConfig.rpcListenPort = options.rpcPortOverride;
+    }
+    if (mutableState_.sysConfig.dir.empty() && !options.defaultDownloadDir.empty()) {
+        mutableState_.sysConfig.dir = options.defaultDownloadDir;
+    }
+    if (mutableState_.sysConfig.rpcSecret.empty()) {
+        mutableState_.sysConfig.rpcSecret = GenerateHexSecret();
+    }
+
     if (options.openAddModal) {
         mutableState_.activeModal = ActiveModal::AddTask;
     } else if (options.openAboutModal) {
         mutableState_.activeModal = ActiveModal::About;
     }
+
     if (options.populatePreviewTasks) {
         SeedPreviewTasks(mutableState_);
+    } else if (!options.enableEngine) {
+        mutableState_.engineState = EngineConnectionState::Offline;
     }
+
     RecomputeStats(mutableState_);
     published_.store(std::make_shared<const AppStateSnapshot>(mutableState_), std::memory_order_release);
+
+    if (persistConfig_) {
+        PersistConfigs(mutableState_);
+    }
+
+    if (options.enableEngine && !options.populatePreviewTasks) {
+        const std::string binOverride = !options.enginePathOverride.empty()
+                                            ? options.enginePathOverride
+                                            : mutableState_.prefs.engineBinPath;
+        const std::filesystem::path engineDataDir =
+            (!persistConfig_ || appDataDir_.empty())
+                ? (std::filesystem::temp_directory_path() / "MotrixNativeEngine")
+                : appDataDir_;
+        EngineRuntimeConfig rtCfg{
+            .appDataDir = engineDataDir,
+            .enginePathOverride = binOverride,
+            .sysConfig = mutableState_.sysConfig,
+        };
+        engineRuntime_ = std::make_unique<EngineRuntime>(
+            logger_,
+            std::move(rtCfg),
+            [this](EngineConnectionState conn,
+                   const motrix::engine::EngineVersionInfo* ver,
+                   const motrix::engine::EngineSyncSnapshot* sync,
+                   std::string_view binPath,
+                   std::string_view err) { HandleEngineSyncUpdate(conn, ver, sync, binPath, err); });
+        engineRuntime_->Start();
+    }
+}
+
+AppCoordinator::~AppCoordinator() {
+    engineRuntime_.reset();
 }
 
 void AppCoordinator::AttachWindowHost(motrix::platform::IWindowHost* windowHost) noexcept {
-    windowHost_ = windowHost;
+    windowHost_.store(windowHost, std::memory_order_release);
 }
 
 std::shared_ptr<const AppStateSnapshot> AppCoordinator::Snapshot() const noexcept {
@@ -104,6 +114,9 @@ std::shared_ptr<const AppStateSnapshot> AppCoordinator::Snapshot() const noexcep
 }
 
 void AppCoordinator::Dispatch(Command cmd) {
+    bool saveUserCfg = false;
+    std::optional<EngineWorkCommand> engineWork;
+
     PublishMutated([&](AppStateSnapshot& state) {
         if (const auto* c = std::get_if<SelectCategoryCmd>(&cmd)) {
             state.activeSection = 0;
@@ -135,104 +148,137 @@ void AppCoordinator::Dispatch(Command cmd) {
         }
         if (const auto* c = std::get_if<SetThemeCmd>(&cmd)) {
             state.prefs.theme = c->theme;
+            saveUserCfg = persistConfig_;
             return;
         }
         if (std::holds_alternative<ToggleThemeCmd>(cmd)) {
             state.prefs.theme = (state.prefs.theme == motrix::domain::ThemePreference::Dark)
                                     ? motrix::domain::ThemePreference::Light
                                     : motrix::domain::ThemePreference::Dark;
+            saveUserCfg = persistConfig_;
             return;
         }
         if (const auto* c = std::get_if<SetLocaleCmd>(&cmd)) {
             state.prefs.locale = c->locale;
+            saveUserCfg = persistConfig_;
             return;
         }
-        HandleTaskAction(state, cmd);
+        if (const auto* c = std::get_if<CopyTaskLinkCmd>(&cmd)) {
+            if (auto* host = windowHost_.load(std::memory_order_acquire)) {
+                if (const auto* task = FindTaskByGid(state, c->gid); task) {
+                    host->CopyTextToClipboard(task->uri);
+                }
+            }
+            return;
+        }
+        if (const auto* c = std::get_if<ShowInFolderCmd>(&cmd)) {
+            if (auto* host = windowHost_.load(std::memory_order_acquire)) {
+                if (const auto* task = FindTaskByGid(state, c->gid); task) {
+                    host->OpenPathInExplorer(task->dir);
+                }
+            }
+            return;
+        }
+
+        if (previewMockMode_ || !engineRuntime_) {
+            HandleTaskAction(state, cmd);
+            return;
+        }
+
+        if (const auto* pauseCmd = std::get_if<PauseTaskCmd>(&cmd)) {
+            engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::Pause, .gid = pauseCmd->gid};
+        } else if (const auto* resumeCmd = std::get_if<ResumeTaskCmd>(&cmd)) {
+            engineWork =
+                EngineWorkCommand{.kind = EngineWorkCommand::Kind::Resume, .gid = resumeCmd->gid};
+        } else if (const auto* removeCmd = std::get_if<RemoveTaskCmd>(&cmd)) {
+            const bool isStopped = std::any_of(state.stoppedTasks.begin(),
+                                               state.stoppedTasks.end(),
+                                               [&](const auto& t) { return t.gid == removeCmd->gid; });
+            engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::Remove,
+                                           .gid = removeCmd->gid,
+                                           .taskInStopped = isStopped};
+            if (state.detailedTaskGid == removeCmd->gid) {
+                state.detailedTaskGid.clear();
+            }
+        } else if (const auto* restartCmd = std::get_if<RestartTaskCmd>(&cmd)) {
+            if (const auto* t = FindTaskByGid(state, restartCmd->gid); t && !t->uri.empty()) {
+                engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::Restart,
+                                               .gid = restartCmd->gid,
+                                               .uris = {t->uri},
+                                               .dir = t->dir,
+                                               .split = state.sysConfig.split};
+            }
+        } else if (std::holds_alternative<RefreshTasksCmd>(cmd)) {
+            engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::Sync};
+        } else if (std::holds_alternative<PauseAllCmd>(cmd)) {
+            engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::PauseAll};
+        } else if (std::holds_alternative<ResumeAllCmd>(cmd)) {
+            engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::ResumeAll};
+        } else if (std::holds_alternative<PurgeStoppedCmd>(cmd)) {
+            engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::PurgeStopped};
+        } else if (const auto* addCmd = std::get_if<SubmitAddUriCmd>(&cmd)) {
+            engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::AddUri,
+                                           .uris = addCmd->uris,
+                                           .outName = addCmd->outName,
+                                           .dir = addCmd->dir,
+                                           .split = addCmd->split};
+            state.activeModal = ActiveModal::None;
+            if (state.prefs.newTaskShowDownloading) {
+                state.activeCategory = motrix::domain::TaskCategory::Downloading;
+                state.activeSection = 0;
+            }
+        }
+    });
+
+    if (saveUserCfg) {
+        const auto snap = Snapshot();
+        (void)motrix::core::WriteTextAtomic(appDataDir_ / "user.json",
+                                            motrix::domain::SerializeUserPreferencesJson(snap->prefs));
+    }
+    if (engineWork && engineRuntime_) {
+        engineRuntime_->Enqueue(std::move(*engineWork));
+    }
+}
+
+void AppCoordinator::HandleEngineSyncUpdate(EngineConnectionState connState,
+                                            const motrix::engine::EngineVersionInfo* version,
+                                            const motrix::engine::EngineSyncSnapshot* sync,
+                                            std::string_view enginePath,
+                                            std::string_view errorMsg) {
+    PublishMutated([&](AppStateSnapshot& state) {
+        state.engineState = connState;
+        state.engineError = std::string(errorMsg);
+        if (!enginePath.empty()) {
+            state.resolvedEnginePath = std::string(enginePath);
+        }
+        if (version) {
+            state.engineInfo = *version;
+        }
+        if (sync) {
+            state.downloadingTasks = sync->active;
+            state.waitingTasks = sync->waiting;
+            state.stoppedTasks = sync->stopped;
+            state.globalStat = GlobalStatSnapshot{
+                .downloadSpeed = sync->globalStat.downloadSpeed,
+                .uploadSpeed = sync->globalStat.uploadSpeed,
+                .numActive = sync->globalStat.numActive,
+                .numWaiting = sync->globalStat.numWaiting,
+                .numStopped = sync->globalStat.numStopped,
+            };
+        }
     });
 }
 
-void AppCoordinator::HandleTaskAction(AppStateSnapshot& state, const Command& cmd) {
-    if (const auto* c = std::get_if<CopyTaskLinkCmd>(&cmd)) {
-        if (const auto* task = FindTaskByGid(state, c->gid); task && windowHost_) {
-            windowHost_->CopyTextToClipboard(task->uri);
-        }
-        return;
+void AppCoordinator::PersistConfigs(const AppStateSnapshot& state) {
+    std::error_code ec;
+    std::filesystem::create_directories(appDataDir_, ec);
+    if (!std::filesystem::exists(appDataDir_ / "user.json", ec)) {
+        (void)motrix::core::WriteTextAtomic(appDataDir_ / "user.json",
+                                            motrix::domain::SerializeUserPreferencesJson(state.prefs));
     }
-    if (const auto* c = std::get_if<ShowInFolderCmd>(&cmd)) {
-        if (const auto* task = FindTaskByGid(state, c->gid); task && windowHost_) {
-            windowHost_->OpenPathInExplorer(task->dir);
-        }
-        return;
-    }
-    if (const auto* c = std::get_if<PauseTaskCmd>(&cmd)) {
-        MoveTaskBetweenLists(state.downloadingTasks,
-                             state.waitingTasks,
-                             c->gid,
-                             motrix::domain::TaskStatus::Paused,
-                             true);
-        return;
-    }
-    if (const auto* c = std::get_if<ResumeTaskCmd>(&cmd)) {
-        MoveTaskBetweenLists(state.waitingTasks,
-                             state.downloadingTasks,
-                             c->gid,
-                             motrix::domain::TaskStatus::Active,
-                             false);
-        return;
-    }
-    if (const auto* c = std::get_if<RemoveTaskCmd>(&cmd)) {
-        std::erase_if(state.downloadingTasks, [&](const auto& t) { return t.gid == c->gid; });
-        std::erase_if(state.waitingTasks, [&](const auto& t) { return t.gid == c->gid; });
-        std::erase_if(state.stoppedTasks, [&](const auto& t) { return t.gid == c->gid; });
-        if (state.detailedTaskGid == c->gid) {
-            state.detailedTaskGid.clear();
-        }
-        return;
-    }
-    HandleBulkAndSubmit(state, cmd);
-}
-
-void AppCoordinator::HandleBulkAndSubmit(AppStateSnapshot& state, const Command& cmd) {
-    if (std::holds_alternative<PurgeStoppedCmd>(cmd)) {
-        state.stoppedTasks.clear();
-        return;
-    }
-    if (std::holds_alternative<PauseAllCmd>(cmd)) {
-        for (auto& t : state.downloadingTasks) {
-            t.status = motrix::domain::TaskStatus::Paused;
-            t.downloadSpeed = 0;
-            t.uploadSpeed = 0;
-            state.waitingTasks.push_back(std::move(t));
-        }
-        state.downloadingTasks.clear();
-        return;
-    }
-    if (std::holds_alternative<ResumeAllCmd>(cmd)) {
-        for (auto& t : state.waitingTasks) {
-            t.status = motrix::domain::TaskStatus::Active;
-            state.downloadingTasks.push_back(std::move(t));
-        }
-        state.waitingTasks.clear();
-        return;
-    }
-    if (const auto* c = std::get_if<SubmitAddUriCmd>(&cmd)) {
-        for (const auto& uri : c->uris) {
-            motrix::domain::DownloadTaskView task{};
-            task.gid = std::format("{:016x}", nextLocalGid_++);
-            task.name = !c->outName.empty() ? c->outName : uri;
-            task.uri = uri;
-            task.dir = c->dir;
-            task.status = motrix::domain::TaskStatus::Active;
-            task.taskType = motrix::domain::IsMagnetUri(uri) ? motrix::domain::TaskType::BitTorrent
-                                                             : motrix::domain::TaskType::Http;
-            state.downloadingTasks.push_back(std::move(task));
-        }
-        state.activeModal = ActiveModal::None;
-        if (state.prefs.newTaskShowDownloading) {
-            state.activeCategory = motrix::domain::TaskCategory::Downloading;
-            state.activeSection = 0;
-        }
-        logger_.Info("app", "Submitted {} URI(s)", c->uris.size());
+    if (!std::filesystem::exists(appDataDir_ / "system.json", ec)) {
+        (void)motrix::core::WriteTextAtomic(appDataDir_ / "system.json",
+                                            motrix::domain::SerializeSystemConfigJson(state.sysConfig));
     }
 }
 
@@ -241,12 +287,14 @@ void AppCoordinator::PublishMutated(const std::function<void(AppStateSnapshot&)>
         std::scoped_lock lock(writeMutex_);
         mutator(mutableState_);
         ++mutableState_.revision;
-        RecomputeStats(mutableState_);
+        if (previewMockMode_ || !engineRuntime_) {
+            RecomputeStats(mutableState_);
+        }
         published_.store(std::make_shared<const AppStateSnapshot>(mutableState_),
                          std::memory_order_release);
     }
-    if (windowHost_) {
-        windowHost_->RequestFrame();
+    if (auto* host = windowHost_.load(std::memory_order_acquire)) {
+        host->RequestFrame();
     }
 }
 

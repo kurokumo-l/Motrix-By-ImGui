@@ -17,13 +17,27 @@ export struct CoordinatorOptions {
     bool populatePreviewTasks = false;
     bool openAddModal = false;
     bool openAboutModal = false;
+    bool enableEngine = true;
+    bool loadPersistedConfig = true;
+    bool themeOverride = false;
+    bool localeOverride = false;
+    std::uint16_t rpcPortOverride = 0;
+    std::filesystem::path appDataDir;
+    std::string defaultDownloadDir;
+    std::string enginePathOverride;
 };
+
+class EngineRuntime;
 
 export class AppCoordinator final : public ICommandSink {
 public:
     AppCoordinator(CoordinatorOptions options,
                    motrix::core::Logger& logger,
                    motrix::platform::IWindowHost* windowHost = nullptr);
+    ~AppCoordinator() override;
+
+    AppCoordinator(const AppCoordinator&) = delete;
+    AppCoordinator& operator=(const AppCoordinator&) = delete;
 
     void AttachWindowHost(motrix::platform::IWindowHost* windowHost) noexcept;
     [[nodiscard]] std::shared_ptr<const AppStateSnapshot> Snapshot() const noexcept;
@@ -35,15 +49,26 @@ private:
     void RecomputeStats(AppStateSnapshot& state);
     void HandleTaskAction(AppStateSnapshot& state, const Command& cmd);
     void HandleBulkAndSubmit(AppStateSnapshot& state, const Command& cmd);
+    void HandleEngineSyncUpdate(EngineConnectionState connState,
+                                const motrix::engine::EngineVersionInfo* version,
+                                const motrix::engine::EngineSyncSnapshot* sync,
+                                std::string_view enginePath,
+                                std::string_view errorMsg);
+    void PersistConfigs(const AppStateSnapshot& state);
+    static void SeedPreviewTasks(AppStateSnapshot& state);
     [[nodiscard]] const motrix::domain::DownloadTaskView*
     FindTaskByGid(const AppStateSnapshot& state, std::string_view gid) const noexcept;
 
     motrix::core::Logger& logger_;
-    motrix::platform::IWindowHost* windowHost_ = nullptr;
+    std::atomic<motrix::platform::IWindowHost*> windowHost_{nullptr};
+    std::filesystem::path appDataDir_;
+    bool persistConfig_ = false;
+    bool previewMockMode_ = false;
     std::mutex writeMutex_;
     AppStateSnapshot mutableState_;
     std::atomic<std::shared_ptr<const AppStateSnapshot>> published_;
     std::uint64_t nextLocalGid_ = 1000;
+    std::unique_ptr<EngineRuntime> engineRuntime_;
 };
 
 }  // namespace motrix::app

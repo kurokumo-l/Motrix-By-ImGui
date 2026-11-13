@@ -56,6 +56,11 @@ constexpr TranslationEntry kEntries[] = {
     {"prefs.theme_light", "Light", "浅色"},
     {"prefs.theme_dark", "Dark", "深色"},
     {"speed.max", "MAX", "MAX"},
+    {"engine.starting", "Starting...", "正在启动..."},
+    {"engine.connected", "Connected", "已连接"},
+    {"engine.reconnecting", "Reconnecting...", "重连中..."},
+    {"engine.offline", "Offline", "离线"},
+    {"engine.preview", "Preview Mode", "预览模式"},
 };
 
 }  // namespace

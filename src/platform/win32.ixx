@@ -126,5 +126,7 @@ private:
 };
 
 export void InstallCrashMinidumpHandler(const std::filesystem::path& dumpDir);
+export [[nodiscard]] std::filesystem::path ResolveDefaultDownloadsDir();
+export [[nodiscard]] std::filesystem::path ResolveAppDataDir();
 
 }  // namespace motrix::platform

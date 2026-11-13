@@ -3,6 +3,7 @@ module;
 // clang-format off
 #include <windows.h>
 #include <dbghelp.h>
+#include <shlobj.h>
 // clang-format on
 
 module motrix.platform;
@@ -130,6 +131,45 @@ void UniqueFindHandle::Reset(void* newHandle) noexcept {
 void InstallCrashMinidumpHandler(const std::filesystem::path& dumpDir) {
     g_dumpDirectory = dumpDir;
     ::SetUnhandledExceptionFilter(&CrashFilter);
+}
+
+namespace {
+
+[[nodiscard]] std::filesystem::path QueryKnownFolder(const KNOWNFOLDERID& folderId) {
+    PWSTR raw = nullptr;
+    if (FAILED(::SHGetKnownFolderPath(folderId, KF_FLAG_DEFAULT, nullptr, &raw)) || !raw) {
+        if (raw) {
+            ::CoTaskMemFree(raw);
+        }
+        return {};
+    }
+    struct CoTaskMemDeleter {
+        void operator()(PWSTR p) const noexcept { ::CoTaskMemFree(p); }
+    };
+    const std::unique_ptr<wchar_t, CoTaskMemDeleter> guard(raw);
+    return std::filesystem::path(guard.get());
+}
+
+}  // namespace
+
+std::filesystem::path ResolveDefaultDownloadsDir() {
+    auto p = QueryKnownFolder(FOLDERID_Downloads);
+    if (!p.empty()) {
+        return p;
+    }
+    auto profile = QueryKnownFolder(FOLDERID_Profile);
+    if (!profile.empty()) {
+        return profile / "Downloads";
+    }
+    return std::filesystem::temp_directory_path();
+}
+
+std::filesystem::path ResolveAppDataDir() {
+    auto local = QueryKnownFolder(FOLDERID_LocalAppData);
+    if (!local.empty()) {
+        return local / "MotrixNative";
+    }
+    return std::filesystem::temp_directory_path() / "MotrixNative";
 }
 
 }  // namespace motrix::platform

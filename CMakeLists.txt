@@ -71,6 +71,18 @@ set_target_properties(stb_image_write PROPERTIES
 )
 
 include(FetchContent)
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.12.0
+    GIT_SHALLOW TRUE
+)
+FetchContent_Declare(
+    ixwebsocket
+    GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
+    GIT_TAG v11.4.6
+    GIT_SHALLOW TRUE
+)
 set(CATCH_INSTALL_DOCS OFF CACHE BOOL "" FORCE)
 set(CATCH_INSTALL_EXTRAS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
@@ -79,7 +91,19 @@ FetchContent_Declare(
     GIT_TAG v3.8.1
     GIT_SHALLOW TRUE
 )
-FetchContent_MakeAvailable(Catch2)
+FetchContent_MakeAvailable(nlohmann_json ixwebsocket Catch2)
+if(TARGET ixwebsocket)
+    set_target_properties(ixwebsocket PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+        CXX_SCAN_FOR_MODULES OFF
+        CXX_MODULE_STD OFF
+    )
+    if(MSVC)
+        target_compile_options(ixwebsocket PRIVATE /Zc:__cplusplus /utf-8)
+    endif()
+endif()
 if(TARGET Catch2)
     set_target_properties(Catch2 PROPERTIES
         CXX_STANDARD 23
@@ -181,7 +205,12 @@ target_sources(motrix_domain PUBLIC
         src/domain/formatters.ixx
         src/domain/uri.ixx
 )
-target_link_libraries(motrix_domain PUBLIC motrix_core)
+target_link_libraries(motrix_domain
+    PUBLIC
+        motrix_core
+    PRIVATE
+        nlohmann_json::nlohmann_json
+)
 motrix_configure_target(motrix_domain)
 
 # ---------------------------------------------------------------------------
@@ -189,17 +218,40 @@ motrix_configure_target(motrix_domain)
 # ---------------------------------------------------------------------------
 add_library(motrix_engine STATIC
     src/engine/dialect.cpp
+    src/engine/json_codec.cpp
+    src/engine/json_codec_build.cpp
+    src/engine/ws_rpc_client.cpp
+    src/engine/win32_util.cpp
+    src/engine/process_manager.cpp
+    src/engine/process_probe.cpp
 )
-target_sources(motrix_engine PUBLIC
-    FILE_SET CXX_MODULES
-    BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
-    FILES
-        src/engine/engine.ixx
-        src/engine/dialect.ixx
-        src/engine/rpc_client.ixx
-        src/engine/process_manager.ixx
+target_sources(motrix_engine
+    PUBLIC
+        FILE_SET CXX_MODULES
+        BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        FILES
+            src/engine/engine.ixx
+            src/engine/dialect.ixx
+            src/engine/rpc_client.ixx
+            src/engine/process_manager.ixx
+            src/engine/json_codec.ixx
+    PRIVATE
+        FILE_SET internal_modules TYPE CXX_MODULES
+        BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        FILES
+            src/engine/win32_util.ixx
 )
-target_link_libraries(motrix_engine PUBLIC motrix_domain motrix_core)
+target_link_libraries(motrix_engine
+    PUBLIC
+        motrix_domain
+        motrix_core
+    PRIVATE
+        nlohmann_json::nlohmann_json
+        ixwebsocket
+        ws2_32
+        shell32
+        ole32
+)
 motrix_configure_target(motrix_engine)
 
 add_library(motrix_ipc STATIC)
@@ -249,6 +301,7 @@ target_link_libraries(motrix_platform
         user32
         gdi32
         shell32
+        ole32
 )
 motrix_configure_target(motrix_platform)
 
@@ -257,15 +310,23 @@ motrix_configure_target(motrix_platform)
 # ---------------------------------------------------------------------------
 add_library(motrix_app STATIC
     src/app/coordinator.cpp
+    src/app/coordinator_mock.cpp
+    src/app/engine_runtime.cpp
 )
-target_sources(motrix_app PUBLIC
-    FILE_SET CXX_MODULES
-    BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
-    FILES
-        src/app/app.ixx
-        src/app/command.ixx
-        src/app/snapshot.ixx
-        src/app/coordinator.ixx
+target_sources(motrix_app
+    PUBLIC
+        FILE_SET CXX_MODULES
+        BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        FILES
+            src/app/app.ixx
+            src/app/command.ixx
+            src/app/snapshot.ixx
+            src/app/coordinator.ixx
+    PRIVATE
+        FILE_SET internal_modules TYPE CXX_MODULES
+        BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        FILES
+            src/app/engine_runtime.ixx
 )
 target_link_libraries(motrix_app PUBLIC motrix_domain motrix_engine motrix_platform motrix_core)
 motrix_configure_target(motrix_app)
@@ -345,6 +406,7 @@ add_executable(motrix_tests
     tests/test_core.cpp
     tests/test_domain.cpp
     tests/test_dialect.cpp
+    tests/test_engine_rpc.cpp
 )
 target_link_libraries(motrix_tests PRIVATE
     Catch2::Catch2WithMain

@@ -56,6 +56,7 @@ public:
 
 export [[nodiscard]] EngineKind DetectEngineKind(std::string_view product,
                                                  std::string_view versionString) noexcept;
+export [[nodiscard]] EngineVersionInfo ParseCliVersionBanner(std::string_view stdoutText);
 export [[nodiscard]] std::unique_ptr<IEngineDialect> CreateDialect(EngineKind kind);
 
 }  // namespace motrix::engine

@@ -158,6 +158,29 @@ void AppendUniqueToken(std::vector<std::string>& dest, std::string value) {
     return out;
 }
 
+[[nodiscard]] bool HasOptionKey(std::span<const EngineOptionPair> opts, std::string_view key) noexcept {
+    return std::any_of(opts.begin(), opts.end(), [&](const auto& o) { return o.key == key; });
+}
+
+void AppendCommonLaunchFlags(std::vector<std::string>& args,
+                             const EngineLaunchOptions& launch,
+                             std::span<const EngineOptionPair> filtered) {
+    if (!launch.confPath.empty()) {
+        args.push_back(std::format("--conf-path={}", motrix::core::PathToUtf8(launch.confPath)));
+    } else {
+        args.push_back("--no-conf=true");
+    }
+    if (!HasOptionKey(filtered, "rpc-allow-origin-all")) {
+        args.push_back("--rpc-allow-origin-all=true");
+    }
+    if (!HasOptionKey(filtered, "console-log-level")) {
+        args.push_back("--console-log-level=warn");
+    }
+    if (!HasOptionKey(filtered, "summary-interval")) {
+        args.push_back("--summary-interval=0");
+    }
+}
+
 class ClassicAria2Dialect final : public IEngineDialect {
 public:
     EngineKind Kind() const noexcept override { return EngineKind::ClassicAria2; }
@@ -209,17 +232,17 @@ public:
         if (!launch.rpcSecret.empty()) {
             args.push_back(std::format("--rpc-secret={}", launch.rpcSecret));
         }
-        if (!launch.confPath.empty()) {
-            args.push_back(std::format("--conf-path={}", launch.confPath.string()));
-        }
+        const auto filtered = FilterGlobalOptions(options);
+        AppendCommonLaunchFlags(args, launch, filtered);
         if (!launch.stateOrSessionPath.empty()) {
-            args.push_back(std::format("--save-session={}", launch.stateOrSessionPath.string()));
+            const std::string sessionPath = motrix::core::PathToUtf8(launch.stateOrSessionPath);
+            args.push_back(std::format("--save-session={}", sessionPath));
             args.push_back(std::format("--save-session-interval={}", launch.saveIntervalSeconds));
             if (launch.sessionFileExists) {
-                args.push_back(std::format("--input-file={}", launch.stateOrSessionPath.string()));
+                args.push_back(std::format("--input-file={}", sessionPath));
             }
         }
-        for (const auto& opt : FilterGlobalOptions(options)) {
+        for (const auto& opt : filtered) {
             args.push_back(std::format("--{}={}", opt.key, opt.value));
         }
         return args;
@@ -298,17 +321,17 @@ public:
         if (!launch.rpcSecret.empty()) {
             args.push_back(std::format("--rpc-secret={}", launch.rpcSecret));
         }
-        if (!launch.confPath.empty()) {
-            args.push_back(std::format("--conf-path={}", launch.confPath.string()));
-        }
+        const auto filtered = FilterGlobalOptions(options);
+        AppendCommonLaunchFlags(args, launch, filtered);
         if (!launch.stateOrSessionPath.empty()) {
-            args.push_back(std::format("--state-dir={}", launch.stateOrSessionPath.string()));
+            args.push_back(
+                std::format("--state-dir={}", motrix::core::PathToUtf8(launch.stateOrSessionPath)));
             args.push_back(std::format("--state-save-interval={}", launch.saveIntervalSeconds));
         }
         if (launch.hostPid != 0) {
             args.push_back(std::format("--stop-with-process={}", launch.hostPid));
         }
-        for (const auto& opt : FilterGlobalOptions(options)) {
+        for (const auto& opt : filtered) {
             args.push_back(std::format("--{}={}", opt.key, opt.value));
         }
         return args;
@@ -351,6 +374,58 @@ EngineKind DetectEngineKind(std::string_view product, std::string_view versionSt
         return EngineKind::ClassicAria2;
     }
     return EngineKind::Unknown;
+}
+
+EngineVersionInfo ParseCliVersionBanner(std::string_view stdoutText) {
+    EngineVersionInfo info{};
+    std::size_t pos = 0;
+    bool firstLineDone = false;
+    while (pos < stdoutText.size()) {
+        const std::size_t nl = stdoutText.find('\n', pos);
+        const std::size_t end = (nl == std::string_view::npos) ? stdoutText.size() : nl;
+        const std::string_view line = motrix::core::TrimAscii(stdoutText.substr(pos, end - pos));
+        pos = end + 1;
+        if (line.empty()) {
+            continue;
+        }
+        if (!firstLineDone) {
+            firstLineDone = true;
+            constexpr std::string_view kNextPrefix = "aria2-next version ";
+            constexpr std::string_view kClassicPrefix = "aria2 version ";
+            if (motrix::core::AsciiLower(line).starts_with(kNextPrefix)) {
+                info.product = "aria2-next";
+                info.version = std::string(motrix::core::TrimAscii(line.substr(kNextPrefix.size())));
+                info.kind = EngineKind::Aria2Next;
+            } else if (motrix::core::AsciiLower(line).starts_with(kClassicPrefix)) {
+                info.product = "aria2";
+                info.version = std::string(motrix::core::TrimAscii(line.substr(kClassicPrefix.size())));
+                info.kind = EngineKind::ClassicAria2;
+            } else {
+                info.version = std::string(line);
+                info.kind = DetectEngineKind("", line);
+            }
+            continue;
+        }
+
+        constexpr std::string_view kFeatPrefix = "Enabled Features:";
+        if (line.starts_with(kFeatPrefix)) {
+            std::string_view rest = line.substr(kFeatPrefix.size());
+            std::size_t fp = 0;
+            while (fp <= rest.size()) {
+                const std::size_t comma = rest.find(',', fp);
+                const std::string_view feat = motrix::core::TrimAscii(
+                    comma == std::string_view::npos ? rest.substr(fp) : rest.substr(fp, comma - fp));
+                if (!feat.empty()) {
+                    info.enabledFeatures.emplace_back(feat);
+                }
+                if (comma == std::string_view::npos) {
+                    break;
+                }
+                fp = comma + 1;
+            }
+        }
+    }
+    return info;
 }
 
 std::unique_ptr<IEngineDialect> CreateDialect(EngineKind kind) {

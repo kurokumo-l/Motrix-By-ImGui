@@ -69,7 +69,7 @@ void DispatchPillAction(UiFrameContext& ctx,
             ctx.sink.Dispatch(motrix::app::ResumeTaskCmd{task.gid});
             break;
         case PillActionSpec::Kind::Restart:
-            ctx.sink.Dispatch(motrix::app::ResumeTaskCmd{task.gid});
+            ctx.sink.Dispatch(motrix::app::RestartTaskCmd{task.gid});
             break;
         case PillActionSpec::Kind::Delete:
             ctx.sink.Dispatch(motrix::app::RemoveTaskCmd{task.gid, false});
@@ -241,6 +241,11 @@ void RenderTaskCard(UiFrameContext& ctx, const motrix::domain::DownloadTaskView&
             dl->AddText(ImVec2(cardMax.x - padX - rSz.x, metaY),
                         ToAbgrU32(ctx.palette.taskMetaText),
                         rightMeta.c_str());
+        } else if (task.status == motrix::domain::TaskStatus::Error && !task.errorMessage.empty()) {
+            const ImVec2 rSz = ImGui::CalcTextSize(task.errorMessage.c_str());
+            dl->AddText(ImVec2(std::max(cardPos.x + padX + 140.0f * s, cardMax.x - padX - rSz.x), metaY),
+                        ToAbgrU32(ctx.palette.progressError),
+                        task.errorMessage.c_str());
         }
     }
 

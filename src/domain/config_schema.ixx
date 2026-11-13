@@ -66,5 +66,10 @@ export [[nodiscard]] UserPreferences DefaultUserPreferences();
 export [[nodiscard]] SystemConfig DefaultSystemConfig();
 export [[nodiscard]] std::vector<std::pair<std::string, std::string>>
 SystemConfigToOptionPairs(const SystemConfig& cfg);
+export [[nodiscard]] std::string SerializeUserPreferencesJson(const UserPreferences& prefs);
+export [[nodiscard]] motrix::core::Result<UserPreferences>
+ParseUserPreferencesJson(std::string_view jsonText);
+export [[nodiscard]] std::string SerializeSystemConfigJson(const SystemConfig& cfg);
+export [[nodiscard]] motrix::core::Result<SystemConfig> ParseSystemConfigJson(std::string_view jsonText);
 
 }  // namespace motrix::domain

@@ -165,14 +165,33 @@ void RenderAboutModal(UiFrameContext& ctx) {
     ImGui::Dummy(ImVec2(0.0f, 6.0f * s));
     {
         FontGuard bodyFont(ctx.fonts, FontRole::Regular, 14.0f);
-        const std::string engineText = ctx.state.engineInfo.product.empty()
-                                           ? "v1.8.19 Baseline  |  Engine: Pending Milestone 2"
-                                           : std::format("Engine: {} {}",
-                                                         ctx.state.engineInfo.product,
-                                                         ctx.state.engineInfo.version);
+        std::string_view statusKey = "engine.starting";
+        switch (ctx.state.engineState) {
+            case motrix::app::EngineConnectionState::Starting: statusKey = "engine.starting"; break;
+            case motrix::app::EngineConnectionState::Connected: statusKey = "engine.connected"; break;
+            case motrix::app::EngineConnectionState::Reconnecting:
+                statusKey = "engine.reconnecting";
+                break;
+            case motrix::app::EngineConnectionState::Offline: statusKey = "engine.offline"; break;
+            case motrix::app::EngineConnectionState::PreviewMock: statusKey = "engine.preview"; break;
+        }
+        const std::string engineText =
+            ctx.state.engineInfo.product.empty()
+                ? std::format("v1.8.19 Baseline  |  Engine: {}", ctx.tr.Tr(statusKey))
+                : std::format("{} {}  |  {}",
+                              ctx.state.engineInfo.product,
+                              ctx.state.engineInfo.version,
+                              ctx.tr.Tr(statusKey));
         const float ew = ImGui::CalcTextSize(engineText.c_str()).x;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (availW - ew) * 0.5f));
         ImGui::TextDisabled("%s", engineText.c_str());
+
+        if (!ctx.state.engineError.empty()) {
+            const float errW = ImGui::CalcTextSize(ctx.state.engineError.c_str()).x;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (availW - errW) * 0.5f));
+            StyleColorGuard errCol(ImGuiCol_Text, ctx.palette.progressError);
+            ImGui::TextUnformatted(ctx.state.engineError.c_str());
+        }
     }
     ImGui::Dummy(ImVec2(0.0f, 16.0f * s));
     const float closeW = 108.0f * s;
@@ -243,8 +262,17 @@ void RenderPreferencesPanel(UiFrameContext& ctx, float x, float y, float w, floa
             ctx.sink.Dispatch(motrix::app::SetLocaleCmd{motrix::core::Locale::ZhCN});
         }
         ImGui::Spacing();
-        ImGui::TextDisabled("RPC Port: %u (Full Preferences Matrix arrives in Milestone 2/4)",
-                            ctx.state.sysConfig.rpcListenPort);
+        const std::string engineDesc =
+            ctx.state.engineInfo.product.empty()
+                ? std::format("RPC Port: {}", ctx.state.sysConfig.rpcListenPort)
+                : std::format("Engine: {} {}  |  RPC Port: {}",
+                              ctx.state.engineInfo.product,
+                              ctx.state.engineInfo.version,
+                              ctx.state.sysConfig.rpcListenPort);
+        ImGui::TextDisabled("%s", engineDesc.c_str());
+        if (!ctx.state.resolvedEnginePath.empty()) {
+            ImGui::TextDisabled("%s", ctx.state.resolvedEnginePath.c_str());
+        }
     }
 }
 

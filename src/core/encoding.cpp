@@ -44,6 +44,14 @@ std::string WideToUtf8(std::wstring_view wide) {
     return result;
 }
 
+std::string PathToUtf8(const std::filesystem::path& path) {
+    return WideToUtf8(path.wstring());
+}
+
+std::filesystem::path PathFromUtf8(std::string_view utf8) {
+    return std::filesystem::path(Utf8ToWide(utf8));
+}
+
 std::string AsciiLower(std::string_view text) {
     std::string out(text);
     for (char& ch : out) {

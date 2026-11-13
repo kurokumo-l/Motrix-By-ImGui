@@ -33,6 +33,8 @@ export struct AppStateSnapshot {
     int activeDetailTab = 0;
     EngineConnectionState engineState = EngineConnectionState::Starting;
     motrix::engine::EngineVersionInfo engineInfo;
+    std::string engineError;
+    std::string resolvedEnginePath;
     GlobalStatSnapshot globalStat;
     motrix::domain::UserPreferences prefs = motrix::domain::DefaultUserPreferences();
     motrix::domain::SystemConfig sysConfig = motrix::domain::DefaultSystemConfig();

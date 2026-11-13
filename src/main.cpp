@@ -19,6 +19,8 @@ struct CliOptions {
     motrix::platform::WindowHostConfig host;
     motrix::app::CoordinatorOptions app;
     std::string prefillUri;
+    bool forceEngine = false;
+    bool disableEngine = false;
 };
 
 [[nodiscard]] std::vector<std::string> ReadProcessArgsUtf8() {
@@ -61,10 +63,12 @@ struct CliOptions {
             opts.host.initialDark = dark;
             opts.app.initialTheme =
                 dark ? motrix::domain::ThemePreference::Dark : motrix::domain::ThemePreference::Light;
+            opts.app.themeOverride = true;
         } else if (arg == "--locale" && i + 1 < argc) {
             const std::string val = motrix::core::AsciiLower(argv[++i]);
             opts.app.initialLocale = (val == "zh" || val == "zh-cn") ? motrix::core::Locale::ZhCN
                                                                      : motrix::core::Locale::EnUS;
+            opts.app.localeOverride = true;
         } else if (arg == "--tab" && i + 1 < argc) {
             const std::string val = motrix::core::AsciiLower(argv[++i]);
             if (val == "waiting") {
@@ -82,6 +86,18 @@ struct CliOptions {
             opts.prefillUri = argv[++i];
         } else if (arg == "--about") {
             opts.app.openAboutModal = true;
+        } else if (arg == "--engine" && i + 1 < argc) {
+            opts.app.enginePathOverride = argv[++i];
+            opts.forceEngine = true;
+        } else if (arg == "--rpc-port" && i + 1 < argc) {
+            const int port = std::atoi(argv[++i].c_str());
+            if (port > 0 && port <= 65535) {
+                opts.app.rpcPortOverride = static_cast<std::uint16_t>(port);
+            }
+        } else if (arg == "--with-engine") {
+            opts.forceEngine = true;
+        } else if (arg == "--no-engine") {
+            opts.disableEngine = true;
         } else if (arg == "--screenshot" && i + 1 < argc) {
             opts.host.screenshotPath = argv[++i];
         } else if (arg == "--frames" && i + 1 < argc) {
@@ -92,34 +108,50 @@ struct CliOptions {
             opts.host.height = std::max(420, std::atoi(argv[++i].c_str()));
         }
     }
+
+    if (opts.disableEngine || opts.app.populatePreviewTasks) {
+        opts.app.enableEngine = false;
+    } else if (!opts.host.screenshotPath.empty() && !opts.forceEngine) {
+        opts.app.enableEngine = false;
+    }
     return opts;
 }
 
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
-    const CliOptions cli = ParseArgs(ReadProcessArgsUtf8());
+    CliOptions cli = ParseArgs(ReadProcessArgsUtf8());
 
-    const std::filesystem::path appDataLogs =
-        std::filesystem::temp_directory_path() / "MotrixNative" / "logs";
+    const std::filesystem::path appDataDir = motrix::platform::ResolveAppDataDir();
+    const std::filesystem::path appDataLogs = appDataDir / "logs";
     motrix::platform::InstallCrashMinidumpHandler(appDataLogs);
+
+    cli.app.appDataDir = appDataDir;
+    cli.app.defaultDownloadDir =
+        motrix::core::PathToUtf8(motrix::platform::ResolveDefaultDownloadsDir());
+    if (!cli.host.screenshotPath.empty() || cli.app.populatePreviewTasks) {
+        cli.app.loadPersistedConfig = false;
+    }
 
     motrix::core::Logger logger(motrix::core::LoggerOptions{
         .logFilePath = appDataLogs / "motrix_native.log",
         .minLevel = motrix::core::LogLevel::Info,
     });
-    logger.Info("main", "Starting Motrix Native (Milestone 1)");
+    logger.Info("main", "Starting Motrix Native (Milestone 2)");
 
     motrix::platform::Win32WindowHost host;
     motrix::app::AppCoordinator coordinator(cli.app, logger, &host);
-    motrix::ui::MotrixUiShell shell(cli.host.initialDark);
+    const bool startDark = coordinator.Snapshot()->prefs.theme == motrix::domain::ThemePreference::Dark;
+    cli.host.initialDark = startDark;
+
+    motrix::ui::MotrixUiShell shell(startDark);
     if (!cli.prefillUri.empty()) {
         shell.PrefillAddTaskUri(cli.prefillUri);
     }
 
     const auto result = host.Run(
         cli.host,
-        [&](motrix::platform::IWindowHost& h) { shell.InitializeImGui(h, cli.host.initialDark); },
+        [&](motrix::platform::IWindowHost& h) { shell.InitializeImGui(h, startDark); },
         [&](motrix::platform::IWindowHost& h) {
             const auto snap = coordinator.Snapshot();
             shell.RenderFrame(*snap, coordinator, h);
