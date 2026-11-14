@@ -50,6 +50,87 @@ struct CliOptions {
     return args;
 }
 
+void ApplyValueFlag(CliOptions& opts, std::string_view arg, const std::string& rawVal) {
+    if (arg == "--theme") {
+        const bool dark = (motrix::core::AsciiLower(rawVal) == "dark");
+        opts.host.initialDark = dark;
+        opts.app.initialTheme =
+            dark ? motrix::domain::ThemePreference::Dark : motrix::domain::ThemePreference::Light;
+        opts.app.themeOverride = true;
+    } else if (arg == "--locale") {
+        const std::string val = motrix::core::AsciiLower(rawVal);
+        opts.app.initialLocale =
+            (val == "zh" || val == "zh-cn") ? motrix::core::Locale::ZhCN : motrix::core::Locale::EnUS;
+        opts.app.localeOverride = true;
+    } else if (arg == "--tab") {
+        const std::string val = motrix::core::AsciiLower(rawVal);
+        if (val == "waiting") {
+            opts.app.initialCategory = motrix::domain::TaskCategory::Waiting;
+        } else if (val == "stopped") {
+            opts.app.initialCategory = motrix::domain::TaskCategory::Stopped;
+        } else {
+            opts.app.initialCategory = motrix::domain::TaskCategory::Downloading;
+        }
+    } else if (arg == "--uri") {
+        opts.prefillUri = rawVal;
+    } else if (arg == "--pref-tab") {
+        const std::string val = motrix::core::AsciiLower(rawVal);
+        if (val == "advanced" || val == "1") {
+            opts.prefTab = 1;
+        } else if (val == "lab" || val == "2") {
+            opts.prefTab = 2;
+        } else {
+            opts.prefTab = 0;
+        }
+        opts.app.openPrefsSection = true;
+    } else if (arg == "--engine") {
+        opts.app.enginePathOverride = rawVal;
+        opts.forceEngine = true;
+    } else if (arg == "--rpc-port") {
+        const int port = std::atoi(rawVal.c_str());
+        if (port > 0 && port <= 65535) {
+            opts.app.rpcPortOverride = static_cast<std::uint16_t>(port);
+        }
+    } else if (arg == "--screenshot") {
+        opts.host.screenshotPath = rawVal;
+    } else if (arg == "--frames") {
+        opts.host.screenshotFrames = std::max(1, std::atoi(rawVal.c_str()));
+    } else if (arg == "--width") {
+        opts.host.width = std::max(478, std::atoi(rawVal.c_str()));
+    } else if (arg == "--height") {
+        opts.host.height = std::max(420, std::atoi(rawVal.c_str()));
+    }
+}
+
+[[nodiscard]] bool NeedsValueArg(std::string_view arg) noexcept {
+    return arg == "--theme" || arg == "--locale" || arg == "--tab" || arg == "--uri"
+           || arg == "--pref-tab" || arg == "--detail-tab" || arg == "--engine" || arg == "--rpc-port"
+           || arg == "--screenshot" || arg == "--frames" || arg == "--width" || arg == "--height";
+}
+
+void ApplySimpleFlag(CliOptions& opts, std::string_view arg) {
+    if (arg == "--preview-tasks") {
+        opts.app.populatePreviewTasks = true;
+    } else if (arg == "--add") {
+        opts.app.openAddModal = true;
+    } else if (arg == "--about") {
+        opts.app.openAboutModal = true;
+    } else if (arg == "--prefs") {
+        opts.app.openPrefsSection = true;
+    } else if (arg == "--detail") {
+        opts.app.openDetailDemo = true;
+        opts.app.populatePreviewTasks = true;
+    } else if (arg == "--with-engine") {
+        opts.forceEngine = true;
+    } else if (arg == "--no-engine") {
+        opts.disableEngine = true;
+    } else if (arg == "--no-single-instance") {
+        opts.disableSingleInstance = true;
+    } else if (arg == "--opened-at-login=1" || arg == "--opened-at-login") {
+        opts.openedAtLogin = true;
+    }
+}
+
 [[nodiscard]] CliOptions ParseArgs(const std::vector<std::string>& argv) {
     CliOptions opts;
     opts.host.title = "Motrix";
@@ -62,78 +143,12 @@ struct CliOptions {
     const std::size_t argc = argv.size();
     for (std::size_t i = 1; i < argc; ++i) {
         const std::string& arg = argv[i];
-        if (arg == "--theme" && i + 1 < argc) {
-            const std::string val = motrix::core::AsciiLower(argv[++i]);
-            const bool dark = (val == "dark");
-            opts.host.initialDark = dark;
-            opts.app.initialTheme =
-                dark ? motrix::domain::ThemePreference::Dark : motrix::domain::ThemePreference::Light;
-            opts.app.themeOverride = true;
-        } else if (arg == "--locale" && i + 1 < argc) {
-            const std::string val = motrix::core::AsciiLower(argv[++i]);
-            opts.app.initialLocale = (val == "zh" || val == "zh-cn") ? motrix::core::Locale::ZhCN
-                                                                     : motrix::core::Locale::EnUS;
-            opts.app.localeOverride = true;
-        } else if (arg == "--tab" && i + 1 < argc) {
-            const std::string val = motrix::core::AsciiLower(argv[++i]);
-            if (val == "waiting") {
-                opts.app.initialCategory = motrix::domain::TaskCategory::Waiting;
-            } else if (val == "stopped") {
-                opts.app.initialCategory = motrix::domain::TaskCategory::Stopped;
-            } else {
-                opts.app.initialCategory = motrix::domain::TaskCategory::Downloading;
-            }
-        } else if (arg == "--preview-tasks") {
-            opts.app.populatePreviewTasks = true;
-        } else if (arg == "--add") {
-            opts.app.openAddModal = true;
-        } else if (arg == "--uri" && i + 1 < argc) {
-            opts.prefillUri = argv[++i];
-        } else if (arg == "--about") {
-            opts.app.openAboutModal = true;
-        } else if (arg == "--prefs") {
-            opts.app.openPrefsSection = true;
-        } else if (arg == "--pref-tab" && i + 1 < argc) {
-            const std::string val = motrix::core::AsciiLower(argv[++i]);
-            if (val == "advanced" || val == "1") {
-                opts.prefTab = 1;
-            } else if (val == "lab" || val == "2") {
-                opts.prefTab = 2;
-            } else {
-                opts.prefTab = 0;
-            }
-            opts.app.openPrefsSection = true;
-        } else if (arg == "--detail") {
-            opts.app.openDetailDemo = true;
-            opts.app.populatePreviewTasks = true;
-        } else if (arg == "--detail-tab" && i + 1 < argc) {
-            (void)argv[++i];
-        } else if (arg == "--engine" && i + 1 < argc) {
-            opts.app.enginePathOverride = argv[++i];
-            opts.forceEngine = true;
-        } else if (arg == "--rpc-port" && i + 1 < argc) {
-            const int port = std::atoi(argv[++i].c_str());
-            if (port > 0 && port <= 65535) {
-                opts.app.rpcPortOverride = static_cast<std::uint16_t>(port);
-            }
-        } else if (arg == "--with-engine") {
-            opts.forceEngine = true;
-        } else if (arg == "--no-engine") {
-            opts.disableEngine = true;
-        } else if (arg == "--no-single-instance") {
-            opts.disableSingleInstance = true;
-        } else if (arg == "--opened-at-login=1" || arg == "--opened-at-login") {
-            opts.openedAtLogin = true;
-        } else if (arg == "--screenshot" && i + 1 < argc) {
-            opts.host.screenshotPath = argv[++i];
-        } else if (arg == "--frames" && i + 1 < argc) {
-            opts.host.screenshotFrames = std::max(1, std::atoi(argv[++i].c_str()));
-        } else if (arg == "--width" && i + 1 < argc) {
-            opts.host.width = std::max(478, std::atoi(argv[++i].c_str()));
-        } else if (arg == "--height" && i + 1 < argc) {
-            opts.host.height = std::max(420, std::atoi(argv[++i].c_str()));
+        if (NeedsValueArg(arg) && i + 1 < argc) {
+            ApplyValueFlag(opts, arg, argv[++i]);
         } else if (!arg.empty() && arg[0] != '-') {
             opts.positionalArgs.push_back(arg);
+        } else {
+            ApplySimpleFlag(opts, arg);
         }
     }
 
@@ -158,11 +173,81 @@ ToStartupCommand(const motrix::ipc::StartupPayload& payload) {
     return cmd;
 }
 
+[[nodiscard]] std::unique_ptr<motrix::ipc::ISingleInstanceChannel>
+TryAcquireSingleInstance(const CliOptions& cli,
+                         const motrix::ipc::StartupPayload& initialPayload,
+                         motrix::core::Logger& logger,
+                         std::atomic<motrix::app::AppCoordinator*>& coordinatorPtr) {
+    if (!cli.host.screenshotPath.empty() || cli.disableSingleInstance || cli.app.rpcPortOverride != 0) {
+        return nullptr;
+    }
+    auto ipcChannel = motrix::ipc::CreateNamedPipeChannel(logger);
+    const auto acquired = ipcChannel->TryAcquirePrimary([&](const motrix::ipc::StartupPayload& remote) {
+        if (auto* coord = coordinatorPtr.load(std::memory_order_acquire)) {
+            coord->Dispatch(ToStartupCommand(remote));
+        }
+    });
+    if (acquired && !*acquired) {
+        logger.Info("ipc", "Secondary instance detected; forwarding startup payload to primary");
+        (void)ipcChannel->ForwardToPrimary(initialPayload);
+        return nullptr;
+    }
+    return ipcChannel;
+}
+
+void ConfigureInitialHostPresentation(CliOptions& cli,
+                                      const motrix::app::AppStateSnapshot& initSnap,
+                                      const motrix::ipc::StartupPayload& initialPayload) {
+    const bool isScreenshotMode = !cli.host.screenshotPath.empty();
+    const auto& initPrefs = initSnap.prefs;
+    const bool startDark = initPrefs.theme == motrix::domain::ThemePreference::Dark;
+    const bool showTray = !isScreenshotMode && initPrefs.runMode != motrix::domain::RunMode::HideTray;
+    const bool hasExplicitUiLaunch = !cli.prefillUri.empty() || !initialPayload.uris.empty()
+                                     || !initialPayload.torrentFiles.empty()
+                                     || !initialPayload.deepLinks.empty() || cli.app.openAddModal
+                                     || cli.app.openAboutModal || cli.app.openPrefsSection;
+
+    cli.host.initialDark = startDark;
+    cli.host.initialZhCn = initPrefs.locale == motrix::core::Locale::ZhCN;
+    cli.host.enableTrayIcon = showTray;
+    cli.host.bindCloseToHide = showTray && !isScreenshotMode;
+    cli.host.autoHideOnBlur = initPrefs.autoHideWindow && showTray && !isScreenshotMode;
+    cli.host.startHidden = !isScreenshotMode && !hasExplicitUiLaunch && showTray
+                           && (initPrefs.autoHideWindow || cli.openedAtLogin);
+    if (initPrefs.keepWindowState && !isScreenshotMode) {
+        cli.host.initialBounds = motrix::platform::WindowBounds{
+            .x = initPrefs.windowX.value_or(0),
+            .y = initPrefs.windowY.value_or(0),
+            .width = initPrefs.windowWidth,
+            .height = initPrefs.windowHeight,
+            .hasPosition = initPrefs.windowX.has_value() && initPrefs.windowY.has_value(),
+            .maximized = initPrefs.windowMaximized,
+        };
+    }
+}
+
+void AttachHostCallbacks(motrix::platform::WindowHostConfig& hostCfg,
+                         motrix::app::AppCoordinator& coordinator,
+                         motrix::core::Logger& logger,
+                         bool isScreenshotMode) {
+    hostCfg.onFilesDropped = [&](std::vector<std::string> paths) {
+        coordinator.Dispatch(motrix::app::QueueDroppedFilesCmd{std::move(paths)});
+    };
+    hostCfg.onTrayAction = [&](motrix::platform::TrayMenuAction action) {
+        coordinator.Dispatch(motrix::app::HandleTrayActionCmd{action});
+    };
+    hostCfg.onBoundsChanged = [&, isScreenshotMode](const motrix::platform::WindowBounds& bounds) {
+        if (!isScreenshotMode) {
+            coordinator.Dispatch(motrix::app::UpdateWindowBoundsCmd{bounds});
+        }
+    };
+    hostCfg.onQuitRequested = [&]() { logger.Info("main", "Quit requested cleanly"); };
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
-    const auto rawArgs = ReadProcessArgsUtf8();
-    CliOptions cli = ParseArgs(rawArgs);
+    CliOptions cli = ParseArgs(ReadProcessArgsUtf8());
 
     const std::filesystem::path appDataDir = motrix::platform::ResolveAppDataDir();
     const std::filesystem::path appDataLogs = appDataDir / "logs";
@@ -188,21 +273,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         motrix::ipc::BuildStartupPayloadFromArgs(cli.positionalArgs);
 
     std::atomic<motrix::app::AppCoordinator*> coordinatorPtr{nullptr};
-    std::unique_ptr<motrix::ipc::ISingleInstanceChannel> ipcChannel;
     const bool useSingleInstance =
         !isScreenshotMode && !cli.disableSingleInstance && cli.app.rpcPortOverride == 0;
-    if (useSingleInstance) {
-        ipcChannel = motrix::ipc::CreateNamedPipeChannel(logger);
-        auto acquired = ipcChannel->TryAcquirePrimary([&](const motrix::ipc::StartupPayload& remote) {
-            if (auto* coord = coordinatorPtr.load(std::memory_order_acquire)) {
-                coord->Dispatch(ToStartupCommand(remote));
-            }
-        });
-        if (acquired && !*acquired) {
-            logger.Info("ipc", "Secondary instance detected; forwarding startup payload to primary");
-            (void)ipcChannel->ForwardToPrimary(initialPayload);
-            return 0;
-        }
+    auto ipcChannel = TryAcquireSingleInstance(cli, initialPayload, logger, coordinatorPtr);
+    if (useSingleInstance && !ipcChannel) {
+        return 0;
     }
 
     motrix::platform::Win32WindowHost host;
@@ -210,50 +285,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     coordinatorPtr.store(&coordinator, std::memory_order_release);
 
     const auto initSnap = coordinator.Snapshot();
-    const auto& initPrefs = initSnap->prefs;
-    const bool startDark = initPrefs.theme == motrix::domain::ThemePreference::Dark;
-    const bool showTray = !isScreenshotMode && initPrefs.runMode != motrix::domain::RunMode::HideTray;
-    const bool hasExplicitUiLaunch = !cli.prefillUri.empty() || !initialPayload.uris.empty()
-                                     || !initialPayload.torrentFiles.empty()
-                                     || !initialPayload.deepLinks.empty() || cli.app.openAddModal
-                                     || cli.app.openAboutModal || cli.app.openPrefsSection;
-
-    cli.host.initialDark = startDark;
-    cli.host.initialZhCn = initPrefs.locale == motrix::core::Locale::ZhCN;
-    cli.host.enableTrayIcon = showTray;
-    cli.host.bindCloseToHide = showTray && !isScreenshotMode;
-    cli.host.autoHideOnBlur = initPrefs.autoHideWindow && showTray && !isScreenshotMode;
-    cli.host.startHidden = !isScreenshotMode && !hasExplicitUiLaunch && showTray
-                           && (initPrefs.autoHideWindow || cli.openedAtLogin);
-    if (initPrefs.keepWindowState && !isScreenshotMode) {
-        cli.host.initialBounds = motrix::platform::WindowBounds{
-            .x = initPrefs.windowX.value_or(0),
-            .y = initPrefs.windowY.value_or(0),
-            .width = initPrefs.windowWidth,
-            .height = initPrefs.windowHeight,
-            .hasPosition = initPrefs.windowX.has_value() && initPrefs.windowY.has_value(),
-            .maximized = initPrefs.windowMaximized,
-        };
-    }
-
-    cli.host.onFilesDropped = [&](std::vector<std::string> paths) {
-        coordinator.Dispatch(motrix::app::QueueDroppedFilesCmd{std::move(paths)});
-    };
-    cli.host.onTrayAction = [&](motrix::platform::TrayMenuAction action) {
-        coordinator.Dispatch(motrix::app::HandleTrayActionCmd{action});
-    };
-    cli.host.onBoundsChanged = [&](const motrix::platform::WindowBounds& bounds) {
-        if (!isScreenshotMode) {
-            coordinator.Dispatch(motrix::app::UpdateWindowBoundsCmd{bounds});
-        }
-    };
-    cli.host.onQuitRequested = [&]() { logger.Info("main", "Quit requested cleanly"); };
+    ConfigureInitialHostPresentation(cli, *initSnap, initialPayload);
+    AttachHostCallbacks(cli.host, coordinator, logger, isScreenshotMode);
 
     if (!initialPayload.uris.empty() || !initialPayload.torrentFiles.empty()
         || !initialPayload.deepLinks.empty()) {
         coordinator.Dispatch(ToStartupCommand(initialPayload));
     }
 
+    const bool startDark = initSnap->prefs.theme == motrix::domain::ThemePreference::Dark;
     motrix::ui::MotrixUiShell shell(startDark);
     if (!cli.prefillUri.empty()) {
         shell.PrefillAddTaskUri(cli.prefillUri);

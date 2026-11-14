@@ -232,27 +232,79 @@ void DrawPrefsFormRow(UiFrameContext& ctx,
     }
 
     ImGui::SetCursorScreenPos(ImVec2(bodyX, startPos.y));
-    ImGui::BeginGroup();
-    if (body) {
-        body(bodyX, bodyW);
+    {
+        GroupGuard grp;
+        if (body) {
+            body(bodyX, bodyW);
+        }
     }
-    ImGui::EndGroup();
     const float nextY = ImGui::GetItemRectMax().y + 20.0f * s;
     ImGui::SetCursorScreenPos(ImVec2(startPos.x, nextY));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
-void RenderPreferencesView(
-    UiFrameContext& ctx, float x, float y, float w, float h, int prefTab, PrefsFormState& prefsState) {
+namespace {
+
+struct PrefsActionsBarSpec {
+    PanelRect rect{};
+    float marginX = 0.0f;
+    float actionsH = 0.0f;
+};
+
+void RenderPrefsActionsBar(UiFrameContext& ctx,
+                           const PrefsActionsBarSpec& bar,
+                           PrefsFormState& prefsState) {
+    const float s = ctx.dpiScale;
+    const float barY = bar.rect.y + bar.rect.h - bar.actionsH;
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(bar.rect.x, barY),
+                                              ImVec2(bar.rect.x + bar.rect.w, bar.rect.y + bar.rect.h),
+                                              ToAbgrU32(ctx.palette.mainBg));
+    const float btnH = 32.0f * s;
+    const float btnY = barY + (bar.actionsH - btnH) * 0.5f;
+    float saveW = 96.0f * s;
+    float discW = 66.0f * s;
+    {
+        FontGuard bf(ctx.fonts, FontRole::Medium, 13.5f);
+        const std::string_view sl = ctx.tr.Tr("prefs.save_apply");
+        const std::string_view dsl = ctx.tr.Tr("common.discard");
+        saveW = std::max(90.0f * s, ImGui::CalcTextSize(sl.data(), sl.data() + sl.size()).x + 28.0f * s);
+        discW =
+            std::max(64.0f * s, ImGui::CalcTextSize(dsl.data(), dsl.data() + dsl.size()).x + 28.0f * s);
+    }
+    const ElStyle elSt{ctx.palette, ctx.fonts, s};
+    ImGui::SetCursorScreenPos(ImVec2(bar.rect.x + bar.marginX, btnY));
+    if (ElPrimaryButton(elSt,
+                        ElButtonSpec{"##prefs_save", ctx.tr.Tr("prefs.save_apply"), saveW, btnH})) {
+        ApplyPrefsDraft(ctx, prefsState);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(bar.rect.x + bar.marginX + saveW + 12.0f * s, btnY));
+    if (ElSecondaryButton(elSt,
+                          ElButtonSpec{"##prefs_discard", ctx.tr.Tr("common.discard"), discW, btnH})) {
+        LoadPrefsFromSnapshot(ctx.state, prefsState);
+    }
+}
+
+void SyncPrefsFormState(const UiFrameContext& ctx, PrefsFormState& prefsState) {
     if (!prefsState.initialized) {
         LoadPrefsFromSnapshot(ctx.state, prefsState);
-    } else if (ctx.state.prefs.lastSyncTrackerTime != prefsState.loadedSyncTrackerTime) {
+        return;
+    }
+    if (ctx.state.prefs.lastSyncTrackerTime != prefsState.loadedSyncTrackerTime) {
         prefsState.loadedSyncTrackerTime = ctx.state.prefs.lastSyncTrackerTime;
         const std::string lineTrackers =
             motrix::domain::ConvertTrackerDataToLine(ctx.state.sysConfig.btTracker);
         CopyUtf8ToBuffer(
             lineTrackers, prefsState.btTrackerBuffer.data(), prefsState.btTrackerBuffer.size());
     }
+}
+
+}  // namespace
+
+void RenderPreferencesView(UiFrameContext& ctx,
+                           const PanelRect& rect,
+                           int prefTab,
+                           PrefsFormState& prefsState) {
+    SyncPrefsFormState(ctx, prefsState);
 
     const float s = ctx.dpiScale;
     const bool wide = ctx.viewportW >= LayoutMetrics::kSubnavHideThreshold * s;
@@ -261,36 +313,36 @@ void RenderPreferencesView(
     const float headerH = LayoutMetrics::kPanelHeaderHeight * s;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), ToAbgrU32(ctx.palette.mainBg));
+    dl->AddRectFilled(
+        ImVec2(rect.x, rect.y), ImVec2(rect.x + rect.w, rect.y + rect.h), ToAbgrU32(ctx.palette.mainBg));
 
     const std::string_view titleKey =
         (prefTab == 0) ? "prefs.basic" : ((prefTab == 1) ? "prefs.advanced" : "prefs.lab");
     {
         FontGuard titleFont(ctx.fonts, FontRole::Regular, 18.0f);
         const std::string_view title = ctx.tr.Tr(titleKey);
-        dl->AddText(ImVec2(x + marginX, y + LayoutMetrics::kPanelHeaderTopPad * s),
+        dl->AddText(ImVec2(rect.x + marginX, rect.y + LayoutMetrics::kPanelHeaderTopPad * s),
                     ToAbgrU32(ctx.palette.panelTitle),
                     title.data(),
                     title.data() + title.size());
     }
-    const float borderY = y + headerH - 2.0f * s;
-    dl->AddRectFilled(ImVec2(x + marginX, borderY),
-                      ImVec2(x + w - marginX, borderY + 2.0f * s),
+    const float borderY = rect.y + headerH - 2.0f * s;
+    dl->AddRectFilled(ImVec2(rect.x + marginX, borderY),
+                      ImVec2(rect.x + rect.w - marginX, borderY + 2.0f * s),
                       ToAbgrU32(ctx.palette.panelBorder));
 
     const bool hasActionsBar = (prefTab == 0 || prefTab == 1);
     const float actionsH = hasActionsBar ? 68.0f * s : 0.0f;
-    const float scrollY = y + headerH;
-    const float scrollH = std::max(1.0f, h - headerH - actionsH);
+    const float scrollY = rect.y + headerH;
+    const float scrollH = std::max(1.0f, rect.h - headerH - actionsH);
 
-    ImGui::SetCursorScreenPos(ImVec2(x, scrollY));
+    ImGui::SetCursorScreenPos(ImVec2(rect.x, scrollY));
     {
         StyleVarGuard childPad(ImGuiStyleVar_WindowPadding, marginX, 22.0f * s);
-        ChildGuard scrollChild("##prefs_scroll_area",
-                               w,
-                               scrollH,
-                               ImGuiChildFlags_AlwaysUseWindowPadding,
-                               ImGuiWindowFlags_None);
+        ChildGuard scrollChild(
+            "##prefs_scroll_area",
+            ChildWindowSpec{
+                rect.w, scrollH, ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None});
         if (scrollChild.IsVisible()) {
             if (prefTab == 0) {
                 RenderPrefsBasicTab(ctx, prefsState);
@@ -304,39 +356,10 @@ void RenderPreferencesView(
     }
 
     if (hasActionsBar) {
-        const float barY = y + h - actionsH;
-        dl->AddRectFilled(ImVec2(x, barY), ImVec2(x + w, y + h), ToAbgrU32(ctx.palette.mainBg));
-        const float btnH = 32.0f * s;
-        const float btnY = barY + (actionsH - btnH) * 0.5f;
-        float saveW = 96.0f * s;
-        float discW = 66.0f * s;
-        {
-            FontGuard bf(ctx.fonts, FontRole::Medium, 13.5f);
-            const std::string_view sl = ctx.tr.Tr("prefs.save_apply");
-            const std::string_view dsl = ctx.tr.Tr("common.discard");
-            saveW =
-                std::max(90.0f * s, ImGui::CalcTextSize(sl.data(), sl.data() + sl.size()).x + 28.0f * s);
-            discW = std::max(64.0f * s,
-                             ImGui::CalcTextSize(dsl.data(), dsl.data() + dsl.size()).x + 28.0f * s);
-        }
-        ImGui::SetCursorScreenPos(ImVec2(x + marginX, btnY));
-        if (ElPrimaryButton(
-                "##prefs_save", ctx.tr.Tr("prefs.save_apply"), saveW, btnH, ctx.palette, ctx.fonts, s)) {
-            ApplyPrefsDraft(ctx, prefsState);
-        }
-        ImGui::SetCursorScreenPos(ImVec2(x + marginX + saveW + 12.0f * s, btnY));
-        if (ElSecondaryButton("##prefs_discard",
-                              ctx.tr.Tr("common.discard"),
-                              discW,
-                              btnH,
-                              ctx.palette,
-                              ctx.fonts,
-                              s)) {
-            LoadPrefsFromSnapshot(ctx.state, prefsState);
-        }
+        RenderPrefsActionsBar(ctx, PrefsActionsBarSpec{rect, marginX, actionsH}, prefsState);
     }
 
-    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::SetCursorScreenPos(ImVec2(rect.x, rect.y));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 

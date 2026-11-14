@@ -21,6 +21,40 @@ using detail::BuildCommandLineW;
 using detail::IsRegularFileSafe;
 using detail::ScopedWinHandle;
 
+[[nodiscard]] motrix::core::Result<ScopedWinHandle> CreateKillOnCloseJob() {
+    ScopedWinHandle job(::CreateJobObjectW(nullptr, nullptr));
+    if (!job.IsValid()) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                                       motrix::core::ErrorCode::IoFailure,
+                                                       "Failed to create Win32 JobObject"));
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+    jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!::SetInformationJobObject(job.Get(), JobObjectExtendedLimitInformation, &jeli, sizeof(jeli))) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                                       motrix::core::ErrorCode::IoFailure,
+                                                       "Failed to configure JobObject limits"));
+    }
+    return job;
+}
+
+[[nodiscard]] motrix::core::Result<std::pair<ScopedWinHandle, ScopedWinHandle>> CreateLogPipe() {
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE rawRead = nullptr;
+    HANDLE rawWrite = nullptr;
+    if (!::CreatePipe(&rawRead, &rawWrite, &sa, 0)) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                                       motrix::core::ErrorCode::IoFailure,
+                                                       "Failed to create engine log pipe"));
+    }
+    ScopedWinHandle pipeRead(rawRead);
+    ScopedWinHandle pipeWrite(rawWrite);
+    ::SetHandleInformation(pipeRead.Get(), HANDLE_FLAG_INHERIT, 0);
+    return std::make_pair(std::move(pipeRead), std::move(pipeWrite));
+}
+
 class Win32EngineProcessManager final : public IEngineProcessManager {
 public:
     explicit Win32EngineProcessManager(motrix::core::Logger& logger) : logger_(logger) {}
@@ -29,7 +63,6 @@ public:
 
     motrix::core::Result<void> Start(const EngineSpawnSpec& spec) override {
         (void)Stop(std::chrono::milliseconds(1000));
-
         if (!IsRegularFileSafe(spec.executablePath)) {
             return std::unexpected(
                 motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
@@ -38,80 +71,28 @@ public:
                                                     motrix::core::PathToUtf8(spec.executablePath))));
         }
 
-        ScopedWinHandle job(::CreateJobObjectW(nullptr, nullptr));
-        if (!job.IsValid()) {
-            return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
-                                                           motrix::core::ErrorCode::IoFailure,
-                                                           "Failed to create Win32 JobObject"));
+        auto job = CreateKillOnCloseJob();
+        if (!job) {
+            return std::unexpected(job.error());
         }
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
-        jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        if (!::SetInformationJobObject(
-                job.Get(), JobObjectExtendedLimitInformation, &jeli, sizeof(jeli))) {
-            return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
-                                                           motrix::core::ErrorCode::IoFailure,
-                                                           "Failed to configure JobObject limits"));
+        auto pipes = CreateLogPipe();
+        if (!pipes) {
+            return std::unexpected(pipes.error());
         }
-
-        SECURITY_ATTRIBUTES sa{};
-        sa.nLength = sizeof(sa);
-        sa.bInheritHandle = TRUE;
-        HANDLE rawRead = nullptr;
-        HANDLE rawWrite = nullptr;
-        if (!::CreatePipe(&rawRead, &rawWrite, &sa, 0)) {
-            return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
-                                                           motrix::core::ErrorCode::IoFailure,
-                                                           "Failed to create engine log pipe"));
-        }
-        ScopedWinHandle pipeRead(rawRead);
-        ScopedWinHandle pipeWrite(rawWrite);
-        ::SetHandleInformation(pipeRead.Get(), HANDLE_FLAG_INHERIT, 0);
+        auto& [pipeRead, pipeWrite] = *pipes;
 
         const EngineKind kind =
             (spec.hintKind == EngineKind::Unknown) ? EngineKind::ClassicAria2 : spec.hintKind;
         auto dialect = CreateDialect(kind);
-        auto launchOpts = spec.launchOptions;
-        if (launchOpts.hostPid == 0) {
-            launchOpts.hostPid = ::GetCurrentProcessId();
-        }
-        const std::vector<std::string> args = dialect->BuildLaunchArgs(launchOpts, spec.initialOptions);
-        std::wstring cmdLine = BuildCommandLineW(spec.executablePath, args);
-
-        STARTUPINFOW si{};
-        si.cb = sizeof(si);
-        si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        si.hStdOutput = pipeWrite.Get();
-        si.hStdError = pipeWrite.Get();
-        si.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
-
-        PROCESS_INFORMATION pi{};
-        state_.store(EngineProcessState::Starting, std::memory_order_release);
-        const std::wstring workDir = spec.executablePath.parent_path().wstring();
-        const BOOL ok = ::CreateProcessW(spec.executablePath.c_str(),
-                                         cmdLine.data(),
-                                         nullptr,
-                                         nullptr,
-                                         TRUE,
-                                         CREATE_NO_WINDOW | CREATE_SUSPENDED,
-                                         nullptr,
-                                         workDir.empty() ? nullptr : workDir.c_str(),
-                                         &si,
-                                         &pi);
+        auto piRes = LaunchSuspendedChild(spec, *dialect, pipeWrite.Get());
         pipeWrite.Reset();
-
-        if (!ok) {
-            const DWORD err = ::GetLastError();
-            state_.store(EngineProcessState::Stopped, std::memory_order_release);
-            return std::unexpected(
-                motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
-                                        motrix::core::ErrorCode::IoFailure,
-                                        std::format("CreateProcessW failed with Win32 error {}", err)));
+        if (!piRes) {
+            return std::unexpected(piRes.error());
         }
 
-        ScopedWinHandle childProc(pi.hProcess);
-        ScopedWinHandle childThread(pi.hThread);
-        if (!::AssignProcessToJobObject(job.Get(), childProc.Get())) {
+        ScopedWinHandle childProc(piRes->hProcess);
+        ScopedWinHandle childThread(piRes->hThread);
+        if (!::AssignProcessToJobObject(job->Get(), childProc.Get())) {
             ::TerminateProcess(childProc.Get(), 1);
             state_.store(EngineProcessState::Stopped, std::memory_order_release);
             return std::unexpected(
@@ -122,18 +103,17 @@ public:
         ::ResumeThread(childThread.Get());
         childThread.Reset();
 
-        jobHandle_ = std::move(job);
+        jobHandle_ = std::move(*job);
         procHandle_ = std::move(childProc);
-        pid_.store(pi.dwProcessId, std::memory_order_release);
+        pid_.store(piRes->dwProcessId, std::memory_order_release);
         activeKind_.store(kind, std::memory_order_release);
         state_.store(EngineProcessState::Running, std::memory_order_release);
 
         logger_.Info("engine",
                      "Started {} (pid={}, kind={})",
                      motrix::core::PathToUtf8(spec.executablePath),
-                     pi.dwProcessId,
+                     piRes->dwProcessId,
                      dialect->Name());
-
         logThread_ = std::jthread([this, pipe = std::move(pipeRead)](std::stop_token st) mutable {
             DrainPipeLoop(std::move(pipe), st);
         });
@@ -188,6 +168,47 @@ public:
     }
 
 private:
+    [[nodiscard]] motrix::core::Result<PROCESS_INFORMATION>
+    LaunchSuspendedChild(const EngineSpawnSpec& spec, const IEngineDialect& dialect, HANDLE stdWrite) {
+        auto launchOpts = spec.launchOptions;
+        if (launchOpts.hostPid == 0) {
+            launchOpts.hostPid = ::GetCurrentProcessId();
+        }
+        const std::vector<std::string> args = dialect.BuildLaunchArgs(launchOpts, spec.initialOptions);
+        std::wstring cmdLine = BuildCommandLineW(spec.executablePath, args);
+
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        si.hStdOutput = stdWrite;
+        si.hStdError = stdWrite;
+        si.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+
+        PROCESS_INFORMATION pi{};
+        state_.store(EngineProcessState::Starting, std::memory_order_release);
+        const std::wstring workDir = spec.executablePath.parent_path().wstring();
+        const BOOL ok = ::CreateProcessW(spec.executablePath.c_str(),
+                                         cmdLine.data(),
+                                         nullptr,
+                                         nullptr,
+                                         TRUE,
+                                         CREATE_NO_WINDOW | CREATE_SUSPENDED,
+                                         nullptr,
+                                         workDir.empty() ? nullptr : workDir.c_str(),
+                                         &si,
+                                         &pi);
+        if (!ok) {
+            const DWORD err = ::GetLastError();
+            state_.store(EngineProcessState::Stopped, std::memory_order_release);
+            return std::unexpected(
+                motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                        motrix::core::ErrorCode::IoFailure,
+                                        std::format("CreateProcessW failed with Win32 error {}", err)));
+        }
+        return pi;
+    }
+
     void DrainPipeLoop(ScopedWinHandle pipe, std::stop_token st) {
         std::string lineBuf;
         std::array<char, 1024> chunk{};

@@ -33,65 +33,49 @@ constexpr DWORD kDwmWindowCornerPreference = 33;
 constexpr int kDwmRoundCorner = 2;
 
 [[nodiscard]] bool ShouldWakeFrameForMessage(UINT msg) noexcept {
-    switch (msg) {
-        case WM_PAINT:
-        case WM_MOUSEMOVE:
-        case WM_NCMOUSEMOVE:
-        case WM_MOUSELEAVE:
-        case WM_NCMOUSELEAVE:
-        case WM_LBUTTONDOWN:
-        case WM_LBUTTONUP:
-        case WM_LBUTTONDBLCLK:
-        case WM_RBUTTONDOWN:
-        case WM_RBUTTONUP:
-        case WM_MBUTTONDOWN:
-        case WM_MBUTTONUP:
-        case WM_MOUSEWHEEL:
-        case WM_MOUSEHWHEEL:
-        case WM_KEYDOWN:
-        case WM_KEYUP:
-        case WM_SYSKEYDOWN:
-        case WM_SYSKEYUP:
-        case WM_CHAR:
-        case WM_IME_CHAR:
-        case WM_IME_COMPOSITION:
-        case WM_IME_STARTCOMPOSITION:
-        case WM_IME_ENDCOMPOSITION:
-        case WM_SETFOCUS:
-        case WM_KILLFOCUS:
-        case WM_SIZE:
-        case WM_DPICHANGED:
-        case WM_ACTIVATE:
-        case WM_SETCURSOR:
-        case WM_DROPFILES:
-        case kWmAppWakeup: return true;
-        default: return false;
-    }
+    static constexpr std::array<UINT, 31> kWakeMessages{WM_PAINT,
+                                                        WM_MOUSEMOVE,
+                                                        WM_NCMOUSEMOVE,
+                                                        WM_MOUSELEAVE,
+                                                        WM_NCMOUSELEAVE,
+                                                        WM_LBUTTONDOWN,
+                                                        WM_LBUTTONUP,
+                                                        WM_LBUTTONDBLCLK,
+                                                        WM_RBUTTONDOWN,
+                                                        WM_RBUTTONUP,
+                                                        WM_MBUTTONDOWN,
+                                                        WM_MBUTTONUP,
+                                                        WM_MOUSEWHEEL,
+                                                        WM_MOUSEHWHEEL,
+                                                        WM_KEYDOWN,
+                                                        WM_KEYUP,
+                                                        WM_SYSKEYDOWN,
+                                                        WM_SYSKEYUP,
+                                                        WM_CHAR,
+                                                        WM_IME_CHAR,
+                                                        WM_IME_COMPOSITION,
+                                                        WM_IME_STARTCOMPOSITION,
+                                                        WM_IME_ENDCOMPOSITION,
+                                                        WM_SETFOCUS,
+                                                        WM_KILLFOCUS,
+                                                        WM_SIZE,
+                                                        WM_DPICHANGED,
+                                                        WM_ACTIVATE,
+                                                        WM_SETCURSOR,
+                                                        WM_DROPFILES,
+                                                        kWmAppWakeup};
+    return std::ranges::find(kWakeMessages, msg) != kWakeMessages.end();
 }
 
 [[nodiscard]] LRESULT HitTestBorder(POINT pt, const RECT& rc, int border) noexcept {
-    const bool left = pt.x < border;
-    const bool right = pt.x >= rc.right - border;
-    const bool top = pt.y < border;
-    const bool bottom = pt.y >= rc.bottom - border;
-
-    if (top && left)
-        return HTTOPLEFT;
-    if (top && right)
-        return HTTOPRIGHT;
-    if (bottom && left)
-        return HTBOTTOMLEFT;
-    if (bottom && right)
-        return HTBOTTOMRIGHT;
-    if (top)
-        return HTTOP;
-    if (bottom)
-        return HTBOTTOM;
-    if (left)
-        return HTLEFT;
-    if (right)
-        return HTRIGHT;
-    return HTCLIENT;
+    static constexpr LRESULT kHit[3][3]{
+        {HTTOPLEFT, HTTOP, HTTOPRIGHT},
+        {HTLEFT, HTCLIENT, HTRIGHT},
+        {HTBOTTOMLEFT, HTBOTTOM, HTBOTTOMRIGHT},
+    };
+    const int xIdx = (pt.x < border) ? 0 : ((pt.x >= rc.right - border) ? 2 : 1);
+    const int yIdx = (pt.y < border) ? 0 : ((pt.y >= rc.bottom - border) ? 2 : 1);
+    return kHit[yIdx][xIdx];
 }
 
 WNDPROC gPrevWndProcForDrop = nullptr;
@@ -164,29 +148,68 @@ LRESULT CALLBACK DropAwareWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
     return HTCLIENT;
 }
 
-LRESULT HandleMessage(Win32WindowState& state, HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (ShouldWakeFrameForMessage(msg)) {
+struct WindowMsg {
+    HWND hWnd = nullptr;
+    UINT msg = 0;
+    WPARAM wParam = 0;
+    LPARAM lParam = 0;
+};
+
+void AdjustZoomedNcCalcSize(HWND hWnd, WPARAM wParam, LPARAM lParam) noexcept {
+    if (wParam != TRUE || !::IsZoomed(hWnd)) {
+        return;
+    }
+    auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+    const UINT dpi = ::GetDpiForWindow(hWnd);
+    const int pad = ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+    const int cx = ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + pad;
+    const int cy = ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) + pad;
+    params->rgrc[0].left += cx;
+    params->rgrc[0].right -= cx;
+    params->rgrc[0].top += cy;
+    params->rgrc[0].bottom -= cy;
+}
+
+void HandleSizeMessage(Win32WindowState& state, const WindowMsg& m) {
+    if (m.wParam == SIZE_MINIMIZED) {
+        return;
+    }
+    state.pendingResizeW = static_cast<std::uint32_t>(LOWORD(m.lParam));
+    state.pendingResizeH = static_cast<std::uint32_t>(HIWORD(m.lParam));
+    if ((m.wParam == SIZE_MAXIMIZED || m.wParam == SIZE_RESTORED) && state.config.onBoundsChanged
+        && ::IsWindowVisible(m.hWnd)) {
+        state.config.onBoundsChanged(Win32ReadWindowBounds(m.hWnd));
+    }
+}
+
+void HandleBlurAutoHide(Win32WindowState& state, const WindowMsg& m) {
+    if (LOWORD(m.wParam) != WA_INACTIVE || !state.autoHideOnBlur || !state.config.screenshotPath.empty()
+        || !::IsWindowVisible(m.hWnd) || ::IsIconic(m.hWnd)) {
+        return;
+    }
+    HWND next = reinterpret_cast<HWND>(m.lParam);
+    DWORD nextPid = 0;
+    if (next) {
+        ::GetWindowThreadProcessId(next, &nextPid);
+    }
+    if (!next || nextPid != ::GetCurrentProcessId()) {
+        Win32ShowWindow(m.hWnd, false, false);
+        state.hiddenToTray = true;
+    }
+}
+
+LRESULT HandleMessage(Win32WindowState& state, const WindowMsg& m) {
+    if (ShouldWakeFrameForMessage(m.msg)) {
         state.activeFramesRemaining = std::max(state.activeFramesRemaining, 3);
     }
 
-    switch (msg) {
-        case WM_NCCALCSIZE: {
-            if (wParam == TRUE && ::IsZoomed(hWnd)) {
-                auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
-                const UINT dpi = ::GetDpiForWindow(hWnd);
-                const int pad = ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
-                const int cx = ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + pad;
-                const int cy = ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) + pad;
-                params->rgrc[0].left += cx;
-                params->rgrc[0].right -= cx;
-                params->rgrc[0].top += cy;
-                params->rgrc[0].bottom -= cy;
-            }
-            return (wParam == TRUE) ? 0 : ::DefWindowProcW(hWnd, msg, wParam, lParam);
-        }
-        case WM_NCHITTEST: return HandleNcHitTest(state, hWnd, lParam);
+    switch (m.msg) {
+        case WM_NCCALCSIZE:
+            AdjustZoomedNcCalcSize(m.hWnd, m.wParam, m.lParam);
+            return (m.wParam == TRUE) ? 0 : ::DefWindowProcW(m.hWnd, m.msg, m.wParam, m.lParam);
+        case WM_NCHITTEST: return HandleNcHitTest(state, m.hWnd, m.lParam);
         case WM_GETMINMAXINFO: {
-            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(m.lParam);
             mmi->ptMinTrackSize.x =
                 static_cast<LONG>(static_cast<float>(state.config.minWidth) * state.dpiScale);
             mmi->ptMinTrackSize.y =
@@ -194,8 +217,8 @@ LRESULT HandleMessage(Win32WindowState& state, HWND hWnd, UINT msg, WPARAM wPara
             return 0;
         }
         case WM_DPICHANGED: {
-            const auto* s = reinterpret_cast<const RECT*>(lParam);
-            ::SetWindowPos(hWnd,
+            const auto* s = reinterpret_cast<const RECT*>(m.lParam);
+            ::SetWindowPos(m.hWnd,
                            nullptr,
                            s->left,
                            s->top,
@@ -204,44 +227,22 @@ LRESULT HandleMessage(Win32WindowState& state, HWND hWnd, UINT msg, WPARAM wPara
                            SWP_NOZORDER | SWP_NOACTIVATE);
             return 0;
         }
-        case WM_SIZE:
-            if (wParam != SIZE_MINIMIZED) {
-                state.pendingResizeW = static_cast<std::uint32_t>(LOWORD(lParam));
-                state.pendingResizeH = static_cast<std::uint32_t>(HIWORD(lParam));
-                if ((wParam == SIZE_MAXIMIZED || wParam == SIZE_RESTORED) && state.config.onBoundsChanged
-                    && ::IsWindowVisible(hWnd)) {
-                    state.config.onBoundsChanged(Win32ReadWindowBounds(hWnd));
-                }
-            }
-            return 0;
+        case WM_SIZE: HandleSizeMessage(state, m); return 0;
         case WM_EXITSIZEMOVE:
-            if (state.config.onBoundsChanged && !::IsIconic(hWnd)) {
-                state.config.onBoundsChanged(Win32ReadWindowBounds(hWnd));
+            if (state.config.onBoundsChanged && !::IsIconic(m.hWnd)) {
+                state.config.onBoundsChanged(Win32ReadWindowBounds(m.hWnd));
             }
             return 0;
-        case WM_ACTIVATE:
-            if (LOWORD(wParam) == WA_INACTIVE && state.autoHideOnBlur
-                && state.config.screenshotPath.empty() && ::IsWindowVisible(hWnd) && !::IsIconic(hWnd)) {
-                HWND next = reinterpret_cast<HWND>(lParam);
-                DWORD nextPid = 0;
-                if (next) {
-                    ::GetWindowThreadProcessId(next, &nextPid);
-                }
-                if (!next || nextPid != ::GetCurrentProcessId()) {
-                    Win32ShowWindow(hWnd, false, false);
-                    state.hiddenToTray = true;
-                }
-            }
-            break;
+        case WM_ACTIVATE: HandleBlurAutoHide(state, m); break;
         case kWmTrayCallback:
-            Win32HandleTrayCallback(state, static_cast<std::uint64_t>(lParam));
+            Win32HandleTrayCallback(state, static_cast<std::uint64_t>(m.lParam));
             return 0;
         case WM_CLOSE:
             if (state.config.onBoundsChanged) {
-                state.config.onBoundsChanged(Win32ReadWindowBounds(hWnd));
+                state.config.onBoundsChanged(Win32ReadWindowBounds(m.hWnd));
             }
             if (state.bindCloseToHide && !state.explicitQuitRequested) {
-                Win32ShowWindow(hWnd, false, false);
+                Win32ShowWindow(m.hWnd, false, false);
                 state.hiddenToTray = true;
                 return 0;
             }
@@ -250,14 +251,14 @@ LRESULT HandleMessage(Win32WindowState& state, HWND hWnd, UINT msg, WPARAM wPara
             }
             break;
         case WM_SYSCOMMAND:
-            if ((wParam & 0xFFF0u) == SC_KEYMENU) {
+            if ((m.wParam & 0xFFF0u) == SC_KEYMENU) {
                 return 0;
             }
             break;
         case WM_DESTROY: ::PostQuitMessage(0); return 0;
         default: break;
     }
-    return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+    return ::DefWindowProcW(m.hWnd, m.msg, m.wParam, m.lParam);
 }
 
 LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -278,7 +279,7 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     }
 
     if (state) {
-        return HandleMessage(*state, hWnd, msg, wParam, lParam);
+        return HandleMessage(*state, WindowMsg{hWnd, msg, wParam, lParam});
     }
     return ::DefWindowProcW(hWnd, msg, wParam, lParam);
 }

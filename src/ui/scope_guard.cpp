@@ -58,12 +58,61 @@ WindowGuard::~WindowGuard() {
     ImGui::End();
 }
 
-ChildGuard::ChildGuard(const char* id, float width, float height, int childFlags, int windowFlags)
-    : visible_(ImGui::BeginChild(id, ImVec2(width, height), childFlags, windowFlags)) {
+ChildGuard::ChildGuard(const char* id, const ChildWindowSpec& spec)
+    : visible_(
+          ImGui::BeginChild(id, ImVec2(spec.width, spec.height), spec.childFlags, spec.windowFlags)) {
 }
 
 ChildGuard::~ChildGuard() {
     ImGui::EndChild();
+}
+
+PopupGuard::PopupGuard(const char* id, int windowFlags) : open_(ImGui::BeginPopup(id, windowFlags)) {
+}
+
+PopupGuard::~PopupGuard() {
+    if (open_) {
+        ImGui::EndPopup();
+    }
+}
+
+TableGuard::TableGuard(const char* id, const TableSpec& spec)
+    : open_(ImGui::BeginTable(id, spec.columns, spec.flags, ImVec2(spec.width, spec.height))) {
+}
+
+TableGuard::~TableGuard() {
+    if (open_) {
+        ImGui::EndTable();
+    }
+}
+
+GroupGuard::GroupGuard() {
+    ImGui::BeginGroup();
+}
+
+GroupGuard::~GroupGuard() {
+    ImGui::EndGroup();
+}
+
+TextWrapGuard::TextWrapGuard(float wrapLocalPosX) {
+    ImGui::PushTextWrapPos(wrapLocalPosX);
+}
+
+TextWrapGuard::~TextWrapGuard() {
+    ImGui::PopTextWrapPos();
+}
+
+ClipRectGuard::ClipRectGuard(void* drawList, const ClipRectSpec& spec) : drawList_(drawList) {
+    if (drawList_ != nullptr) {
+        static_cast<ImDrawList*>(drawList_)->PushClipRect(
+            ImVec2(spec.minX, spec.minY), ImVec2(spec.maxX, spec.maxY), spec.intersect);
+    }
+}
+
+ClipRectGuard::~ClipRectGuard() {
+    if (drawList_ != nullptr) {
+        static_cast<ImDrawList*>(drawList_)->PopClipRect();
+    }
 }
 
 PopupModalGuard::PopupModalGuard(const char* title, bool* open, int windowFlags)

@@ -20,37 +20,6 @@ ToEnginePairs(const std::vector<std::pair<std::string, std::string>>& raw) {
     return out;
 }
 
-[[nodiscard]] std::vector<motrix::engine::EngineOptionPair>
-BuildAddUriOptions(const EngineWorkCommand& cmd) {
-    std::vector<motrix::engine::EngineOptionPair> out;
-    if (!cmd.dir.empty()) {
-        out.push_back({"dir", cmd.dir});
-    }
-    if (!cmd.outName.empty()) {
-        out.push_back({"out", cmd.outName});
-    }
-    if (cmd.split > 0) {
-        out.push_back({"split", std::to_string(cmd.split)});
-        out.push_back({"max-connection-per-server", std::to_string(std::clamp(cmd.split, 1, 64))});
-    }
-    if (!cmd.userAgent.empty()) {
-        out.push_back({"user-agent", cmd.userAgent});
-    }
-    if (!cmd.referer.empty()) {
-        out.push_back({"referer", cmd.referer});
-    }
-    if (!cmd.allProxy.empty()) {
-        out.push_back({"all-proxy", cmd.allProxy});
-    }
-    if (!cmd.authorization.empty()) {
-        out.push_back({"header", std::format("Authorization: {}", cmd.authorization)});
-    }
-    if (!cmd.cookie.empty()) {
-        out.push_back({"header", std::format("Cookie: {}", cmd.cookie)});
-    }
-    return out;
-}
-
 }  // namespace
 
 EngineRuntime::EngineRuntime(motrix::core::Logger& logger, EngineRuntimeConfig cfg, SyncCallback onSync)
@@ -106,7 +75,7 @@ void EngineRuntime::Enqueue(EngineWorkCommand cmd) {
 }
 
 void EngineRuntime::RunLoop(std::stop_token st) {
-    onSync_(EngineConnectionState::Starting, nullptr, nullptr, {}, {});
+    onSync_(EngineSyncUpdate{.connState = EngineConnectionState::Starting});
     while (!st.stop_requested()) {
         if (!TryStartAndConnect(st)) {
             if (st.stop_requested()) {
@@ -116,63 +85,68 @@ void EngineRuntime::RunLoop(std::stop_token st) {
             queueCv_.wait_for(lock, st, std::chrono::seconds(3), [&] { return st.stop_requested(); });
             continue;
         }
+        RunConnectedSession(st);
+    }
+    ShutdownEngineGracefully();
+}
 
-        disconnectedFlag_.store(false, std::memory_order_release);
-        wakeSync_.store(true, std::memory_order_release);
+void EngineRuntime::RunConnectedSession(std::stop_token st) {
+    disconnectedFlag_.store(false, std::memory_order_release);
+    wakeSync_.store(true, std::memory_order_release);
 
-        while (!st.stop_requested()) {
-            if (disconnectedFlag_.load(std::memory_order_acquire)
-                || proc_->State() == motrix::engine::EngineProcessState::Crashed
-                || !rpc_->IsConnected()) {
-                onSync_(EngineConnectionState::Reconnecting,
-                        &versionInfo_,
-                        nullptr,
-                        resolvedPath_,
-                        "Engine connection lost, reconnecting...");
-                rpc_->Disconnect();
-                (void)proc_->Stop(std::chrono::milliseconds(1000));
-                break;
+    while (!st.stop_requested()) {
+        const bool lost = disconnectedFlag_.load(std::memory_order_acquire)
+                          || proc_->State() == motrix::engine::EngineProcessState::Crashed
+                          || !rpc_->IsConnected();
+        if (lost) {
+            onSync_(EngineSyncUpdate{
+                .connState = EngineConnectionState::Reconnecting,
+                .version = &versionInfo_,
+                .enginePath = resolvedPath_,
+                .errorMsg = "Engine connection lost, reconnecting...",
+            });
+            rpc_->Disconnect();
+            (void)proc_->Stop(std::chrono::milliseconds(1000));
+            return;
+        }
+
+        std::deque<EngineWorkCommand> pending;
+        {
+            std::unique_lock lock(queueMutex_);
+            const auto waitDur =
+                hasActiveTasks_ ? std::chrono::milliseconds(500) : std::chrono::seconds(5);
+            if (queue_.empty() && !wakeSync_.load(std::memory_order_acquire)) {
+                queueCv_.wait_for(lock, st, waitDur, [&] {
+                    return st.stop_requested() || !queue_.empty()
+                           || wakeSync_.load(std::memory_order_acquire)
+                           || disconnectedFlag_.load(std::memory_order_acquire);
+                });
             }
+            pending.swap(queue_);
+        }
+        if (st.stop_requested()) {
+            return;
+        }
 
-            std::deque<EngineWorkCommand> pending;
-            {
-                std::unique_lock lock(queueMutex_);
-                const auto waitDur =
-                    hasActiveTasks_ ? std::chrono::milliseconds(500) : std::chrono::seconds(5);
-                if (queue_.empty() && !wakeSync_.load(std::memory_order_acquire)) {
-                    queueCv_.wait_for(lock, st, waitDur, [&] {
-                        return st.stop_requested() || !queue_.empty()
-                               || wakeSync_.load(std::memory_order_acquire)
-                               || disconnectedFlag_.load(std::memory_order_acquire);
-                    });
-                }
-                pending.swap(queue_);
-            }
-
-            if (st.stop_requested()) {
-                break;
-            }
-
-            bool needSync = wakeSync_.exchange(false, std::memory_order_acq_rel);
-            std::string cmdErr;
-            while (!pending.empty()) {
-                EngineWorkCommand item = std::move(pending.front());
-                pending.pop_front();
-                ProcessCommand(item, needSync, cmdErr);
-            }
-
-            if (needSync || hasActiveTasks_) {
-                auto snap = rpc_->SyncAll(100, 100);
-                if (snap) {
-                    ApplySyncSnapshot(*snap, cmdErr);
-                } else if (!st.stop_requested()) {
-                    logger_.Warn("app", "SyncAll failed: {}", snap.error().message);
-                    disconnectedFlag_.store(true, std::memory_order_release);
-                }
-            }
+        bool needSync = wakeSync_.exchange(false, std::memory_order_acq_rel);
+        std::string cmdErr;
+        while (!pending.empty()) {
+            ProcessCommand(pending.front(), needSync, cmdErr);
+            pending.pop_front();
+        }
+        if (!needSync && !hasActiveTasks_) {
+            continue;
+        }
+        if (auto snap = rpc_->SyncAll(100, 100); snap) {
+            ApplySyncSnapshot(*snap, cmdErr);
+        } else if (!st.stop_requested()) {
+            logger_.Warn("app", "SyncAll failed: {}", snap.error().message);
+            disconnectedFlag_.store(true, std::memory_order_release);
         }
     }
+}
 
+void EngineRuntime::ShutdownEngineGracefully() {
     if (rpc_->IsConnected()) {
         if (dialect_ && !dialect_->UsesStateDirInsteadOfAria2Files()) {
             (void)rpc_->SaveSession();
@@ -183,25 +157,8 @@ void EngineRuntime::RunLoop(std::stop_token st) {
     (void)proc_->Stop(std::chrono::milliseconds(3000));
 }
 
-bool EngineRuntime::TryStartAndConnect(std::stop_token st) {
-    const auto binOpt = motrix::engine::DiscoverEngineExecutable(config_.enginePathOverride);
-    if (!binOpt) {
-        onSync_(EngineConnectionState::Offline,
-                nullptr,
-                nullptr,
-                {},
-                "Engine binary (aria2c / aria2-next) not found");
-        return false;
-    }
-
-    resolvedPath_ = motrix::core::PathToUtf8(*binOpt);
-    auto probe = motrix::engine::ProbeEngineBinaryVersion(*binOpt);
-    motrix::engine::EngineKind kind = probe ? probe->kind : motrix::engine::EngineKind::ClassicAria2;
-    if (probe) {
-        versionInfo_ = *probe;
-    }
-
-    dialect_ = motrix::engine::CreateDialect(kind);
+EngineRuntime::PreparedLaunch EngineRuntime::PrepareLaunchSpec(const std::filesystem::path& binPath,
+                                                               motrix::engine::EngineKind kind) const {
     std::error_code ec;
     std::filesystem::create_directories(config_.appDataDir, ec);
 
@@ -218,19 +175,78 @@ bool EngineRuntime::TryStartAndConnect(std::stop_token st) {
         launch.sessionFileExists = std::filesystem::is_regular_file(launch.stateOrSessionPath, ec);
     }
 
-    const auto globalOpts = ToEnginePairs(motrix::domain::SystemConfigToOptionPairs(config_.sysConfig));
-    motrix::engine::EngineSpawnSpec spec{};
-    spec.executablePath = *binOpt;
-    spec.launchOptions = launch;
-    spec.initialOptions = dialect_->FilterGlobalOptions(globalOpts);
-    spec.hintKind = kind;
+    auto globalOpts = ToEnginePairs(motrix::domain::SystemConfigToOptionPairs(config_.sysConfig));
+    PreparedLaunch out{};
+    out.spec.executablePath = binPath;
+    out.spec.launchOptions = launch;
+    out.spec.initialOptions = dialect_->FilterGlobalOptions(globalOpts);
+    out.spec.hintKind = kind;
+    out.globalOpts = std::move(globalOpts);
+    return out;
+}
 
-    if (auto startRes = proc_->Start(spec); !startRes) {
-        onSync_(EngineConnectionState::Offline,
-                &versionInfo_,
-                nullptr,
-                resolvedPath_,
-                startRes.error().message);
+void EngineRuntime::FinalizeConnectedSession(
+    const motrix::core::Result<motrix::engine::EngineVersionInfo>& probe,
+    const std::vector<motrix::engine::EngineOptionPair>& globalOpts) {
+    if (auto ver = rpc_->GetVersion(); ver) {
+        if (ver->product.empty() && probe) {
+            ver->product = probe->product;
+            ver->kind = probe->kind;
+        }
+        if (ver->enabledFeatures.empty() && probe) {
+            ver->enabledFeatures = probe->enabledFeatures;
+        }
+        versionInfo_ = *ver;
+        if (ver->kind != dialect_->Kind()) {
+            dialect_ = motrix::engine::CreateDialect(ver->kind);
+        }
+    }
+    (void)rpc_->ChangeGlobalOption(dialect_->FilterGlobalOptions(globalOpts));
+    if (config_.resumeAllWhenLaunched && !didLaunchResume_) {
+        didLaunchResume_ = true;
+        (void)rpc_->UnpauseAll();
+    }
+    if (!dialect_->SupportsNativeUpnp()) {
+        StartOrRefreshUpnpAsync(
+            config_.enableUpnp, config_.sysConfig.listenPort, config_.sysConfig.dhtListenPort);
+    }
+    if (auto initialSync = rpc_->SyncAll(100, 100); initialSync) {
+        ApplySyncSnapshot(*initialSync, {});
+        return;
+    }
+    onSync_(EngineSyncUpdate{
+        .connState = EngineConnectionState::Connected,
+        .version = &versionInfo_,
+        .enginePath = resolvedPath_,
+    });
+}
+
+bool EngineRuntime::TryStartAndConnect(std::stop_token st) {
+    const auto binOpt = motrix::engine::DiscoverEngineExecutable(config_.enginePathOverride);
+    if (!binOpt) {
+        onSync_(EngineSyncUpdate{
+            .connState = EngineConnectionState::Offline,
+            .errorMsg = "Engine binary (aria2c / aria2-next) not found",
+        });
+        return false;
+    }
+
+    resolvedPath_ = motrix::core::PathToUtf8(*binOpt);
+    const auto probe = motrix::engine::ProbeEngineBinaryVersion(*binOpt);
+    const auto kind = probe ? probe->kind : motrix::engine::EngineKind::ClassicAria2;
+    if (probe) {
+        versionInfo_ = *probe;
+    }
+    dialect_ = motrix::engine::CreateDialect(kind);
+    const PreparedLaunch launch = PrepareLaunchSpec(*binOpt, kind);
+
+    if (auto startRes = proc_->Start(launch.spec); !startRes) {
+        onSync_(EngineSyncUpdate{
+            .connState = EngineConnectionState::Offline,
+            .version = &versionInfo_,
+            .enginePath = resolvedPath_,
+            .errorMsg = startRes.error().message,
+        });
         return false;
     }
 
@@ -239,44 +255,18 @@ bool EngineRuntime::TryStartAndConnect(std::stop_token st) {
         .port = config_.sysConfig.rpcListenPort,
         .secret = config_.sysConfig.rpcSecret,
     };
-
     for (int attempt = 0; attempt < 25 && !st.stop_requested(); ++attempt) {
         if (proc_->State() == motrix::engine::EngineProcessState::Crashed) {
-            onSync_(EngineConnectionState::Offline,
-                    &versionInfo_,
-                    nullptr,
-                    resolvedPath_,
-                    "Engine exited immediately on startup (check RPC port conflict)");
+            onSync_(EngineSyncUpdate{
+                .connState = EngineConnectionState::Offline,
+                .version = &versionInfo_,
+                .enginePath = resolvedPath_,
+                .errorMsg = "Engine exited immediately on startup (check RPC port conflict)",
+            });
             return false;
         }
         if (rpc_->Connect(rpcOpts)) {
-            if (auto ver = rpc_->GetVersion(); ver) {
-                if (ver->product.empty() && probe) {
-                    ver->product = probe->product;
-                    ver->kind = probe->kind;
-                }
-                if (ver->enabledFeatures.empty() && probe) {
-                    ver->enabledFeatures = probe->enabledFeatures;
-                }
-                versionInfo_ = *ver;
-                if (ver->kind != dialect_->Kind()) {
-                    dialect_ = motrix::engine::CreateDialect(ver->kind);
-                }
-            }
-            (void)rpc_->ChangeGlobalOption(dialect_->FilterGlobalOptions(globalOpts));
-            if (config_.resumeAllWhenLaunched && !didLaunchResume_) {
-                didLaunchResume_ = true;
-                (void)rpc_->UnpauseAll();
-            }
-            if (!dialect_->SupportsNativeUpnp()) {
-                StartOrRefreshUpnpAsync(
-                    config_.enableUpnp, config_.sysConfig.listenPort, config_.sysConfig.dhtListenPort);
-            }
-            if (auto initialSync = rpc_->SyncAll(100, 100); initialSync) {
-                ApplySyncSnapshot(*initialSync, {});
-            } else {
-                onSync_(EngineConnectionState::Connected, &versionInfo_, nullptr, resolvedPath_, {});
-            }
+            FinalizeConnectedSession(probe, launch.globalOpts);
             return true;
         }
         std::unique_lock lock(queueMutex_);
@@ -285,154 +275,25 @@ bool EngineRuntime::TryStartAndConnect(std::stop_token st) {
 
     rpc_->Disconnect();
     (void)proc_->Stop(std::chrono::milliseconds(1000));
-    onSync_(EngineConnectionState::Offline,
-            &versionInfo_,
-            nullptr,
-            resolvedPath_,
-            "Timed out connecting to aria2 WebSocket RPC");
+    onSync_(EngineSyncUpdate{
+        .connState = EngineConnectionState::Offline,
+        .version = &versionInfo_,
+        .enginePath = resolvedPath_,
+        .errorMsg = "Timed out connecting to aria2 WebSocket RPC",
+    });
     return false;
-}
-
-void EngineRuntime::ProcessCommand(const EngineWorkCommand& cmd, bool& needSync, std::string& lastErr) {
-    using K = EngineWorkCommand::Kind;
-    switch (cmd.kind) {
-        case K::Sync: needSync = true; break;
-        case K::AddUri: {
-            const auto filtered = dialect_->FilterTaskOptions(BuildAddUriOptions(cmd));
-            for (const auto& uri : cmd.uris) {
-                const motrix::engine::AddUriRequest req{
-                    .uris = {uri},
-                    .options = filtered,
-                    .position = std::nullopt,
-                };
-                if (auto res = rpc_->AddUri(req); !res) {
-                    lastErr = res.error().message;
-                    logger_.Warn("rpc", "addUri failed: {}", lastErr);
-                }
-            }
-            needSync = true;
-            break;
-        }
-        case K::AddTorrent: {
-            auto rawOpts = BuildAddUriOptions(cmd);
-            if (!cmd.selectedIndices.empty() && cmd.selectedIndices.size() < cmd.totalFiles) {
-                rawOpts.push_back(
-                    {"select-file", motrix::domain::FormatSelectFileOption(cmd.selectedIndices)});
-            }
-            const motrix::engine::AddTorrentRequest req{
-                .torrentBase64 = cmd.torrentBase64,
-                .uris = {},
-                .options = dialect_->FilterTaskOptions(rawOpts),
-                .position = std::nullopt,
-            };
-            if (auto res = rpc_->AddTorrent(req); !res) {
-                lastErr = res.error().message;
-                logger_.Warn("rpc", "addTorrent failed: {}", lastErr);
-            }
-            needSync = true;
-            break;
-        }
-        case K::ChangeTaskOption: {
-            if (!cmd.gid.empty() && !cmd.selectedIndices.empty()) {
-                const std::vector<motrix::engine::EngineOptionPair> opts{
-                    {"select-file", motrix::domain::FormatSelectFileOption(cmd.selectedIndices)}};
-                if (auto res = rpc_->ChangeTaskOption(cmd.gid, dialect_->FilterTaskOptions(opts));
-                    !res) {
-                    lastErr = res.error().message;
-                    logger_.Warn("rpc", "changeOption failed: {}", lastErr);
-                }
-            }
-            needSync = true;
-            break;
-        }
-        case K::ApplyGlobalOptions: {
-            std::vector<motrix::engine::EngineOptionPair> runtimeOpts;
-            for (const auto& [k, v] : cmd.options) {
-                if (k != "rpc-listen-port" && k != "rpc-secret" && k != "listen-port"
-                    && k != "dht-listen-port" && k != "continue" && k != "follow-torrent") {
-                    runtimeOpts.push_back({k, v});
-                }
-            }
-            const auto filtered = dialect_->FilterGlobalOptions(runtimeOpts);
-            if (!filtered.empty()) {
-                if (auto res = rpc_->ChangeGlobalOption(filtered); !res) {
-                    lastErr = res.error().message;
-                    logger_.Warn("rpc", "changeGlobalOption failed: {}", lastErr);
-                }
-            }
-            needSync = true;
-            break;
-        }
-        case K::FetchDetail: {
-            std::string activeGid;
-            {
-                std::scoped_lock lock(detailMutex_);
-                activeGid = detailGid_;
-            }
-            if (!activeGid.empty()) {
-                FetchAndPublishDetail(activeGid);
-            }
-            break;
-        }
-        case K::Pause: {
-            if (auto res = rpc_->Pause(cmd.gid); !res) {
-                lastErr = res.error().message;
-            }
-            needSync = true;
-            break;
-        }
-        case K::Resume: {
-            if (auto res = rpc_->Unpause(cmd.gid); !res) {
-                lastErr = res.error().message;
-            }
-            needSync = true;
-            break;
-        }
-        case K::Remove: {
-            if (cmd.taskInStopped) {
-                (void)rpc_->RemoveDownloadResult(cmd.gid);
-            } else {
-                (void)rpc_->ForceRemove(cmd.gid);
-                (void)rpc_->RemoveDownloadResult(cmd.gid);
-            }
-            needSync = true;
-            break;
-        }
-        case K::Restart: {
-            if (!cmd.uris.empty()) {
-                const motrix::engine::AddUriRequest req{
-                    .uris = cmd.uris,
-                    .options = dialect_->FilterTaskOptions(BuildAddUriOptions(cmd)),
-                    .position = std::nullopt,
-                };
-                if (auto res = rpc_->AddUri(req); res) {
-                    (void)rpc_->RemoveDownloadResult(cmd.gid);
-                } else {
-                    lastErr = res.error().message;
-                }
-            }
-            needSync = true;
-            break;
-        }
-        case K::PauseAll:
-            (void)rpc_->PauseAll();
-            needSync = true;
-            break;
-        case K::ResumeAll:
-            (void)rpc_->UnpauseAll();
-            needSync = true;
-            break;
-        case K::PurgeStopped:
-            (void)rpc_->PurgeDownloadResult();
-            needSync = true;
-            break;
-    }
 }
 
 void EngineRuntime::ApplySyncSnapshot(const motrix::engine::EngineSyncSnapshot& snap,
                                       std::string_view err) {
     hasActiveTasks_ = !snap.active.empty() || snap.globalStat.numActive > 0;
-    onSync_(EngineConnectionState::Connected, &versionInfo_, &snap, resolvedPath_, err);
+    onSync_(EngineSyncUpdate{
+        .connState = EngineConnectionState::Connected,
+        .version = &versionInfo_,
+        .sync = &snap,
+        .enginePath = resolvedPath_,
+        .errorMsg = err,
+    });
     std::string activeDetailGid;
     {
         std::scoped_lock lock(detailMutex_);

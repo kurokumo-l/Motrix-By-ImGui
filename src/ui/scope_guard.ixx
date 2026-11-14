@@ -58,9 +58,16 @@ private:
     bool open_ = false;
 };
 
+export struct ChildWindowSpec {
+    float width = 0.0f;
+    float height = 0.0f;
+    int childFlags = 0;
+    int windowFlags = 0;
+};
+
 export class ChildGuard {
 public:
-    ChildGuard(const char* id, float width, float height, int childFlags, int windowFlags);
+    ChildGuard(const char* id, const ChildWindowSpec& spec = {});
     ~ChildGuard();
 
     [[nodiscard]] bool IsVisible() const noexcept { return visible_; }
@@ -70,6 +77,79 @@ public:
 
 private:
     bool visible_ = false;
+};
+
+export class PopupGuard {
+public:
+    explicit PopupGuard(const char* id, int windowFlags = 0);
+    ~PopupGuard();
+
+    [[nodiscard]] bool IsOpen() const noexcept { return open_; }
+
+    PopupGuard(const PopupGuard&) = delete;
+    PopupGuard& operator=(const PopupGuard&) = delete;
+
+private:
+    bool open_ = false;
+};
+
+export struct TableSpec {
+    int columns = 1;
+    int flags = 0;
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
+export class TableGuard {
+public:
+    TableGuard(const char* id, const TableSpec& spec);
+    ~TableGuard();
+
+    [[nodiscard]] bool IsOpen() const noexcept { return open_; }
+
+    TableGuard(const TableGuard&) = delete;
+    TableGuard& operator=(const TableGuard&) = delete;
+
+private:
+    bool open_ = false;
+};
+
+export class GroupGuard {
+public:
+    GroupGuard();
+    ~GroupGuard();
+
+    GroupGuard(const GroupGuard&) = delete;
+    GroupGuard& operator=(const GroupGuard&) = delete;
+};
+
+export class TextWrapGuard {
+public:
+    explicit TextWrapGuard(float wrapLocalPosX = 0.0f);
+    ~TextWrapGuard();
+
+    TextWrapGuard(const TextWrapGuard&) = delete;
+    TextWrapGuard& operator=(const TextWrapGuard&) = delete;
+};
+
+export struct ClipRectSpec {
+    float minX = 0.0f;
+    float minY = 0.0f;
+    float maxX = 0.0f;
+    float maxY = 0.0f;
+    bool intersect = true;
+};
+
+export class ClipRectGuard {
+public:
+    ClipRectGuard(void* drawList, const ClipRectSpec& spec);
+    ~ClipRectGuard();
+
+    ClipRectGuard(const ClipRectGuard&) = delete;
+    ClipRectGuard& operator=(const ClipRectGuard&) = delete;
+
+private:
+    void* drawList_ = nullptr;
 };
 
 export class PopupModalGuard {

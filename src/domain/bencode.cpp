@@ -254,6 +254,85 @@ std::string PreferredUtf8Field(const BencodeValue& dict, std::string_view key) {
     return {};
 }
 
+void ExtractAnnounceTrackers(const BencodeValue& root, TorrentMetadata& meta) {
+    if (const auto* ann = root.FindKey("announce");
+        ann != nullptr && ann->kind == BencodeValue::Kind::Bytes) {
+        AppendUniqueTracker(meta.trackers, ann->bytes);
+    }
+    const auto* annList = root.FindKey("announce-list");
+    if (annList == nullptr || annList->kind != BencodeValue::Kind::List) {
+        return;
+    }
+    for (const auto& tier : annList->list) {
+        if (tier.kind == BencodeValue::Kind::Bytes) {
+            AppendUniqueTracker(meta.trackers, tier.bytes);
+            continue;
+        }
+        if (tier.kind != BencodeValue::Kind::List) {
+            continue;
+        }
+        for (const auto& url : tier.list) {
+            if (url.kind == BencodeValue::Kind::Bytes) {
+                AppendUniqueTracker(meta.trackers, url.bytes);
+            }
+        }
+    }
+}
+
+[[nodiscard]] motrix::core::Result<void> ParseMultiFileEntries(const BencodeValue& filesNode,
+                                                               TorrentMetadata& meta) {
+    if (filesNode.kind != BencodeValue::Kind::List || filesNode.list.empty()) {
+        return std::unexpected(MakeParseError("Torrent 'files' must be a non-empty list"));
+    }
+    meta.isMultiFile = true;
+    int idx = 1;
+    for (const auto& f : filesNode.list) {
+        if (f.kind != BencodeValue::Kind::Dict) {
+            return std::unexpected(MakeParseError("Torrent file entry must be a dictionary"));
+        }
+        const auto* lenNode = f.FindKey("length");
+        if (lenNode == nullptr || lenNode->kind != BencodeValue::Kind::Integer || lenNode->integer < 0) {
+            return std::unexpected(MakeParseError("Torrent file entry missing valid 'length'"));
+        }
+        const BencodeValue* pathList = f.FindKey("path.utf-8");
+        if (pathList == nullptr || pathList->kind != BencodeValue::Kind::List
+            || pathList->list.empty()) {
+            pathList = f.FindKey("path");
+        }
+        if (pathList == nullptr || pathList->kind != BencodeValue::Kind::List
+            || pathList->list.empty()) {
+            return std::unexpected(MakeParseError("Torrent file entry missing valid 'path' list"));
+        }
+
+        std::string relPath;
+        for (const auto& seg : pathList->list) {
+            if (seg.kind != BencodeValue::Kind::Bytes || seg.bytes.empty()) {
+                return std::unexpected(MakeParseError("Invalid torrent path segment"));
+            }
+            if (!relPath.empty()) {
+                relPath.push_back('/');
+            }
+            relPath += seg.bytes;
+        }
+
+        const std::uint64_t fileLen = static_cast<std::uint64_t>(lenNode->integer);
+        if (meta.totalLength > std::numeric_limits<std::uint64_t>::max() - fileLen) {
+            return std::unexpected(MakeParseError("Torrent total length overflow"));
+        }
+        meta.totalLength += fileLen;
+
+        TorrentFileEntry entry{};
+        entry.index = idx++;
+        entry.path = relPath;
+        entry.name = BasenameOf(relPath);
+        entry.extension = ExtractFileExtension(entry.name);
+        entry.length = fileLen;
+        entry.selected = true;
+        meta.files.push_back(std::move(entry));
+    }
+    return {};
+}
+
 }  // namespace
 
 motrix::core::Result<TorrentMetadata> ParseTorrentBytes(std::span<const std::uint8_t> bytes) {
@@ -290,25 +369,7 @@ motrix::core::Result<TorrentMetadata> ParseTorrentBytes(std::span<const std::uin
         cd != nullptr && cd->kind == BencodeValue::Kind::Integer && cd->integer > 0) {
         meta.creationDate = cd->integer;
     }
-
-    if (const auto* ann = root->FindKey("announce");
-        ann != nullptr && ann->kind == BencodeValue::Kind::Bytes) {
-        AppendUniqueTracker(meta.trackers, ann->bytes);
-    }
-    if (const auto* annList = root->FindKey("announce-list");
-        annList != nullptr && annList->kind == BencodeValue::Kind::List) {
-        for (const auto& tier : annList->list) {
-            if (tier.kind == BencodeValue::Kind::List) {
-                for (const auto& url : tier.list) {
-                    if (url.kind == BencodeValue::Kind::Bytes) {
-                        AppendUniqueTracker(meta.trackers, url.bytes);
-                    }
-                }
-            } else if (tier.kind == BencodeValue::Kind::Bytes) {
-                AppendUniqueTracker(meta.trackers, tier.bytes);
-            }
-        }
-    }
+    ExtractAnnounceTrackers(*root, meta);
 
     if (const auto* priv = info->FindKey("private");
         priv != nullptr && priv->kind == BencodeValue::Kind::Integer && priv->integer == 1) {
@@ -327,73 +388,25 @@ motrix::core::Result<TorrentMetadata> ParseTorrentBytes(std::span<const std::uin
     }
 
     if (const auto* filesNode = info->FindKey("files"); filesNode != nullptr) {
-        if (filesNode->kind != BencodeValue::Kind::List || filesNode->list.empty()) {
-            return std::unexpected(MakeParseError("Torrent 'files' must be a non-empty list"));
+        if (auto res = ParseMultiFileEntries(*filesNode, meta); !res) {
+            return std::unexpected(res.error());
         }
-        meta.isMultiFile = true;
-        int idx = 1;
-        for (const auto& f : filesNode->list) {
-            if (f.kind != BencodeValue::Kind::Dict) {
-                return std::unexpected(MakeParseError("Torrent file entry must be a dictionary"));
-            }
-            const auto* lenNode = f.FindKey("length");
-            if (lenNode == nullptr || lenNode->kind != BencodeValue::Kind::Integer
-                || lenNode->integer < 0) {
-                return std::unexpected(MakeParseError("Torrent file entry missing valid 'length'"));
-            }
-            const BencodeValue* pathList = f.FindKey("path.utf-8");
-            if (pathList == nullptr || pathList->kind != BencodeValue::Kind::List
-                || pathList->list.empty()) {
-                pathList = f.FindKey("path");
-            }
-            if (pathList == nullptr || pathList->kind != BencodeValue::Kind::List
-                || pathList->list.empty()) {
-                return std::unexpected(MakeParseError("Torrent file entry missing valid 'path' list"));
-            }
-
-            std::string relPath;
-            for (const auto& seg : pathList->list) {
-                if (seg.kind != BencodeValue::Kind::Bytes || seg.bytes.empty()) {
-                    return std::unexpected(MakeParseError("Invalid torrent path segment"));
-                }
-                if (!relPath.empty()) {
-                    relPath.push_back('/');
-                }
-                relPath += seg.bytes;
-            }
-
-            const std::uint64_t fileLen = static_cast<std::uint64_t>(lenNode->integer);
-            if (meta.totalLength > std::numeric_limits<std::uint64_t>::max() - fileLen) {
-                return std::unexpected(MakeParseError("Torrent total length overflow"));
-            }
-            meta.totalLength += fileLen;
-
-            TorrentFileEntry entry{};
-            entry.index = idx++;
-            entry.path = relPath;
-            entry.name = BasenameOf(relPath);
-            entry.extension = ExtractFileExtension(entry.name);
-            entry.length = fileLen;
-            entry.selected = true;
-            meta.files.push_back(std::move(entry));
-        }
-    } else if (const auto* lenNode = info->FindKey("length");
-               lenNode != nullptr && lenNode->kind == BencodeValue::Kind::Integer
-               && lenNode->integer >= 0) {
-        meta.isMultiFile = false;
-        meta.totalLength = static_cast<std::uint64_t>(lenNode->integer);
-        TorrentFileEntry single{};
-        single.index = 1;
-        single.path = meta.name;
-        single.name = BasenameOf(meta.name);
-        single.extension = ExtractFileExtension(single.name);
-        single.length = meta.totalLength;
-        single.selected = true;
-        meta.files.push_back(std::move(single));
-    } else {
+        return meta;
+    }
+    const auto* lenNode = info->FindKey("length");
+    if (lenNode == nullptr || lenNode->kind != BencodeValue::Kind::Integer || lenNode->integer < 0) {
         return std::unexpected(MakeParseError("Torrent 'info' missing both 'files' and 'length'"));
     }
-
+    meta.isMultiFile = false;
+    meta.totalLength = static_cast<std::uint64_t>(lenNode->integer);
+    TorrentFileEntry single{};
+    single.index = 1;
+    single.path = meta.name;
+    single.name = BasenameOf(meta.name);
+    single.extension = ExtractFileExtension(single.name);
+    single.length = meta.totalLength;
+    single.selected = true;
+    meta.files.push_back(std::move(single));
     return meta;
 }
 

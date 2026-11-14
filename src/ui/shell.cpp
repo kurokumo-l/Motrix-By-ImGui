@@ -50,6 +50,65 @@ void MotrixUiShell::SetPreferencesTab(int tab) {
     impl_->prefTab = std::clamp(tab, 0, 2);
 }
 
+namespace {
+
+void DispatchShellShortcuts(motrix::app::ICommandSink& sink) {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N, false)) {
+        sink.Dispatch(motrix::app::OpenModalCmd{motrix::app::ActiveModal::AddTask});
+    }
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_T, false)) {
+        sink.Dispatch(motrix::app::ToggleThemeCmd{});
+    }
+}
+
+void RenderRootWorkspace(UiFrameContext& ctx, int& prefTab, PrefsFormState& prefsForm) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float dpi = ctx.dpiScale;
+    ImGui::SetNextWindowPos(vp->Pos);
+    ImGui::SetNextWindowSize(vp->Size);
+    StyleVarGuard padGuard(ImGuiStyleVar_WindowPadding, 0.0f, 0.0f);
+    StyleVarGuard roundGuard(ImGuiStyleVar_WindowRounding, 0.0f);
+    StyleVarGuard borderGuard(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    StyleColorGuard bgGuard(ImGuiCol_WindowBg, ctx.palette.mainBg);
+
+    constexpr int kRootFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
+                               | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse
+                               | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus
+                               | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+    WindowGuard root("##MotrixRoot", nullptr, kRootFlags);
+    if (!root.IsOpen()) {
+        return;
+    }
+    float curX = vp->Pos.x;
+    const float topY = vp->Pos.y;
+    const float totalH = vp->Size.y;
+
+    if (vp->Size.x >= LayoutMetrics::kAsideHideThreshold * dpi) {
+        RenderAsideRail(ctx, curX, topY, totalH);
+        curX += LayoutMetrics::kAsideWidth * dpi;
+    }
+    if (vp->Size.x >= LayoutMetrics::kSubnavHideThreshold * dpi) {
+        RenderSubnav(ctx, {curX, topY, LayoutMetrics::kSubnavWidth * dpi, totalH}, prefTab);
+        curX += LayoutMetrics::kSubnavWidth * dpi;
+    }
+
+    const PanelRect mainRect{
+        curX, topY, std::max(120.0f * dpi, (vp->Pos.x + vp->Size.x) - curX), totalH};
+    if (ctx.state.activeSection == 0) {
+        RenderTaskPanel(ctx, mainRect);
+    } else {
+        RenderPreferencesView(ctx, mainRect, prefTab, prefsForm);
+    }
+    RenderSpeedometer(ctx, vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
+
+    if (ctx.state.prefs.hideAppMenu) {
+        RenderTitlebarOverlay(ctx);
+    }
+}
+
+}  // namespace
+
 void MotrixUiShell::RenderFrame(const motrix::app::AppStateSnapshot& state,
                                 motrix::app::ICommandSink& sink,
                                 motrix::platform::IWindowHost& host) {
@@ -70,13 +129,7 @@ void MotrixUiShell::RenderFrame(const motrix::app::AppStateSnapshot& state,
     impl_->theme.ApplyImGuiStyleColors();
     impl_->anim.BeginFrame(io.DeltaTime);
     impl_->translator.SetLocale(state.prefs.locale);
-
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N, false)) {
-        sink.Dispatch(motrix::app::OpenModalCmd{motrix::app::ActiveModal::AddTask});
-    }
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_T, false)) {
-        sink.Dispatch(motrix::app::ToggleThemeCmd{});
-    }
+    DispatchShellShortcuts(sink);
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     UiFrameContext ctx{
@@ -92,47 +145,7 @@ void MotrixUiShell::RenderFrame(const motrix::app::AppStateSnapshot& state,
         .viewportH = vp->Size.y,
     };
 
-    {
-        ImGui::SetNextWindowPos(vp->Pos);
-        ImGui::SetNextWindowSize(vp->Size);
-        StyleVarGuard padGuard(ImGuiStyleVar_WindowPadding, 0.0f, 0.0f);
-        StyleVarGuard roundGuard(ImGuiStyleVar_WindowRounding, 0.0f);
-        StyleVarGuard borderGuard(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        StyleColorGuard bgGuard(ImGuiCol_WindowBg, ctx.palette.mainBg);
-
-        constexpr int kRootFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
-                                   | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse
-                                   | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus
-                                   | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
-        WindowGuard root("##MotrixRoot", nullptr, kRootFlags);
-        if (root.IsOpen()) {
-            float curX = vp->Pos.x;
-            const float topY = vp->Pos.y;
-            const float totalH = vp->Size.y;
-
-            if (vp->Size.x >= LayoutMetrics::kAsideHideThreshold * dpi) {
-                RenderAsideRail(ctx, curX, topY, totalH);
-                curX += LayoutMetrics::kAsideWidth * dpi;
-            }
-            if (vp->Size.x >= LayoutMetrics::kSubnavHideThreshold * dpi) {
-                RenderSubnav(ctx, curX, topY, totalH, impl_->prefTab);
-                curX += LayoutMetrics::kSubnavWidth * dpi;
-            }
-
-            const float mainW = std::max(120.0f * dpi, (vp->Pos.x + vp->Size.x) - curX);
-            if (state.activeSection == 0) {
-                RenderTaskPanel(ctx, curX, topY, mainW, totalH);
-            } else {
-                RenderPreferencesView(ctx, curX, topY, mainW, totalH, impl_->prefTab, impl_->prefsForm);
-            }
-            RenderSpeedometer(ctx, vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
-
-            if (state.prefs.hideAppMenu) {
-                RenderTitlebarOverlay(ctx);
-            }
-        }
-    }
-
+    RenderRootWorkspace(ctx, impl_->prefTab, impl_->prefsForm);
     RenderTaskDetailDrawer(ctx, impl_->drawerState);
     RenderModals(ctx, impl_->addForm);
 

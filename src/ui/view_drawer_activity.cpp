@@ -42,50 +42,52 @@ namespace {
     return "status.waiting";
 }
 
-void DrawFormRow(UiFrameContext& ctx,
-                 std::string_view label,
-                 std::string_view value,
-                 float labelW,
-                 std::optional<RgbaColor> valColor = std::nullopt,
-                 MotrixIcon* actionIcon = nullptr,
-                 const char* actionId = nullptr,
-                 const std::function<void()>& onAction = {}) {
+struct DetailRowSpec {
+    std::string_view label{};
+    std::string_view value{};
+    float labelW = 128.0f;
+    std::optional<RgbaColor> valColor{};
+    std::optional<MotrixIcon> actionIcon{};
+    const char* actionId = nullptr;
+    std::function<void()> onAction{};
+};
+
+void DrawFormRow(UiFrameContext& ctx, const DetailRowSpec& row) {
     const float s = ctx.dpiScale;
     const float startX = ImGui::GetCursorPosX();
     {
         FontGuard fg(ctx.fonts, FontRole::Regular, 13.0f);
         StyleColorGuard cg(ImGuiCol_Text, ctx.palette.taskMetaText);
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(label.data(), label.data() + label.size());
+        ImGui::TextUnformatted(row.label.data(), row.label.data() + row.label.size());
     }
-    ImGui::SameLine(startX + labelW);
+    ImGui::SameLine(startX + row.labelW);
     {
         FontGuard fg(ctx.fonts, FontRole::Regular, 13.5f);
-        StyleColorGuard cg(ImGuiCol_Text, valColor.value_or(ctx.palette.panelTitle));
-        const float wrapW =
-            std::max(80.0f * s, ImGui::GetContentRegionAvail().x - (actionIcon ? 32.0f * s : 4.0f * s));
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrapW);
-        ImGui::TextUnformatted(value.data(), value.data() + value.size());
-        ImGui::PopTextWrapPos();
+        StyleColorGuard cg(ImGuiCol_Text, row.valColor.value_or(ctx.palette.panelTitle));
+        const float wrapW = std::max(
+            80.0f * s, ImGui::GetContentRegionAvail().x - (row.actionIcon ? 32.0f * s : 4.0f * s));
+        TextWrapGuard wrap(ImGui::GetCursorPosX() + wrapW);
+        ImGui::TextUnformatted(row.value.data(), row.value.data() + row.value.size());
     }
-    if (actionIcon && actionId) {
+    if (row.actionIcon && row.actionId != nullptr) {
         ImGui::SameLine();
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const float btnSz = 22.0f * s;
         const float iconSz = 13.0f * s;
-        if (ImGui::InvisibleButton(actionId, ImVec2(btnSz, btnSz))) {
-            if (onAction) {
-                onAction();
-            }
+        if (ImGui::InvisibleButton(row.actionId, ImVec2(btnSz, btnSz)) && row.onAction) {
+            row.onAction();
         }
         const bool hov = ImGui::IsItemHovered();
-        DrawMotrixIcon(*actionIcon,
-                       p.x + (btnSz - iconSz) * 0.5f,
-                       p.y + (btnSz - iconSz) * 0.5f,
-                       iconSz,
-                       iconSz,
-                       hov ? ctx.palette.primary : ctx.palette.pillIcon,
-                       s);
+        DrawMotrixIcon(IconSpec{
+            *row.actionIcon,
+            p.x + (btnSz - iconSz) * 0.5f,
+            p.y + (btnSz - iconSz) * 0.5f,
+            iconSz,
+            iconSz,
+            hov ? ctx.palette.primary : ctx.palette.pillIcon,
+            s,
+        });
     }
     ImGui::Dummy(ImVec2(0.0f, 4.0f * s));
 }
@@ -169,68 +171,92 @@ void RenderTaskGraphicHeatmap(UiFrameContext& ctx,
 
 }  // namespace
 
-void RenderGeneralTab(UiFrameContext& ctx, const motrix::domain::DownloadTaskView& task) {
-    const float s = ctx.dpiScale;
-    const float labelW = 128.0f * s;
-    MotrixIcon folderIcon = MotrixIcon::Folder;
-    MotrixIcon linkIcon = MotrixIcon::Link;
-
-    DrawFormRow(ctx, ctx.tr.Tr("detail.name"), task.name, labelW);
-    DrawFormRow(ctx,
-                ctx.tr.Tr("detail.dir"),
-                task.dir,
-                labelW,
-                std::nullopt,
-                &folderIcon,
-                "##detail_open_dir",
-                [&]() { ctx.sink.Dispatch(motrix::app::ShowInFolderCmd{task.gid}); });
-
-    RgbaColor stColor = StatusBadgeColor(ctx, task.status);
-    DrawFormRow(
-        ctx, ctx.tr.Tr("detail.status"), ctx.tr.Tr(StatusLabelKey(task.status)), labelW, stColor);
-
-    if (task.errorCode != 0 || !task.errorMessage.empty()) {
-        RgbaColor errCol = ctx.palette.progressError;
-        if (task.errorCode != 0) {
-            DrawFormRow(
-                ctx, ctx.tr.Tr("detail.error_code"), std::to_string(task.errorCode), labelW, errCol);
+void RenderGeneralBtMetaRows(UiFrameContext& ctx,
+                             const motrix::domain::DownloadTaskView& task,
+                             float labelW) {
+    if (task.taskType != motrix::domain::TaskType::BitTorrent && !task.btInfo.has_value()) {
+        if (!task.uri.empty()) {
+            DrawFormRow(ctx,
+                        DetailRowSpec{
+                            "URL",
+                            task.uri,
+                            labelW,
+                            std::nullopt,
+                            MotrixIcon::Link,
+                            "##detail_copy_uri",
+                            [&]() { ctx.sink.Dispatch(motrix::app::CopyTaskLinkCmd{task.gid}); },
+                        });
         }
-        if (!task.errorMessage.empty()) {
-            DrawFormRow(ctx, ctx.tr.Tr("detail.error_msg"), task.errorMessage, labelW, errCol);
-        }
+        return;
     }
 
-    if (task.taskType == motrix::domain::TaskType::BitTorrent || task.btInfo.has_value()) {
-        if (task.btInfo && !task.btInfo->infoHash.empty()) {
-            DrawFormRow(ctx,
+    if (task.btInfo && !task.btInfo->infoHash.empty()) {
+        DrawFormRow(ctx,
+                    DetailRowSpec{
                         ctx.tr.Tr("detail.info_hash"),
                         task.btInfo->infoHash,
                         labelW,
                         std::nullopt,
-                        &linkIcon,
+                        MotrixIcon::Link,
                         "##detail_copy_hash",
-                        [&]() { ctx.sink.Dispatch(motrix::app::CopyTaskLinkCmd{task.gid}); });
-        }
-        if (task.pieceLength > 0) {
-            DrawFormRow(ctx,
-                        ctx.tr.Tr("detail.piece_length"),
-                        motrix::domain::FormatBytes(task.pieceLength),
-                        labelW);
-        }
-        if (task.numPieces > 0) {
-            DrawFormRow(ctx, ctx.tr.Tr("detail.num_pieces"), std::to_string(task.numPieces), labelW);
-        }
-        if (task.btInfo && !task.btInfo->creationDate.empty() && task.btInfo->creationDate != "0") {
-            DrawFormRow(ctx, ctx.tr.Tr("detail.creation_date"), task.btInfo->creationDate, labelW);
-        }
-        if (task.btInfo && !task.btInfo->comment.empty()) {
-            DrawFormRow(ctx, ctx.tr.Tr("detail.comment"), task.btInfo->comment, labelW);
-        }
-    } else if (!task.uri.empty()) {
-        DrawFormRow(ctx, "URL", task.uri, labelW, std::nullopt, &linkIcon, "##detail_copy_uri", [&]() {
-            ctx.sink.Dispatch(motrix::app::CopyTaskLinkCmd{task.gid});
-        });
+                        [&]() { ctx.sink.Dispatch(motrix::app::CopyTaskLinkCmd{task.gid}); },
+                    });
     }
+    if (task.pieceLength > 0) {
+        DrawFormRow(ctx,
+                    DetailRowSpec{ctx.tr.Tr("detail.piece_length"),
+                                  motrix::domain::FormatBytes(task.pieceLength),
+                                  labelW});
+    }
+    if (task.numPieces > 0) {
+        DrawFormRow(
+            ctx, DetailRowSpec{ctx.tr.Tr("detail.num_pieces"), std::to_string(task.numPieces), labelW});
+    }
+    if (task.btInfo && !task.btInfo->creationDate.empty() && task.btInfo->creationDate != "0") {
+        DrawFormRow(ctx,
+                    DetailRowSpec{ctx.tr.Tr("detail.creation_date"), task.btInfo->creationDate, labelW});
+    }
+    if (task.btInfo && !task.btInfo->comment.empty()) {
+        DrawFormRow(ctx, DetailRowSpec{ctx.tr.Tr("detail.comment"), task.btInfo->comment, labelW});
+    }
+}
+
+void RenderGeneralTab(UiFrameContext& ctx, const motrix::domain::DownloadTaskView& task) {
+    const float labelW = 128.0f * ctx.dpiScale;
+
+    DrawFormRow(ctx, DetailRowSpec{ctx.tr.Tr("detail.name"), task.name, labelW});
+    DrawFormRow(ctx,
+                DetailRowSpec{
+                    ctx.tr.Tr("detail.dir"),
+                    task.dir,
+                    labelW,
+                    std::nullopt,
+                    MotrixIcon::Folder,
+                    "##detail_open_dir",
+                    [&]() { ctx.sink.Dispatch(motrix::app::ShowInFolderCmd{task.gid}); },
+                });
+
+    const RgbaColor stColor = StatusBadgeColor(ctx, task.status);
+    DrawFormRow(
+        ctx,
+        DetailRowSpec{
+            ctx.tr.Tr("detail.status"), ctx.tr.Tr(StatusLabelKey(task.status)), labelW, stColor});
+
+    if (task.errorCode != 0) {
+        DrawFormRow(ctx,
+                    DetailRowSpec{ctx.tr.Tr("detail.error_code"),
+                                  std::to_string(task.errorCode),
+                                  labelW,
+                                  ctx.palette.progressError});
+    }
+    if (!task.errorMessage.empty()) {
+        DrawFormRow(
+            ctx,
+            DetailRowSpec{
+                ctx.tr.Tr("detail.error_msg"), task.errorMessage, labelW, ctx.palette.progressError});
+    }
+
+    RenderGeneralBtMetaRows(ctx, task, labelW);
 }
 
 void RenderActivityTab(UiFrameContext& ctx, const motrix::domain::DownloadTaskView& task) {
@@ -269,21 +295,29 @@ void RenderActivityTab(UiFrameContext& ctx, const motrix::domain::DownloadTaskVi
     const std::string compText = std::format("{} / {}",
                                              motrix::domain::FormatBytes(task.completedLength),
                                              motrix::domain::FormatBytes(task.totalLength));
-    DrawFormRow(ctx, ctx.tr.Tr("detail.completed"), compText, labelW);
+    DrawFormRow(ctx, DetailRowSpec{ctx.tr.Tr("detail.completed"), compText, labelW});
+    DrawFormRow(ctx,
+                DetailRowSpec{ctx.tr.Tr("detail.dl_speed"),
+                              motrix::domain::FormatSpeed(task.downloadSpeed),
+                              labelW});
     DrawFormRow(
-        ctx, ctx.tr.Tr("detail.dl_speed"), motrix::domain::FormatSpeed(task.downloadSpeed), labelW);
-    DrawFormRow(ctx, ctx.tr.Tr("detail.connections"), std::to_string(task.connections), labelW);
+        ctx, DetailRowSpec{ctx.tr.Tr("detail.connections"), std::to_string(task.connections), labelW});
 
     if (task.taskType == motrix::domain::TaskType::BitTorrent) {
-        DrawFormRow(ctx, ctx.tr.Tr("detail.seeders"), std::to_string(task.numSeeders), labelW);
-        DrawFormRow(
-            ctx, ctx.tr.Tr("detail.ul_speed"), motrix::domain::FormatSpeed(task.uploadSpeed), labelW);
-        DrawFormRow(
-            ctx, ctx.tr.Tr("detail.uploaded"), motrix::domain::FormatBytes(task.uploadLength), labelW);
+        DrawFormRow(ctx,
+                    DetailRowSpec{ctx.tr.Tr("detail.seeders"), std::to_string(task.numSeeders), labelW});
+        DrawFormRow(ctx,
+                    DetailRowSpec{ctx.tr.Tr("detail.ul_speed"),
+                                  motrix::domain::FormatSpeed(task.uploadSpeed),
+                                  labelW});
+        DrawFormRow(ctx,
+                    DetailRowSpec{ctx.tr.Tr("detail.uploaded"),
+                                  motrix::domain::FormatBytes(task.uploadLength),
+                                  labelW});
         const double ratio = (task.completedLength > 0) ? static_cast<double>(task.uploadLength)
                                                               / static_cast<double>(task.completedLength)
                                                         : 0.0;
-        DrawFormRow(ctx, ctx.tr.Tr("detail.ratio"), std::format("{:.2f}", ratio), labelW);
+        DrawFormRow(ctx, DetailRowSpec{ctx.tr.Tr("detail.ratio"), std::format("{:.2f}", ratio), labelW});
     }
 }
 

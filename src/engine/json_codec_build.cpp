@@ -64,12 +64,12 @@ std::string BuildGidRpcRequest(std::string_view id,
     return DumpRpcCall(id, method, std::move(params));
 }
 
-std::string BuildTellSliceRpcRequest(
-    std::string_view id, std::string_view method, std::string_view secret, int offset, int num) {
+std::string
+BuildTellSliceRpcRequest(std::string_view id, std::string_view secret, const RpcTellSliceSpec& slice) {
     nlohmann::json params = MakeTokenArray(secret);
-    params.push_back(offset);
-    params.push_back(num);
-    return DumpRpcCall(id, method, std::move(params));
+    params.push_back(slice.offset);
+    params.push_back(slice.num);
+    return DumpRpcCall(id, slice.method, std::move(params));
 }
 
 std::string

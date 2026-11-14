@@ -59,7 +59,7 @@ ParseUInt64Field(const nlohmann::json& obj, const char* key, std::uint64_t fallb
 [[nodiscard]] std::string ReadStr(const nlohmann::json& obj, const char* key) {
     const auto it = obj.find(key);
     if (it != obj.end() && it->is_string()) {
-        return it->get<std::string>();
+        return it->get_ref<const std::string&>();
     }
     return {};
 }
@@ -156,6 +156,16 @@ ParseUInt64Field(const nlohmann::json& obj, const char* key, std::uint64_t fallb
     return fv;
 }
 
+void AppendUniqueTracker(std::vector<std::string>& trackers, const nlohmann::json& urlVal) {
+    if (!urlVal.is_string()) {
+        return;
+    }
+    const auto& u = urlVal.get_ref<const std::string&>();
+    if (!u.empty() && std::ranges::find(trackers, u) == trackers.end()) {
+        trackers.push_back(u);
+    }
+}
+
 [[nodiscard]] std::vector<std::string> ParseAnnounceList(const nlohmann::json& btObj) {
     std::vector<std::string> trackers;
     const auto annIt = btObj.find("announceList");
@@ -163,24 +173,82 @@ ParseUInt64Field(const nlohmann::json& obj, const char* key, std::uint64_t fallb
         return trackers;
     }
     for (const auto& tier : *annIt) {
-        if (tier.is_array()) {
-            for (const auto& url : tier) {
-                if (!url.is_string()) {
-                    continue;
-                }
-                const auto& u = url.get_ref<const std::string&>();
-                if (!u.empty() && std::ranges::find(trackers, u) == trackers.end()) {
-                    trackers.push_back(u);
-                }
-            }
-        } else if (tier.is_string()) {
-            const auto& u = tier.get_ref<const std::string&>();
-            if (!u.empty() && std::ranges::find(trackers, u) == trackers.end()) {
-                trackers.push_back(u);
-            }
+        if (!tier.is_array()) {
+            AppendUniqueTracker(trackers, tier);
+            continue;
+        }
+        for (const auto& url : tier) {
+            AppendUniqueTracker(trackers, url);
         }
     }
     return trackers;
+}
+
+void PopulateBtMetadata(const nlohmann::json& obj,
+                        std::string_view infoHash,
+                        motrix::domain::DownloadTaskView& task) {
+    using namespace motrix::domain;
+    const auto btIt = obj.find("bittorrent");
+    if (btIt == obj.end() || !btIt->is_object()) {
+        if (!infoHash.empty()) {
+            task.taskType = TaskType::BitTorrent;
+        }
+        return;
+    }
+    task.taskType = TaskType::BitTorrent;
+    TaskBittorrentInfo bt{};
+    bt.infoHash = infoHash;
+    bt.comment = ReadStr(*btIt, "comment");
+    const std::uint64_t createdSec = ParseUInt64Field(*btIt, "creationDate");
+    bt.creationDate = FormatUnixTimestampUtc(static_cast<std::int64_t>(createdSec));
+    if (const auto infoIt = btIt->find("info"); infoIt != btIt->end() && infoIt->is_object()) {
+        bt.name = ReadStr(*infoIt, "name");
+    }
+    task.btInfo = std::move(bt);
+}
+
+void PopulateTruncatedFiles(const nlohmann::json& filesArr, motrix::domain::DownloadTaskView& task) {
+    using namespace motrix::domain;
+    std::vector<TaskFileView> selected;
+    std::vector<TaskFileView> unselected;
+    for (const auto& f : filesArr) {
+        if (!f.is_object()) {
+            continue;
+        }
+        TaskFileView fv = ParseFileObject(f, task.uri);
+        if (fv.selected && selected.size() < kMaxTaskFilesInSnapshot) {
+            selected.push_back(std::move(fv));
+        } else if (!fv.selected && selected.size() + unselected.size() < kMaxTaskFilesInSnapshot) {
+            unselected.push_back(std::move(fv));
+        }
+    }
+    task.files = std::move(selected);
+    for (auto& u : unselected) {
+        if (task.files.size() >= kMaxTaskFilesInSnapshot) {
+            break;
+        }
+        task.files.push_back(std::move(u));
+    }
+}
+
+void PopulateTaskFiles(const nlohmann::json& obj,
+                       bool truncateFiles,
+                       motrix::domain::DownloadTaskView& task) {
+    const auto filesIt = obj.find("files");
+    if (filesIt == obj.end() || !filesIt->is_array()) {
+        return;
+    }
+    task.filesTotal = filesIt->size();
+    if (truncateFiles) {
+        PopulateTruncatedFiles(*filesIt, task);
+        return;
+    }
+    task.files.reserve(filesIt->size());
+    for (const auto& f : *filesIt) {
+        if (f.is_object()) {
+            task.files.push_back(ParseFileObject(f, task.uri));
+        }
+    }
 }
 
 [[nodiscard]] motrix::domain::DownloadTaskView ParseTaskObject(const nlohmann::json& obj,
@@ -205,55 +273,8 @@ ParseUInt64Field(const nlohmann::json& obj, const char* key, std::uint64_t fallb
     task.errorMessage = ReadStr(obj, "errorMessage");
 
     const std::string infoHash = ReadStr(obj, "infoHash");
-    if (const auto btIt = obj.find("bittorrent"); btIt != obj.end() && btIt->is_object()) {
-        task.taskType = TaskType::BitTorrent;
-        TaskBittorrentInfo bt{};
-        bt.infoHash = infoHash;
-        bt.comment = ReadStr(*btIt, "comment");
-        const std::uint64_t createdSec = ParseUInt64Field(*btIt, "creationDate");
-        bt.creationDate = FormatUnixTimestampUtc(static_cast<std::int64_t>(createdSec));
-        if (const auto infoIt = btIt->find("info"); infoIt != btIt->end() && infoIt->is_object()) {
-            bt.name = ReadStr(*infoIt, "name");
-        }
-        task.btInfo = std::move(bt);
-    } else if (!infoHash.empty()) {
-        task.taskType = TaskType::BitTorrent;
-    }
-
-    if (const auto filesIt = obj.find("files"); filesIt != obj.end() && filesIt->is_array()) {
-        task.filesTotal = filesIt->size();
-        if (!truncateFiles) {
-            task.files.reserve(filesIt->size());
-            for (const auto& f : *filesIt) {
-                if (f.is_object()) {
-                    task.files.push_back(ParseFileObject(f, task.uri));
-                }
-            }
-        } else {
-            std::vector<TaskFileView> selected;
-            std::vector<TaskFileView> unselected;
-            for (const auto& f : *filesIt) {
-                if (!f.is_object()) {
-                    continue;
-                }
-                TaskFileView fv = ParseFileObject(f, task.uri);
-                if (fv.selected) {
-                    if (selected.size() < kMaxTaskFilesInSnapshot) {
-                        selected.push_back(std::move(fv));
-                    }
-                } else if (selected.size() + unselected.size() < kMaxTaskFilesInSnapshot) {
-                    unselected.push_back(std::move(fv));
-                }
-            }
-            task.files = std::move(selected);
-            for (auto& u : unselected) {
-                if (task.files.size() >= kMaxTaskFilesInSnapshot) {
-                    break;
-                }
-                task.files.push_back(std::move(u));
-            }
-        }
-    }
+    PopulateBtMetadata(obj, infoHash, task);
+    PopulateTaskFiles(obj, truncateFiles, task);
 
     if (task.uri.empty() && !infoHash.empty()) {
         task.uri = std::format("magnet:?xt=urn:btih:{}", infoHash);

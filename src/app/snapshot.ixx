@@ -15,6 +15,14 @@ export enum class EngineConnectionState {
     PreviewMock,
 };
 
+export struct EngineSyncUpdate {
+    EngineConnectionState connState = EngineConnectionState::Starting;
+    const motrix::engine::EngineVersionInfo* version = nullptr;
+    const motrix::engine::EngineSyncSnapshot* sync = nullptr;
+    std::string_view enginePath;
+    std::string_view errorMsg;
+};
+
 export struct GlobalStatSnapshot {
     std::uint64_t downloadSpeed = 0;
     std::uint64_t uploadSpeed = 0;

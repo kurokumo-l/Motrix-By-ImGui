@@ -34,43 +34,41 @@ void AppCoordinator::HandleEngineDetailUpdate(std::optional<motrix::engine::Task
     });
 }
 
-void AppCoordinator::HandleEngineSyncUpdate(EngineConnectionState connState,
-                                            const motrix::engine::EngineVersionInfo* version,
-                                            const motrix::engine::EngineSyncSnapshot* sync,
-                                            std::string_view enginePath,
-                                            std::string_view errorMsg) {
+void AppCoordinator::HandleEngineSyncUpdate(const EngineSyncUpdate& update) {
     PublishMutated([&](AppStateSnapshot& state) {
-        state.engineState = connState;
-        state.engineError = std::string(errorMsg);
-        if (!enginePath.empty()) {
-            state.resolvedEnginePath = std::string(enginePath);
+        state.engineState = update.connState;
+        state.engineError = std::string(update.errorMsg);
+        if (!update.enginePath.empty()) {
+            state.resolvedEnginePath = std::string(update.enginePath);
         }
-        if (version) {
-            state.engineInfo = *version;
+        if (update.version) {
+            state.engineInfo = *update.version;
         }
-        if (sync) {
-            state.downloadingTasks = sync->active;
-            state.waitingTasks = sync->waiting;
-            state.stoppedTasks = sync->stopped;
-            state.globalStat = GlobalStatSnapshot{
-                .downloadSpeed = sync->globalStat.downloadSpeed,
-                .uploadSpeed = sync->globalStat.uploadSpeed,
-                .numActive = sync->globalStat.numActive,
-                .numWaiting = sync->globalStat.numWaiting,
-                .numStopped = sync->globalStat.numStopped,
-            };
-            if (!state.detailedTaskGid.empty() && !FindTaskByGid(state, state.detailedTaskGid)) {
-                state.detailedTaskGid.clear();
-                state.detailedTask.reset();
-                state.detailedTrackers.clear();
-                state.detailedPeers.clear();
-                if (engineRuntime_) {
-                    engineRuntime_->SetDetailGid({});
-                }
-            }
+        if (!update.sync) {
+            return;
+        }
+        state.downloadingTasks = update.sync->active;
+        state.waitingTasks = update.sync->waiting;
+        state.stoppedTasks = update.sync->stopped;
+        state.globalStat = GlobalStatSnapshot{
+            .downloadSpeed = update.sync->globalStat.downloadSpeed,
+            .uploadSpeed = update.sync->globalStat.uploadSpeed,
+            .numActive = update.sync->globalStat.numActive,
+            .numWaiting = update.sync->globalStat.numWaiting,
+            .numStopped = update.sync->globalStat.numStopped,
+        };
+        if (state.detailedTaskGid.empty() || FindTaskByGid(state, state.detailedTaskGid)) {
+            return;
+        }
+        state.detailedTaskGid.clear();
+        state.detailedTask.reset();
+        state.detailedTrackers.clear();
+        state.detailedPeers.clear();
+        if (engineRuntime_) {
+            engineRuntime_->SetDetailGid({});
         }
     });
-    if (sync) {
+    if (update.sync) {
         const auto snap = Snapshot();
         DetectAndNotifyCompletions(*snap);
         UpdateLivePlatformStatus(*snap);
@@ -325,14 +323,20 @@ void AppCoordinator::HandleTrayAction(motrix::platform::TrayMenuAction action) {
     }
 }
 
-void AppCoordinator::HandleStartupPayload(const HandleStartupPayloadCmd& cmd) {
-    std::vector<std::string> collectedUris = cmd.uris;
-    std::string firstTorrent;
-    if (!cmd.torrentFiles.empty()) {
-        firstTorrent = cmd.torrentFiles.front();
-    }
+namespace {
 
+struct CollectedStartupInput {
+    std::string firstTorrent;
+    std::string joinedUris;
     std::optional<motrix::domain::DeepLinkAction> pendingAction;
+};
+
+[[nodiscard]] CollectedStartupInput CollectStartupInput(const HandleStartupPayloadCmd& cmd) {
+    CollectedStartupInput out;
+    std::vector<std::string> collectedUris = cmd.uris;
+    if (!cmd.torrentFiles.empty()) {
+        out.firstTorrent = cmd.torrentFiles.front();
+    }
     for (const auto& link : cmd.deepLinks) {
         const auto parsed = motrix::domain::ParseMotrixDeepLink(link);
         if (parsed.action == motrix::domain::DeepLinkAction::None) {
@@ -341,63 +345,72 @@ void AppCoordinator::HandleStartupPayload(const HandleStartupPayloadCmd& cmd) {
         if (!parsed.uriParam.empty()) {
             collectedUris.push_back(parsed.uriParam);
         }
-        pendingAction = parsed.action;
+        out.pendingAction = parsed.action;
     }
-
-    std::string joinedUris;
-    for (std::size_t i = 0; i < collectedUris.size(); ++i) {
-        const auto classified = motrix::domain::ClassifyStartupArg(collectedUris[i]);
-        const std::string& val = !classified.uri.empty() ? classified.uri : collectedUris[i];
-        if (!joinedUris.empty()) {
-            joinedUris.push_back('\n');
+    for (const auto& raw : collectedUris) {
+        const auto classified = motrix::domain::ClassifyStartupArg(raw);
+        const std::string& val = !classified.uri.empty() ? classified.uri : raw;
+        if (!out.joinedUris.empty()) {
+            out.joinedUris.push_back('\n');
         }
-        joinedUris += val;
+        out.joinedUris += val;
     }
+    return out;
+}
+
+void ApplyDeepLinkAction(AppStateSnapshot& s, motrix::domain::DeepLinkAction action) {
+    switch (action) {
+        case motrix::domain::DeepLinkAction::TaskList:
+            s.activeSection = 0;
+            s.activeModal = ActiveModal::None;
+            break;
+        case motrix::domain::DeepLinkAction::NewTask:
+            s.activeSection = 0;
+            s.pendingDroppedTorrentPath = "__TAB_URI__";
+            ++s.dropSeq;
+            s.activeModal = ActiveModal::AddTask;
+            break;
+        case motrix::domain::DeepLinkAction::NewBtTask:
+            s.activeSection = 0;
+            s.pendingDroppedTorrentPath = "__TAB_TORRENT__";
+            ++s.dropSeq;
+            s.activeModal = ActiveModal::AddTask;
+            break;
+        case motrix::domain::DeepLinkAction::Preferences:
+            s.activeSection = 1;
+            s.activeModal = ActiveModal::None;
+            break;
+        case motrix::domain::DeepLinkAction::About: s.activeModal = ActiveModal::About; break;
+        case motrix::domain::DeepLinkAction::PauseAll:
+        case motrix::domain::DeepLinkAction::ResumeAll:
+        case motrix::domain::DeepLinkAction::None: break;
+    }
+}
+
+}  // namespace
+
+void AppCoordinator::HandleStartupPayload(const HandleStartupPayloadCmd& cmd) {
+    const CollectedStartupInput input = CollectStartupInput(cmd);
 
     PublishMutated([&](AppStateSnapshot& s) {
-        if (!firstTorrent.empty()) {
-            s.pendingDroppedTorrentPath = firstTorrent;
+        if (!input.firstTorrent.empty()) {
+            s.pendingDroppedTorrentPath = input.firstTorrent;
             ++s.dropSeq;
             s.activeModal = ActiveModal::AddTask;
             s.activeSection = 0;
-        } else if (!joinedUris.empty()) {
-            s.pendingPrefillUri = joinedUris;
+        } else if (!input.joinedUris.empty()) {
+            s.pendingPrefillUri = input.joinedUris;
             ++s.prefillUriSeq;
             s.activeModal = ActiveModal::AddTask;
             s.activeSection = 0;
-        } else if (pendingAction) {
-            switch (*pendingAction) {
-                case motrix::domain::DeepLinkAction::TaskList:
-                    s.activeSection = 0;
-                    s.activeModal = ActiveModal::None;
-                    break;
-                case motrix::domain::DeepLinkAction::NewTask:
-                    s.activeSection = 0;
-                    s.pendingDroppedTorrentPath = "__TAB_URI__";
-                    ++s.dropSeq;
-                    s.activeModal = ActiveModal::AddTask;
-                    break;
-                case motrix::domain::DeepLinkAction::NewBtTask:
-                    s.activeSection = 0;
-                    s.pendingDroppedTorrentPath = "__TAB_TORRENT__";
-                    ++s.dropSeq;
-                    s.activeModal = ActiveModal::AddTask;
-                    break;
-                case motrix::domain::DeepLinkAction::Preferences:
-                    s.activeSection = 1;
-                    s.activeModal = ActiveModal::None;
-                    break;
-                case motrix::domain::DeepLinkAction::About: s.activeModal = ActiveModal::About; break;
-                case motrix::domain::DeepLinkAction::PauseAll:
-                case motrix::domain::DeepLinkAction::ResumeAll:
-                case motrix::domain::DeepLinkAction::None: break;
-            }
+        } else if (input.pendingAction) {
+            ApplyDeepLinkAction(s, *input.pendingAction);
         }
     });
 
-    if (pendingAction == motrix::domain::DeepLinkAction::PauseAll) {
+    if (input.pendingAction == motrix::domain::DeepLinkAction::PauseAll) {
         Dispatch(PauseAllCmd{});
-    } else if (pendingAction == motrix::domain::DeepLinkAction::ResumeAll) {
+    } else if (input.pendingAction == motrix::domain::DeepLinkAction::ResumeAll) {
         Dispatch(ResumeAllCmd{});
     }
 

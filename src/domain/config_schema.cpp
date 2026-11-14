@@ -99,7 +99,7 @@ void ReadDouble(const nlohmann::json& j, const char* key, double& out) {
 
 void ReadString(const nlohmann::json& j, const char* key, std::string& out) {
     if (const auto it = j.find(key); it != j.end() && it->is_string()) {
-        out = it->get<std::string>();
+        out = it->get_ref<const std::string&>();
     }
 }
 
@@ -111,7 +111,7 @@ void ReadStringArray(const nlohmann::json& j, const char* key, std::vector<std::
     out.clear();
     for (const auto& item : *it) {
         if (item.is_string()) {
-            out.push_back(item.get<std::string>());
+            out.push_back(item.get_ref<const std::string&>());
         }
     }
 }

@@ -83,71 +83,57 @@ void RenderUserAgentButtons(const UiFrameContext& ctx, PrefsFormState& ps, float
     }
 }
 
-void DrawReadonlyPathRow(const UiFrameContext& ctx,
-                         const char* id,
-                         std::string_view caption,
-                         std::string_view path,
-                         float x,
-                         float& y,
-                         float width) {
+struct ReadonlyPathSpec {
+    const char* id = nullptr;
+    std::string_view caption{};
+    std::string_view path{};
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+};
+
+float DrawReadonlyPathRow(const UiFrameContext& ctx, const ReadonlyPathSpec& spec) {
     const float s = ctx.dpiScale;
-    DrawLabCaption(ctx, x, y, caption);
-    y += 22.0f * s;
+    DrawLabCaption(ctx, spec.x, spec.y, spec.caption);
+    const float fieldY = spec.y + 22.0f * s;
     std::array<char, 512> buf{};
-    CopyUtf8ToBuffer(path, buf.data(), buf.size());
-    ImGui::SetCursorScreenPos(ImVec2(x, y));
-    const ElCompositeResult res = ElCompositeInput(id,
-                                                   buf.data(),
-                                                   buf.size(),
-                                                   width,
-                                                   ctx.palette,
-                                                   ctx.fonts,
-                                                   s,
-                                                   std::nullopt,
-                                                   MotrixIcon::Folder,
-                                                   {},
-                                                   true);
-    if (res.rightClicked && !path.empty()) {
-        ctx.host.OpenPathInExplorer(path);
+    CopyUtf8ToBuffer(spec.path, buf.data(), buf.size());
+    ImGui::SetCursorScreenPos(ImVec2(spec.x, fieldY));
+    const ElStyle elSt{ctx.palette, ctx.fonts, s};
+    const ElCompositeResult res = ElCompositeInput(
+        elSt,
+        ElCompositeSpec{
+            spec.id, buf.data(), buf.size(), spec.width, std::nullopt, MotrixIcon::Folder, {}, true});
+    if (res.rightClicked && !spec.path.empty()) {
+        ctx.host.OpenPathInExplorer(spec.path);
     }
-    y += 40.0f * s;
+    return fieldY + 40.0f * s;
 }
 
-}  // namespace
-
-void RenderPrefsAdvancedTail(UiFrameContext& ctx, PrefsFormState& ps) {
+void RenderAdvProtocolRow(UiFrameContext& ctx, PrefsFormState& ps) {
     const float s = ctx.dpiScale;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s};
 
     DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.download_protocol"), 20.0f * s, [&](float bx, float) {
         float cy = ImGui::GetCursorScreenPos().y;
         DrawLabCaption(ctx, bx, cy, ctx.tr.Tr("prefs.protocols_default_client"));
         cy += 26.0f * s;
         ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        ElSwitch("##proto_mag",
-                 ctx.tr.Tr("prefs.proto_magnet"),
-                 &ps.protocolMagnet,
-                 ctx.palette,
-                 ctx.fonts,
-                 s);
+        ElSwitch(elSt, "##proto_mag", ctx.tr.Tr("prefs.proto_magnet"), &ps.protocolMagnet);
         cy += 32.0f * s;
         ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        ElSwitch("##proto_th",
-                 ctx.tr.Tr("prefs.proto_thunder"),
-                 &ps.protocolThunder,
-                 ctx.palette,
-                 ctx.fonts,
-                 s);
+        ElSwitch(elSt, "##proto_th", ctx.tr.Tr("prefs.proto_thunder"), &ps.protocolThunder);
         cy += 32.0f * s;
         ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        ElSwitch("##proto_mx",
-                 ctx.tr.Tr("prefs.proto_motrix"),
-                 &ps.protocolMotrix,
-                 ctx.palette,
-                 ctx.fonts,
-                 s);
+        ElSwitch(elSt, "##proto_mx", ctx.tr.Tr("prefs.proto_motrix"), &ps.protocolMotrix);
         ImGui::SetCursorScreenPos(ImVec2(bx, cy + 26.0f * s));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     });
+}
+
+void RenderAdvUserAgentRow(UiFrameContext& ctx, PrefsFormState& ps) {
+    const float s = ctx.dpiScale;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s};
 
     DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.user_agent"), 20.0f * s, [&](float bx, float bw) {
         float cy = ImGui::GetCursorScreenPos().y;
@@ -155,39 +141,46 @@ void RenderPrefsAdvancedTail(UiFrameContext& ctx, PrefsFormState& ps) {
         DrawLabCaption(ctx, bx, cy, ctx.tr.Tr("prefs.mock_user_agent"));
         cy += 24.0f * s;
         ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        ElInputTextMultiline("##adv_ua",
-                             ps.userAgentBuffer.data(),
-                             ps.userAgentBuffer.size(),
-                             fieldW,
-                             56.0f * s,
-                             ctx.palette,
-                             ctx.fonts,
-                             s);
+        ElInputTextMultiline(elSt,
+                             ElTextInputSpec{"##adv_ua",
+                                             ps.userAgentBuffer.data(),
+                                             ps.userAgentBuffer.size(),
+                                             fieldW,
+                                             {},
+                                             0,
+                                             56.0f * s});
         cy += 64.0f * s;
         RenderUserAgentButtons(ctx, ps, bx, cy);
         ImGui::SetCursorScreenPos(ImVec2(bx, cy + 32.0f * s));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     });
+}
+
+void RenderAdvDeveloperRow(UiFrameContext& ctx, PrefsFormState& ps) {
+    const float s = ctx.dpiScale;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s};
 
     DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.developer"), 20.0f * s, [&](float bx, float bw) {
         float cy = ImGui::GetCursorScreenPos().y;
         const float fieldW = std::min(bw, 450.0f * s);
-        DrawReadonlyPathRow(ctx,
-                            "##dev_conf",
-                            ctx.tr.Tr("prefs.aria2_conf_path"),
-                            ctx.state.engineConfPath,
-                            bx,
-                            cy,
-                            fieldW);
-        DrawReadonlyPathRow(ctx,
-                            "##dev_sess",
-                            ctx.tr.Tr("prefs.session_path"),
-                            ctx.state.sessionFilePath,
-                            bx,
-                            cy,
-                            fieldW);
-        DrawReadonlyPathRow(
-            ctx, "##dev_log", ctx.tr.Tr("prefs.log_path"), ctx.state.appLogPath, bx, cy, fieldW);
+        cy = DrawReadonlyPathRow(ctx,
+                                 ReadonlyPathSpec{"##dev_conf",
+                                                  ctx.tr.Tr("prefs.aria2_conf_path"),
+                                                  ctx.state.engineConfPath,
+                                                  bx,
+                                                  cy,
+                                                  fieldW});
+        cy = DrawReadonlyPathRow(ctx,
+                                 ReadonlyPathSpec{"##dev_sess",
+                                                  ctx.tr.Tr("prefs.session_path"),
+                                                  ctx.state.sessionFilePath,
+                                                  bx,
+                                                  cy,
+                                                  fieldW});
+        cy = DrawReadonlyPathRow(
+            ctx,
+            ReadonlyPathSpec{
+                "##dev_log", ctx.tr.Tr("prefs.log_path"), ctx.state.appLogPath, bx, cy, fieldW});
 
         cy += 4.0f * s;
         float btn1W = 138.0f * s;
@@ -200,29 +193,29 @@ void RenderPrefsAdvancedTail(UiFrameContext& ctx, PrefsFormState& ps) {
             btn2W = ImGui::CalcTextSize(l2.data(), l2.data() + l2.size()).x + 28.0f * s;
         }
         ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        if (ElSecondaryButton("##dev_rst_sess",
-                              ctx.tr.Tr("prefs.session_reset"),
-                              btn1W,
-                              30.0f * s,
-                              ctx.palette,
-                              ctx.fonts,
-                              s)) {
+        if (ElSecondaryButton(
+                elSt,
+                ElButtonSpec{"##dev_rst_sess", ctx.tr.Tr("prefs.session_reset"), btn1W, 30.0f * s})) {
             ctx.sink.Dispatch(motrix::app::ResetSessionCmd{});
         }
         ImGui::SetCursorScreenPos(ImVec2(bx + btn1W + 12.0f * s, cy));
-        if (ElSecondaryButton("##dev_fact_rst",
-                              ctx.tr.Tr("prefs.factory_reset"),
-                              btn2W,
-                              30.0f * s,
-                              ctx.palette,
-                              ctx.fonts,
-                              s)) {
+        if (ElSecondaryButton(
+                elSt,
+                ElButtonSpec{"##dev_fact_rst", ctx.tr.Tr("prefs.factory_reset"), btn2W, 30.0f * s})) {
             ctx.sink.Dispatch(motrix::app::FactoryResetCmd{});
             ps.initialized = false;
         }
         ImGui::SetCursorScreenPos(ImVec2(bx, cy + 32.0f * s));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     });
+}
+
+}  // namespace
+
+void RenderPrefsAdvancedTail(UiFrameContext& ctx, PrefsFormState& ps) {
+    RenderAdvProtocolRow(ctx, ps);
+    RenderAdvUserAgentRow(ctx, ps);
+    RenderAdvDeveloperRow(ctx, ps);
 }
 
 void RenderPrefsLabTab(UiFrameContext& ctx, PrefsFormState& ps) {
@@ -269,16 +262,15 @@ void RenderPrefsLabTab(UiFrameContext& ctx, PrefsFormState& ps) {
     DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.engine_path"), 30.0f * s, [&](float bx, float bw) {
         const float fieldW = std::min(bw, 450.0f * s);
         ImGui::SetCursorScreenPos(ImVec2(bx, ImGui::GetCursorScreenPos().y));
-        const ElCompositeResult r = ElCompositeInput("##lab_engine_bin",
-                                                     ps.enginePathBuffer.data(),
-                                                     ps.enginePathBuffer.size(),
-                                                     fieldW,
-                                                     ctx.palette,
-                                                     ctx.fonts,
-                                                     s,
-                                                     std::nullopt,
-                                                     MotrixIcon::Folder,
-                                                     ctx.state.resolvedEnginePath);
+        const ElStyle elSt{ctx.palette, ctx.fonts, s};
+        const ElCompositeResult r = ElCompositeInput(elSt,
+                                                     ElCompositeSpec{"##lab_engine_bin",
+                                                                     ps.enginePathBuffer.data(),
+                                                                     ps.enginePathBuffer.size(),
+                                                                     fieldW,
+                                                                     std::nullopt,
+                                                                     MotrixIcon::Folder,
+                                                                     ctx.state.resolvedEnginePath});
         if (r.rightClicked && !ctx.state.resolvedEnginePath.empty()) {
             ctx.host.OpenPathInExplorer(ctx.state.resolvedEnginePath);
         }

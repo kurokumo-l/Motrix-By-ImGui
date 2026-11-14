@@ -17,7 +17,16 @@ namespace motrix::ui {
 
 namespace {
 
-void DrawThemeWindowSketch(ImDrawList* dl, ImVec2 rMin, ImVec2 rMax, bool dark, float s) {
+struct ThemeSketchTarget {
+    ImDrawList* dl = nullptr;
+    ImVec2 rMin{};
+    ImVec2 rMax{};
+};
+
+void DrawThemeWindowSketch(const ThemeSketchTarget& t, bool dark, float s) {
+    ImDrawList* dl = t.dl;
+    const ImVec2 rMin = t.rMin;
+    const ImVec2 rMax = t.rMax;
     const ImU32 asideCol = ToAbgrU32(HexColor(0x2E2E2E));
     const ImU32 subCol = ToAbgrU32(dark ? HexColor(0x303030) : HexColor(0xF4F5F7));
     const ImU32 bodyCol = ToAbgrU32(dark ? HexColor(0x3B3B3B) : HexColor(0xFFFFFF));
@@ -55,65 +64,87 @@ void DrawThemeWindowSketch(ImDrawList* dl, ImVec2 rMin, ImVec2 rMax, bool dark, 
     }
 }
 
-bool RenderThemeCard(UiFrameContext& ctx,
-                     const char* id,
-                     std::string_view label,
-                     int modeIdx,
-                     bool selected,
-                     ImVec2 pos,
-                     ImVec2 size) {
+struct ThemeCardSpec {
+    const char* id = nullptr;
+    std::string_view label{};
+    int modeIdx = 0;
+    bool selected = false;
+    ImVec2 pos{};
+    ImVec2 size{};
+};
+
+bool RenderThemeCard(UiFrameContext& ctx, const ThemeCardSpec& card) {
     const float s = ctx.dpiScale;
-    ImGui::SetCursorScreenPos(pos);
-    const bool clicked = ImGui::InvisibleButton(id, ImVec2(size.x, size.y + 24.0f * s));
+    ImGui::SetCursorScreenPos(card.pos);
+    const bool clicked = ImGui::InvisibleButton(card.id, ImVec2(card.size.x, card.size.y + 24.0f * s));
     const bool hov = ImGui::IsItemHovered();
     if (hov) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     }
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 rMax(pos.x + size.x, pos.y + size.y);
-    if (modeIdx == 0) {
-        const float midX = pos.x + size.x * 0.5f;
-        dl->PushClipRect(pos, ImVec2(midX, rMax.y), true);
-        DrawThemeWindowSketch(dl, pos, rMax, false, s);
-        dl->PopClipRect();
-        dl->PushClipRect(ImVec2(midX, pos.y), rMax, true);
-        DrawThemeWindowSketch(dl, pos, rMax, true, s);
-        dl->PopClipRect();
+    const ImVec2 rMax(card.pos.x + card.size.x, card.pos.y + card.size.y);
+    const ThemeSketchTarget target{dl, card.pos, rMax};
+    if (card.modeIdx == 0) {
+        const float midX = card.pos.x + card.size.x * 0.5f;
+        {
+            ClipRectGuard leftClip(dl, ClipRectSpec{card.pos.x, card.pos.y, midX, rMax.y, true});
+            DrawThemeWindowSketch(target, false, s);
+        }
+        {
+            ClipRectGuard rightClip(dl, ClipRectSpec{midX, card.pos.y, rMax.x, rMax.y, true});
+            DrawThemeWindowSketch(target, true, s);
+        }
     } else {
-        DrawThemeWindowSketch(dl, pos, rMax, modeIdx == 2, s);
+        DrawThemeWindowSketch(target, card.modeIdx == 2, s);
     }
 
-    const RgbaColor bdCol = (selected || hov) ? ctx.palette.primary : ctx.palette.inputBorder;
-    dl->AddRect(pos, rMax, ToAbgrU32(bdCol), 4.0f * s, 0, selected ? 2.0f * s : 1.0f);
+    const RgbaColor bdCol = (card.selected || hov) ? ctx.palette.primary : ctx.palette.inputBorder;
+    dl->AddRect(card.pos, rMax, ToAbgrU32(bdCol), 4.0f * s, 0, card.selected ? 2.0f * s : 1.0f);
 
     FontGuard fg(ctx.fonts, FontRole::Regular, 12.5f);
-    const ImVec2 txtSz = ImGui::CalcTextSize(label.data(), label.data() + label.size());
-    dl->AddText(ImVec2(pos.x + (size.x - txtSz.x) * 0.5f, rMax.y + 6.0f * s),
-                ToAbgrU32(selected ? ctx.palette.primary : ctx.palette.subLabelText),
-                label.data(),
-                label.data() + label.size());
+    const ImVec2 txtSz = ImGui::CalcTextSize(card.label.data(), card.label.data() + card.label.size());
+    dl->AddText(ImVec2(card.pos.x + (card.size.x - txtSz.x) * 0.5f, rMax.y + 6.0f * s),
+                ToAbgrU32(card.selected ? ctx.palette.primary : ctx.palette.subLabelText),
+                card.label.data(),
+                card.label.data() + card.label.size());
     return clicked;
 }
 
-void DrawInlineSubLabel(const UiFrameContext& ctx, float x, float y, float h, std::string_view txt) {
+struct SubLabelPos {
+    float x = 0.0f;
+    float y = 0.0f;
+    float h = 0.0f;
+};
+
+void DrawInlineSubLabel(const UiFrameContext& ctx, const SubLabelPos& pos, std::string_view txt) {
     FontGuard fg(ctx.fonts, FontRole::Regular, 13.5f);
     const ImVec2 sz = ImGui::CalcTextSize(txt.data(), txt.data() + txt.size());
-    ImGui::GetWindowDrawList()->AddText(ImVec2(x, y + (h - sz.y) * 0.5f),
+    ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x, pos.y + (pos.h - sz.y) * 0.5f),
                                         ToAbgrU32(ctx.palette.subLabelText),
                                         txt.data(),
                                         txt.data() + txt.size());
 }
 
-}  // namespace
+struct ChkRowItem {
+    const char* id = nullptr;
+    std::string_view key{};
+    bool* val = nullptr;
+};
 
-void RenderPrefsBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
+void DrawCheckboxStack(UiFrameContext& ctx, float x, float& y, std::span<const ChkRowItem> items) {
     const float s = ctx.dpiScale;
-    const auto chkRow = [&](const char* id, std::string_view key, bool& val, float x, float& y) {
+    const ElStyle elSt{ctx.palette, ctx.fonts, s};
+    for (const auto& item : items) {
         ImGui::SetCursorScreenPos(ImVec2(x, y));
-        ElCheckbox(id, ctx.tr.Tr(key), &val, ctx.palette, ctx.fonts, s);
+        ElCheckbox(elSt, item.id, ctx.tr.Tr(item.key), item.val);
         y += 28.0f * s;
-    };
+    }
+}
+
+void RenderBasicAppearanceRow(UiFrameContext& ctx, PrefsFormState& ps) {
+    const float s = ctx.dpiScale;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s};
 
     DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.appearance"), 44.0f * s, [&](float bx, float) {
         const ImVec2 cardSz(72.0f * s, 46.0f * s);
@@ -127,16 +158,20 @@ void RenderPrefsBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
         const std::array<const char*, 3> ids{"##thm_auto", "##thm_light", "##thm_dark"};
         for (int i = 0; i < 3; ++i) {
             const ImVec2 cardPos(bx + static_cast<float>(i) * (cardSz.x + gapX), cy);
-            if (RenderThemeCard(ctx, ids[i], names[i], i, ps.themeIndex == i, cardPos, cardSz)) {
+            if (RenderThemeCard(
+                    ctx, ThemeCardSpec{ids[i], names[i], i, ps.themeIndex == i, cardPos, cardSz})) {
                 ps.themeIndex = i;
                 ctx.sink.Dispatch(
                     motrix::app::SetThemeCmd{static_cast<motrix::domain::ThemePreference>(i)});
             }
         }
         cy += cardSz.y + 32.0f * s;
-        chkRow("##basic_hide_menu", "prefs.hide_app_menu", ps.hideAppMenu, bx, cy);
-        chkRow("##basic_auto_hide", "prefs.auto_hide_window", ps.autoHideWindow, bx, cy);
-        chkRow("##basic_prog_bar", "prefs.show_progress_bar", ps.showProgressBar, bx, cy);
+        const std::array<ChkRowItem, 3> items{{
+            {"##basic_hide_menu", "prefs.hide_app_menu", &ps.hideAppMenu},
+            {"##basic_auto_hide", "prefs.auto_hide_window", &ps.autoHideWindow},
+            {"##basic_prog_bar", "prefs.show_progress_bar", &ps.showProgressBar},
+        }};
+        DrawCheckboxStack(ctx, bx, cy, items);
         ImGui::SetCursorScreenPos(ImVec2(bx, cy - 6.0f * s));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     });
@@ -144,36 +179,47 @@ void RenderPrefsBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
     DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.language"), 30.0f * s, [&](float bx, float) {
         static constexpr std::array<const char*, 2> kLocales{"English", "简体中文"};
         ImGui::SetCursorScreenPos(ImVec2(bx, ImGui::GetCursorScreenPos().y));
-        if (ElSelectCombo(
-                "##basic_locale", &ps.localeIndex, kLocales, 186.0f * s, ctx.palette, ctx.fonts, s)) {
+        if (ElSelectCombo(elSt, ElSelectSpec{"##basic_locale", &ps.localeIndex, kLocales, 186.0f * s})) {
             ctx.sink.Dispatch(motrix::app::SetLocaleCmd{
                 ps.localeIndex == 1 ? motrix::core::Locale::ZhCN : motrix::core::Locale::EnUS});
         }
     });
+}
+
+void RenderBasicStartupAndDirRows(UiFrameContext& ctx, PrefsFormState& ps) {
+    const float s = ctx.dpiScale;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s};
 
     DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.startup"), 20.0f * s, [&](float bx, float) {
         float cy = ImGui::GetCursorScreenPos().y;
-        chkRow("##basic_login", "prefs.open_at_login", ps.openAtLogin, bx, cy);
-        chkRow("##basic_win_state", "prefs.keep_window_state", ps.keepWindowState, bx, cy);
-        chkRow("##basic_resume_all", "prefs.auto_resume_all", ps.resumeAllWhenAppLaunched, bx, cy);
+        const std::array<ChkRowItem, 3> items{{
+            {"##basic_login", "prefs.open_at_login", &ps.openAtLogin},
+            {"##basic_win_state", "prefs.keep_window_state", &ps.keepWindowState},
+            {"##basic_resume_all", "prefs.auto_resume_all", &ps.resumeAllWhenAppLaunched},
+        }};
+        DrawCheckboxStack(ctx, bx, cy, items);
         ImGui::SetCursorScreenPos(ImVec2(bx, cy - 6.0f * s));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     });
 
     DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.default_dir"), 30.0f * s, [&](float bx, float bw) {
         ImGui::SetCursorScreenPos(ImVec2(bx, ImGui::GetCursorScreenPos().y));
-        ElDirectoryInput(
-            "##basic_dir",
-            ps.dirBuffer.data(),
-            ps.dirBuffer.size(),
-            std::min(bw, 450.0f * s),
-            ctx.state.prefs.historyDirectories,
-            ctx.state.prefs.favoriteDirectories,
-            [&ctx](std::string_view cur) { return ctx.host.PickFolder(cur); },
-            ctx.palette,
-            ctx.fonts,
-            s);
+        ElDirectoryInput(elSt,
+                         ElDirInputSpec{
+                             "##basic_dir",
+                             ps.dirBuffer.data(),
+                             ps.dirBuffer.size(),
+                             std::min(bw, 450.0f * s),
+                             ctx.state.prefs.historyDirectories,
+                             ctx.state.prefs.favoriteDirectories,
+                             [&ctx](std::string_view cur) { return ctx.host.PickFolder(cur); },
+                         });
     });
+}
+
+void RenderBasicTransferRow(UiFrameContext& ctx, PrefsFormState& ps) {
+    const float s = ctx.dpiScale;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s};
 
     DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.transfer_settings"), 30.0f * s, [&](float bx, float) {
         static constexpr std::array<const char*, 2> kUnits{"KB/s", "MB/s"};
@@ -182,57 +228,57 @@ void RenderPrefsBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
         const float numW = 128.0f * s;
         const float unitW = 94.0f * s;
 
-        DrawInlineSubLabel(ctx, bx, cy, 30.0f * s, ctx.tr.Tr("prefs.transfer_upload"));
+        DrawInlineSubLabel(ctx, SubLabelPos{bx, cy, 30.0f * s}, ctx.tr.Tr("prefs.transfer_upload"));
         ImGui::SetCursorScreenPos(ImVec2(bx + subW, cy));
-        ElInputNumberInt(
-            "##basic_ul_num", &ps.ulLimitKbps, 0, 999999, 10, numW, ctx.palette, ctx.fonts, s);
+        ElInputNumberInt(elSt, "##basic_ul_num", ElIntSpec{&ps.ulLimitKbps, 0, 999999, 10, numW});
         int ulUnit = ps.ulUnitMb ? 1 : 0;
         ImGui::SetCursorScreenPos(ImVec2(bx + subW + numW + 8.0f * s, cy));
-        if (ElSelectCombo("##basic_ul_unit", &ulUnit, kUnits, unitW, ctx.palette, ctx.fonts, s)) {
+        if (ElSelectCombo(elSt, ElSelectSpec{"##basic_ul_unit", &ulUnit, kUnits, unitW})) {
             ps.ulUnitMb = (ulUnit == 1);
         }
 
         cy += 42.0f * s;
-        DrawInlineSubLabel(ctx, bx, cy, 30.0f * s, ctx.tr.Tr("prefs.transfer_download"));
+        DrawInlineSubLabel(ctx, SubLabelPos{bx, cy, 30.0f * s}, ctx.tr.Tr("prefs.transfer_download"));
         ImGui::SetCursorScreenPos(ImVec2(bx + subW, cy));
-        ElInputNumberInt(
-            "##basic_dl_num", &ps.dlLimitKbps, 0, 999999, 10, numW, ctx.palette, ctx.fonts, s);
+        ElInputNumberInt(elSt, "##basic_dl_num", ElIntSpec{&ps.dlLimitKbps, 0, 999999, 10, numW});
         int dlUnit = ps.dlUnitMb ? 1 : 0;
         ImGui::SetCursorScreenPos(ImVec2(bx + subW + numW + 8.0f * s, cy));
-        if (ElSelectCombo("##basic_dl_unit", &dlUnit, kUnits, unitW, ctx.palette, ctx.fonts, s)) {
+        if (ElSelectCombo(elSt, ElSelectSpec{"##basic_dl_unit", &dlUnit, kUnits, unitW})) {
             ps.dlUnitMb = (dlUnit == 1);
         }
         ImGui::SetCursorScreenPos(ImVec2(bx, cy + 30.0f * s));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     });
+}
+
+void RenderBasicBtAndTaskRows(UiFrameContext& ctx, PrefsFormState& ps) {
+    const float s = ctx.dpiScale;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s};
 
     DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.bt_settings"), 20.0f * s, [&](float bx, float) {
         float cy = ImGui::GetCursorScreenPos().y;
-        chkRow("##bt_save_meta", "prefs.bt_save_metadata", ps.btSaveMetadata, bx, cy);
-        chkRow("##bt_auto_dl", "prefs.bt_auto_download", ps.btAutoDownloadContent, bx, cy);
-        chkRow("##bt_force_enc", "prefs.bt_force_encryption", ps.btForceEncryption, bx, cy);
+        const std::array<ChkRowItem, 3> btItems{{
+            {"##bt_save_meta", "prefs.bt_save_metadata", &ps.btSaveMetadata},
+            {"##bt_auto_dl", "prefs.bt_auto_download", &ps.btAutoDownloadContent},
+            {"##bt_force_enc", "prefs.bt_force_encryption", &ps.btForceEncryption},
+        }};
+        DrawCheckboxStack(ctx, bx, cy, btItems);
 
         cy += 6.0f * s;
         ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        ElSwitch("##bt_keep_seed",
-                 ctx.tr.Tr("prefs.keep_seeding"),
-                 &ps.keepSeeding,
-                 ctx.palette,
-                 ctx.fonts,
-                 s);
+        ElSwitch(elSt, "##bt_keep_seed", ctx.tr.Tr("prefs.keep_seeding"), &ps.keepSeeding);
         cy += 34.0f * s;
 
         const float subW = 132.0f * s;
-        DrawInlineSubLabel(ctx, bx, cy, 30.0f * s, ctx.tr.Tr("prefs.seed_ratio"));
+        DrawInlineSubLabel(ctx, SubLabelPos{bx, cy, 30.0f * s}, ctx.tr.Tr("prefs.seed_ratio"));
         ImGui::SetCursorScreenPos(ImVec2(bx + subW, cy));
         ElInputNumberFloat(
-            "##bt_seed_ratio", &ps.seedRatio, 0.0f, 100.0f, 0.5f, 128.0f * s, ctx.palette, ctx.fonts, s);
+            elSt, "##bt_seed_ratio", ElFloatSpec{&ps.seedRatio, 0.0f, 100.0f, 0.5f, 128.0f * s});
         cy += 42.0f * s;
 
-        DrawInlineSubLabel(ctx, bx, cy, 30.0f * s, ctx.tr.Tr("prefs.seed_time"));
+        DrawInlineSubLabel(ctx, SubLabelPos{bx, cy, 30.0f * s}, ctx.tr.Tr("prefs.seed_time"));
         ImGui::SetCursorScreenPos(ImVec2(bx + subW, cy));
-        ElInputNumberInt(
-            "##bt_seed_time", &ps.seedTime, 0, 525600, 10, 128.0f * s, ctx.palette, ctx.fonts, s);
+        ElInputNumberInt(elSt, "##bt_seed_time", ElIntSpec{&ps.seedTime, 0, 525600, 10, 128.0f * s});
         ImGui::SetCursorScreenPos(ImVec2(bx, cy + 30.0f * s));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     });
@@ -240,25 +286,35 @@ void RenderPrefsBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
     DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.task_manage"), 30.0f * s, [&](float bx, float) {
         float cy = ImGui::GetCursorScreenPos().y;
         const float subW = 166.0f * s;
-        DrawInlineSubLabel(ctx, bx, cy, 30.0f * s, ctx.tr.Tr("prefs.concurrency"));
+        DrawInlineSubLabel(ctx, SubLabelPos{bx, cy, 30.0f * s}, ctx.tr.Tr("prefs.concurrency"));
         ImGui::SetCursorScreenPos(ImVec2(bx + subW, cy));
-        ElInputNumberInt(
-            "##tm_conc", &ps.maxConcurrent, 1, 64, 1, 128.0f * s, ctx.palette, ctx.fonts, s);
+        ElInputNumberInt(elSt, "##tm_conc", ElIntSpec{&ps.maxConcurrent, 1, 64, 1, 128.0f * s});
         cy += 42.0f * s;
 
-        DrawInlineSubLabel(ctx, bx, cy, 30.0f * s, ctx.tr.Tr("prefs.split"));
+        DrawInlineSubLabel(ctx, SubLabelPos{bx, cy, 30.0f * s}, ctx.tr.Tr("prefs.split"));
         ImGui::SetCursorScreenPos(ImVec2(bx + subW, cy));
-        ElInputNumberInt(
-            "##tm_split", &ps.maxConnPerServer, 1, 128, 1, 128.0f * s, ctx.palette, ctx.fonts, s);
+        ElInputNumberInt(elSt, "##tm_split", ElIntSpec{&ps.maxConnPerServer, 1, 128, 1, 128.0f * s});
         cy += 42.0f * s;
 
-        chkRow("##tm_cont", "prefs.continue", ps.continueDownloads, bx, cy);
-        chkRow("##tm_nav", "prefs.new_task_show", ps.newTaskShowDownloading, bx, cy);
-        chkRow("##tm_notif", "prefs.task_notification", ps.taskNotification, bx, cy);
-        chkRow("##tm_nodel", "prefs.no_confirm_del", ps.noConfirmBeforeDelete, bx, cy);
+        const std::array<ChkRowItem, 4> tmItems{{
+            {"##tm_cont", "prefs.continue", &ps.continueDownloads},
+            {"##tm_nav", "prefs.new_task_show", &ps.newTaskShowDownloading},
+            {"##tm_notif", "prefs.task_notification", &ps.taskNotification},
+            {"##tm_nodel", "prefs.no_confirm_del", &ps.noConfirmBeforeDelete},
+        }};
+        DrawCheckboxStack(ctx, bx, cy, tmItems);
         ImGui::SetCursorScreenPos(ImVec2(bx, cy - 6.0f * s));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     });
+}
+
+}  // namespace
+
+void RenderPrefsBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
+    RenderBasicAppearanceRow(ctx, ps);
+    RenderBasicStartupAndDirRows(ctx, ps);
+    RenderBasicTransferRow(ctx, ps);
+    RenderBasicBtAndTaskRows(ctx, ps);
 }
 
 }  // namespace motrix::ui

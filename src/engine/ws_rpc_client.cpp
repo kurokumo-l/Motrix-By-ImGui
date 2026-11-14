@@ -124,17 +124,19 @@ public:
     motrix::core::Result<std::vector<motrix::domain::DownloadTaskView>> TellWaiting(int offset,
                                                                                     int num) override {
         const std::string id = NextId();
-        return CallJson(id,
-                        BuildTellSliceRpcRequest(id, "aria2.tellWaiting", options_.secret, offset, num),
-                        ParseTaskListJson);
+        return CallJson(
+            id,
+            BuildTellSliceRpcRequest(id, options_.secret, {"aria2.tellWaiting", offset, num}),
+            ParseTaskListJson);
     }
 
     motrix::core::Result<std::vector<motrix::domain::DownloadTaskView>> TellStopped(int offset,
                                                                                     int num) override {
         const std::string id = NextId();
-        return CallJson(id,
-                        BuildTellSliceRpcRequest(id, "aria2.tellStopped", options_.secret, offset, num),
-                        ParseTaskListJson);
+        return CallJson(
+            id,
+            BuildTellSliceRpcRequest(id, options_.secret, {"aria2.tellStopped", offset, num}),
+            ParseTaskListJson);
     }
 
     motrix::core::Result<EngineSyncSnapshot> SyncAll(int waitingLimit, int stoppedLimit) override {

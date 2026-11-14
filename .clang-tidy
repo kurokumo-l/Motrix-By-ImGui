@@ -1,0 +1,32 @@
+# Motrix Native clang-tidy configuration
+# Note on MSVC C++23 Modules (`import std;`):
+# When built with VS 2026 MSVC (`cl.exe`) + Ninja using `CXX_MODULE_STD=ON`,
+# MSVC emits proprietary `.ifc` module BMIs that LLVM `clang-tidy` cannot
+# directly ingest for module translation units (`.ixx` and module `.cpp`).
+# Structural, module-boundary, C++23 safety, and ImGui RAII gates are therefore
+# enforced deterministically by `scripts/check_standards.ps1`, while this config
+# governs header/standard static checks when running Clang-based tooling.
+---
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  performance-*,
+  readability-function-size,
+  readability-function-cognitive-complexity
+WarningsAsErrors: ''
+HeaderFilterRegex: '^src/'
+CheckOptions:
+  - key: readability-function-size.LineThreshold
+    value: '80'
+  - key: readability-function-size.ParameterThreshold
+    value: '5'
+  - key: readability-function-size.NestingThreshold
+    value: '3'
+  - key: readability-function-cognitive-complexity.Threshold
+    value: '25'
+...

@@ -49,15 +49,22 @@ public:
     void Dispatch(Command cmd) override;
 
 private:
+    struct DispatchOutcome;
+
+    void InitStateFromOptions(const CoordinatorOptions& options);
+    void StartLiveEngineIfEnabled(const CoordinatorOptions& options);
     void PublishMutated(const std::function<void(AppStateSnapshot&)>& mutator);
     void RecomputeStats(AppStateSnapshot& state);
+    [[nodiscard]] bool TryHandleImmediateCommand(const Command& cmd);
+    void ApplyStateCommand(AppStateSnapshot& state, const Command& cmd, DispatchOutcome& outcome);
+    [[nodiscard]] bool
+    ApplySystemAndFileCommand(AppStateSnapshot& state, const Command& cmd, DispatchOutcome& outcome);
+    [[nodiscard]] bool
+    ApplyLiveSubmissionCommand(AppStateSnapshot& state, const Command& cmd, DispatchOutcome& outcome);
+    void ApplyLiveTaskCommand(AppStateSnapshot& state, const Command& cmd, DispatchOutcome& outcome);
     void HandleTaskAction(AppStateSnapshot& state, const Command& cmd);
     void HandleBulkAndSubmit(AppStateSnapshot& state, const Command& cmd);
-    void HandleEngineSyncUpdate(EngineConnectionState connState,
-                                const motrix::engine::EngineVersionInfo* version,
-                                const motrix::engine::EngineSyncSnapshot* sync,
-                                std::string_view enginePath,
-                                std::string_view errorMsg);
+    void HandleEngineSyncUpdate(const EngineSyncUpdate& update);
     void HandleEngineDetailUpdate(std::optional<motrix::engine::TaskDetailResult> detail,
                                   std::vector<motrix::domain::TaskPeerView> peers);
     void PersistConfigs(const AppStateSnapshot& state,
@@ -73,6 +80,7 @@ private:
     static void SeedPreviewTasks(AppStateSnapshot& state);
     static void RefreshMockDetail(AppStateSnapshot& state);
     static void RecordHistoryDirectory(motrix::domain::UserPreferences& prefs, std::string_view dir);
+    [[nodiscard]] static std::string GenerateHexSecret();
     [[nodiscard]] const motrix::domain::DownloadTaskView*
     FindTaskByGid(const AppStateSnapshot& state, std::string_view gid) const noexcept;
 

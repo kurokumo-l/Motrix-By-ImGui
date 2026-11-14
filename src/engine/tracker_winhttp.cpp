@@ -101,28 +101,28 @@ private:
     return std::string(trimmed);
 }
 
-[[nodiscard]] std::expected<std::string, std::string> FetchSingleTrackerUrl(HINTERNET session,
-                                                                            std::string_view url) {
-    const std::string_view trimmedUrl = motrix::core::TrimAscii(url);
-    if (trimmedUrl.empty()) {
-        return std::unexpected(std::string("Empty tracker URL"));
-    }
+struct CrackedHttpUrl {
+    std::wstring host;
+    std::wstring path;
+    INTERNET_SCHEME scheme = INTERNET_SCHEME_HTTP;
+    INTERNET_PORT port = INTERNET_DEFAULT_HTTP_PORT;
+};
 
+[[nodiscard]] std::expected<CrackedHttpUrl, std::string>
+CrackTrackerHttpUrl(std::string_view trimmedUrl) {
     const std::wstring urlW = motrix::core::Utf8ToWide(trimmedUrl);
     if (urlW.empty()) {
         return std::unexpected(std::format("Invalid UTF-8 URL: {}", trimmedUrl));
     }
-
-    std::wstring host(256, L'\0');
-    std::wstring path((std::max<std::size_t>)(urlW.size() + 1, 2048), L'\0');
-
+    CrackedHttpUrl out{};
+    out.host.resize(256, L'\0');
+    out.path.resize((std::max<std::size_t>)(urlW.size() + 1, 2048), L'\0');
     URL_COMPONENTS uc{};
     uc.dwStructSize = sizeof(uc);
-    uc.lpszHostName = host.data();
-    uc.dwHostNameLength = static_cast<DWORD>(host.size());
-    uc.lpszUrlPath = path.data();
-    uc.dwUrlPathLength = static_cast<DWORD>(path.size());
-
+    uc.lpszHostName = out.host.data();
+    uc.dwHostNameLength = static_cast<DWORD>(out.host.size());
+    uc.lpszUrlPath = out.path.data();
+    uc.dwUrlPathLength = static_cast<DWORD>(out.path.size());
     if (!::WinHttpCrackUrl(urlW.c_str(), static_cast<DWORD>(urlW.size()), 0, &uc)) {
         return std::unexpected(
             std::format("Invalid URL '{}': {}", trimmedUrl, FormatWinHttpError(::GetLastError())));
@@ -130,26 +130,70 @@ private:
     if (uc.nScheme != INTERNET_SCHEME_HTTP && uc.nScheme != INTERNET_SCHEME_HTTPS) {
         return std::unexpected(std::format("Unsupported scheme for '{}'", trimmedUrl));
     }
-
-    host.resize(uc.dwHostNameLength);
-    path.resize(uc.dwUrlPathLength);
-    if (host.empty()) {
+    out.host.resize(uc.dwHostNameLength);
+    out.path.resize(uc.dwUrlPathLength);
+    if (out.host.empty()) {
         return std::unexpected(std::format("Missing host in URL '{}'", trimmedUrl));
     }
-    if (path.empty()) {
-        path = L"/";
+    if (out.path.empty()) {
+        out.path = L"/";
+    }
+    out.scheme = uc.nScheme;
+    out.port = uc.nPort;
+    return out;
+}
+
+[[nodiscard]] std::expected<std::string, std::string>
+ReadWinHttpResponseBody(HINTERNET request, std::string_view trimmedUrl) {
+    std::string body;
+    for (;;) {
+        DWORD avail = 0;
+        if (!::WinHttpQueryDataAvailable(request, &avail)) {
+            return std::unexpected(std::format("QueryDataAvailable failed for '{}': {}",
+                                               trimmedUrl,
+                                               FormatWinHttpError(::GetLastError())));
+        }
+        if (avail == 0 || body.size() >= kMaxTrackerPayloadBytes) {
+            break;
+        }
+        const std::size_t remaining = kMaxTrackerPayloadBytes - body.size();
+        const DWORD toRead = static_cast<DWORD>(
+            (std::min<std::size_t>)(avail, (std::min<std::size_t>)(remaining, kReadChunkBytes)));
+        const std::size_t oldSize = body.size();
+        body.resize(oldSize + toRead);
+        DWORD bytesRead = 0;
+        if (!::WinHttpReadData(request, body.data() + oldSize, toRead, &bytesRead)) {
+            return std::unexpected(std::format(
+                "ReadData failed for '{}': {}", trimmedUrl, FormatWinHttpError(::GetLastError())));
+        }
+        body.resize(oldSize + bytesRead);
+        if (bytesRead == 0) {
+            break;
+        }
+    }
+    return body;
+}
+
+[[nodiscard]] std::expected<std::string, std::string> FetchSingleTrackerUrl(HINTERNET session,
+                                                                            std::string_view url) {
+    const std::string_view trimmedUrl = motrix::core::TrimAscii(url);
+    if (trimmedUrl.empty()) {
+        return std::unexpected(std::string("Empty tracker URL"));
+    }
+    const auto cracked = CrackTrackerHttpUrl(trimmedUrl);
+    if (!cracked) {
+        return std::unexpected(cracked.error());
     }
 
-    UniqueWinHttpHandle connect(::WinHttpConnect(session, host.c_str(), uc.nPort, 0));
+    UniqueWinHttpHandle connect(::WinHttpConnect(session, cracked->host.c_str(), cracked->port, 0));
     if (!connect) {
         return std::unexpected(std::format(
             "Connect failed for '{}': {}", trimmedUrl, FormatWinHttpError(::GetLastError())));
     }
-
-    const DWORD reqFlags = (uc.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0u;
+    const DWORD reqFlags = (cracked->scheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0u;
     UniqueWinHttpHandle request(::WinHttpOpenRequest(connect.Get(),
                                                      L"GET",
-                                                     path.c_str(),
+                                                     cracked->path.c_str(),
                                                      nullptr,
                                                      WINHTTP_NO_REFERER,
                                                      WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -158,16 +202,11 @@ private:
         return std::unexpected(std::format(
             "OpenRequest failed for '{}': {}", trimmedUrl, FormatWinHttpError(::GetLastError())));
     }
-
     if (!::WinHttpSendRequest(
-            request.Get(), WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+            request.Get(), WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
+        || !::WinHttpReceiveResponse(request.Get(), nullptr)) {
         return std::unexpected(std::format(
-            "SendRequest failed for '{}': {}", trimmedUrl, FormatWinHttpError(::GetLastError())));
-    }
-
-    if (!::WinHttpReceiveResponse(request.Get(), nullptr)) {
-        return std::unexpected(std::format(
-            "ReceiveResponse failed for '{}': {}", trimmedUrl, FormatWinHttpError(::GetLastError())));
+            "HTTP request failed for '{}': {}", trimmedUrl, FormatWinHttpError(::GetLastError())));
     }
 
     DWORD statusCode = 0;
@@ -184,39 +223,17 @@ private:
     if (statusCode < 200u || statusCode >= 300u) {
         return std::unexpected(std::format("HTTP {} for '{}'", statusCode, trimmedUrl));
     }
+    return ReadWinHttpResponseBody(request.Get(), trimmedUrl);
+}
 
-    std::string body;
-    for (;;) {
-        DWORD avail = 0;
-        if (!::WinHttpQueryDataAvailable(request.Get(), &avail)) {
-            return std::unexpected(std::format("QueryDataAvailable failed for '{}': {}",
-                                               trimmedUrl,
-                                               FormatWinHttpError(::GetLastError())));
-        }
-        if (avail == 0) {
-            break;
-        }
-        const std::size_t remaining = kMaxTrackerPayloadBytes - body.size();
-        if (remaining == 0) {
-            break;
-        }
-        const DWORD toRead = static_cast<DWORD>(
-            (std::min<std::size_t>)(avail, (std::min<std::size_t>)(remaining, kReadChunkBytes)));
-        const std::size_t oldSize = body.size();
-        body.resize(oldSize + toRead);
-
-        DWORD bytesRead = 0;
-        if (!::WinHttpReadData(request.Get(), body.data() + oldSize, toRead, &bytesRead)) {
-            return std::unexpected(std::format(
-                "ReadData failed for '{}': {}", trimmedUrl, FormatWinHttpError(::GetLastError())));
-        }
-        body.resize(oldSize + bytesRead);
-        if (bytesRead == 0) {
-            break;
-        }
+void AppendFetchedChunk(std::string& combined, std::string_view chunk) {
+    if (chunk.empty()) {
+        return;
     }
-
-    return body;
+    combined.append(chunk);
+    if (combined.back() != '\n') {
+        combined.push_back('\n');
+    }
 }
 
 }  // namespace
@@ -252,12 +269,7 @@ motrix::core::Result<TrackerFetchResult> FetchTrackersFromUrls(std::span<const s
     for (const auto& url : urls) {
         auto fetched = FetchSingleTrackerUrl(session.Get(), url);
         if (fetched) {
-            if (!fetched->empty()) {
-                result.rawCombinedText.append(*fetched);
-                if (result.rawCombinedText.back() != '\n') {
-                    result.rawCombinedText.push_back('\n');
-                }
-            }
+            AppendFetchedChunk(result.rawCombinedText, *fetched);
             ++result.succeededSources;
         } else {
             result.errors.push_back(std::move(fetched.error()));

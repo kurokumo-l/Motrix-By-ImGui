@@ -115,33 +115,72 @@ SdTriangle(float px, float py, float x0, float y0, float x1, float y1, float x2,
     return std::clamp(0.5f - dist / aa, 0.0f, 1.0f);
 }
 
-void BlendOver(float& dstR,
-               float& dstG,
-               float& dstB,
-               float& dstA,
-               float srcR,
-               float srcG,
-               float srcB,
-               float cov) noexcept {
+struct FloatRgba {
+    float r = 0.0f;
+    float g = 0.0f;
+    float b = 0.0f;
+    float a = 0.0f;
+};
+
+void BlendOver(FloatRgba& dst, const FloatRgba& src, float cov) noexcept {
     if (cov <= 0.0f) {
         return;
     }
     const float inv = 1.0f - cov;
-    dstR = srcR * cov + dstR * inv;
-    dstG = srcG * cov + dstG * inv;
-    dstB = srcB * cov + dstB * inv;
-    dstA = cov + dstA * inv;
+    dst.r = src.r * cov + dst.r * inv;
+    dst.g = src.g * cov + dst.g * inv;
+    dst.b = src.b * cov + dst.b * inv;
+    dst.a = cov + dst.a * inv;
 }
 
-[[nodiscard]] std::uint32_t PackPremulBgra(float r, float g, float b, float a) noexcept {
+[[nodiscard]] std::uint32_t PackPremulBgra(const FloatRgba& c) noexcept {
     const auto toByte = [](float v) noexcept -> std::uint32_t {
         return static_cast<std::uint32_t>(std::clamp(std::lround(v * 255.0f), 0L, 255L));
     };
-    const std::uint32_t ca = toByte(a);
-    const std::uint32_t cr = toByte(r);
-    const std::uint32_t cg = toByte(g);
-    const std::uint32_t cb = toByte(b);
+    const std::uint32_t ca = toByte(c.a);
+    const std::uint32_t cr = toByte(c.r);
+    const std::uint32_t cg = toByte(c.g);
+    const std::uint32_t cb = toByte(c.b);
     return (ca << 24u) | (cr << 16u) | (cg << 8u) | cb;
+}
+
+void FillMotrixIconPixels(std::uint32_t* pixels, int sizePx, bool activeDot) noexcept {
+    const float invSize = 1.0f / static_cast<float>(sizePx);
+    const float aa = 1.15f * invSize;
+
+    // Brand indigo #5B5CFD and active emerald #22C55E
+    constexpr FloatRgba kBrand{91.0f / 255.0f, 92.0f / 255.0f, 253.0f / 255.0f, 1.0f};
+    constexpr FloatRgba kWhite{1.0f, 1.0f, 1.0f, 1.0f};
+    constexpr FloatRgba kDot{34.0f / 255.0f, 197.0f / 255.0f, 94.0f / 255.0f, 1.0f};
+
+    for (int y = 0; y < sizePx; ++y) {
+        for (int x = 0; x < sizePx; ++x) {
+            const float px = (static_cast<float>(x) + 0.5f) * invSize;
+            const float py = (static_cast<float>(y) + 0.5f) * invSize;
+
+            const float bgDist = SdRoundedBox(px, py, 0.50f, 0.50f, 0.44f, 0.44f, 0.16f);
+            const float bgCov = CovFromDist(bgDist, aa);
+
+            const float shaftDist = SdRoundedBox(px, py, 0.50f, 0.36f, 0.075f, 0.16f, 0.03f);
+            const float triDist = SdTriangle(px, py, 0.27f, 0.45f, 0.73f, 0.45f, 0.50f, 0.67f) - 0.012f;
+            const float barDist = SdRoundedBox(px, py, 0.50f, 0.76f, 0.23f, 0.045f, 0.025f);
+            const float arrowCov = CovFromDist(std::min({shaftDist, triDist, barDist}), aa) * bgCov;
+
+            FloatRgba out{};
+            BlendOver(out, kBrand, bgCov);
+            BlendOver(out, kWhite, arrowCov);
+
+            if (activeDot) {
+                const float dDot = std::hypot(px - 0.76f, py - 0.76f);
+                BlendOver(out, kWhite, CovFromDist(dDot - 0.22f, aa));
+                BlendOver(out, kDot, CovFromDist(dDot - 0.16f, aa));
+            }
+
+            const std::size_t idx = static_cast<std::size_t>(y) * static_cast<std::size_t>(sizePx)
+                                    + static_cast<std::size_t>(x);
+            pixels[idx] = PackPremulBgra(out);
+        }
+    }
 }
 
 [[nodiscard]] HICON CreateMotrixHicon(int sizePx, bool activeDot) noexcept {
@@ -181,50 +220,7 @@ void BlendOver(float& dstR,
         return nullptr;
     }
 
-    auto* pixels = static_cast<std::uint32_t*>(rawBits);
-    const float invSize = 1.0f / static_cast<float>(sizePx);
-    const float aa = 1.15f * invSize;
-
-    // Brand indigo #5B5CFD and active emerald #22C55E
-    constexpr float kBrandR = 91.0f / 255.0f;
-    constexpr float kBrandG = 92.0f / 255.0f;
-    constexpr float kBrandB = 253.0f / 255.0f;
-    constexpr float kDotR = 34.0f / 255.0f;
-    constexpr float kDotG = 197.0f / 255.0f;
-    constexpr float kDotB = 94.0f / 255.0f;
-
-    for (int y = 0; y < sizePx; ++y) {
-        for (int x = 0; x < sizePx; ++x) {
-            const float px = (static_cast<float>(x) + 0.5f) * invSize;
-            const float py = (static_cast<float>(y) + 0.5f) * invSize;
-
-            const float bgDist = SdRoundedBox(px, py, 0.50f, 0.50f, 0.44f, 0.44f, 0.16f);
-            const float bgCov = CovFromDist(bgDist, aa);
-
-            const float shaftDist = SdRoundedBox(px, py, 0.50f, 0.36f, 0.075f, 0.16f, 0.03f);
-            const float triDist = SdTriangle(px, py, 0.27f, 0.45f, 0.73f, 0.45f, 0.50f, 0.67f) - 0.012f;
-            const float barDist = SdRoundedBox(px, py, 0.50f, 0.76f, 0.23f, 0.045f, 0.025f);
-            const float arrowCov = CovFromDist(std::min({shaftDist, triDist, barDist}), aa) * bgCov;
-
-            float outR = 0.0f;
-            float outG = 0.0f;
-            float outB = 0.0f;
-            float outA = 0.0f;
-            BlendOver(outR, outG, outB, outA, kBrandR, kBrandG, kBrandB, bgCov);
-            BlendOver(outR, outG, outB, outA, 1.0f, 1.0f, 1.0f, arrowCov);
-
-            if (activeDot) {
-                const float dDot = std::hypot(px - 0.76f, py - 0.76f);
-                const float ringCov = CovFromDist(dDot - 0.22f, aa);
-                const float dotCov = CovFromDist(dDot - 0.16f, aa);
-                BlendOver(outR, outG, outB, outA, 1.0f, 1.0f, 1.0f, ringCov);
-                BlendOver(outR, outG, outB, outA, kDotR, kDotG, kDotB, dotCov);
-            }
-
-            pixels[static_cast<std::size_t>(y) * static_cast<std::size_t>(sizePx)
-                   + static_cast<std::size_t>(x)] = PackPremulBgra(outR, outG, outB, outA);
-        }
-    }
+    FillMotrixIconPixels(static_cast<std::uint32_t*>(rawBits), sizePx, activeDot);
 
     ICONINFO ii{};
     ii.fIcon = TRUE;

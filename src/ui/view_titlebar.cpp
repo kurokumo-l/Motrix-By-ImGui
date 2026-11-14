@@ -58,7 +58,7 @@ void RenderTitlebarOverlay(UiFrameContext& ctx) {
         const float iconSz = 12.0f * s;
         const float ix = bMin.x + (btnW - iconSz) * 0.5f;
         const float iy = bMin.y + (btnH - iconSz) * 0.5f;
-        DrawMotrixIcon(icon, ix, iy, iconSz, iconSz, fg, s, true);
+        DrawMotrixIcon(IconSpec{icon, ix, iy, iconSz, iconSz, fg, s, true});
         return clicked;
     };
 

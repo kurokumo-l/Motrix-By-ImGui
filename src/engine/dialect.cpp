@@ -364,6 +364,41 @@ public:
     }
 };
 
+void AppendCsvFeatures(std::string_view rest, std::vector<std::string>& out) {
+    std::size_t fp = 0;
+    while (fp <= rest.size()) {
+        const std::size_t comma = rest.find(',', fp);
+        const std::string_view slice =
+            (comma == std::string_view::npos) ? rest.substr(fp) : rest.substr(fp, comma - fp);
+        const std::string_view feat = motrix::core::TrimAscii(slice);
+        if (!feat.empty()) {
+            out.emplace_back(feat);
+        }
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        fp = comma + 1;
+    }
+}
+
+void ParseCliHeaderLine(std::string_view line, EngineVersionInfo& info) {
+    constexpr std::string_view kNextPrefix = "aria2-next version ";
+    constexpr std::string_view kClassicPrefix = "aria2 version ";
+    const std::string lower = motrix::core::AsciiLower(line);
+    if (lower.starts_with(kNextPrefix)) {
+        info.product = "aria2-next";
+        info.version = std::string(motrix::core::TrimAscii(line.substr(kNextPrefix.size())));
+        info.kind = EngineKind::Aria2Next;
+    } else if (lower.starts_with(kClassicPrefix)) {
+        info.product = "aria2";
+        info.version = std::string(motrix::core::TrimAscii(line.substr(kClassicPrefix.size())));
+        info.kind = EngineKind::ClassicAria2;
+    } else {
+        info.version = std::string(line);
+        info.kind = DetectEngineKind("", line);
+    }
+}
+
 }  // namespace
 
 EngineKind DetectEngineKind(std::string_view product, std::string_view versionString) noexcept {
@@ -390,39 +425,12 @@ EngineVersionInfo ParseCliVersionBanner(std::string_view stdoutText) {
         }
         if (!firstLineDone) {
             firstLineDone = true;
-            constexpr std::string_view kNextPrefix = "aria2-next version ";
-            constexpr std::string_view kClassicPrefix = "aria2 version ";
-            if (motrix::core::AsciiLower(line).starts_with(kNextPrefix)) {
-                info.product = "aria2-next";
-                info.version = std::string(motrix::core::TrimAscii(line.substr(kNextPrefix.size())));
-                info.kind = EngineKind::Aria2Next;
-            } else if (motrix::core::AsciiLower(line).starts_with(kClassicPrefix)) {
-                info.product = "aria2";
-                info.version = std::string(motrix::core::TrimAscii(line.substr(kClassicPrefix.size())));
-                info.kind = EngineKind::ClassicAria2;
-            } else {
-                info.version = std::string(line);
-                info.kind = DetectEngineKind("", line);
-            }
+            ParseCliHeaderLine(line, info);
             continue;
         }
-
         constexpr std::string_view kFeatPrefix = "Enabled Features:";
         if (line.starts_with(kFeatPrefix)) {
-            std::string_view rest = line.substr(kFeatPrefix.size());
-            std::size_t fp = 0;
-            while (fp <= rest.size()) {
-                const std::size_t comma = rest.find(',', fp);
-                const std::string_view feat = motrix::core::TrimAscii(
-                    comma == std::string_view::npos ? rest.substr(fp) : rest.substr(fp, comma - fp));
-                if (!feat.empty()) {
-                    info.enabledFeatures.emplace_back(feat);
-                }
-                if (comma == std::string_view::npos) {
-                    break;
-                }
-                fp = comma + 1;
-            }
+            AppendCsvFeatures(line.substr(kFeatPrefix.size()), info.enabledFeatures);
         }
     }
     return info;

@@ -39,7 +39,7 @@ namespace {
     ImFont* font = nullptr;
     std::error_code ec;
     if (!primaryFile.empty() && std::filesystem::exists(primaryFile, ec)) {
-        const std::string utf8Path = motrix::core::WideToUtf8(primaryFile.wstring());
+        const std::string utf8Path = motrix::core::PathToUtf8(primaryFile);
         font = atlas->AddFontFromFileTTF(utf8Path.c_str(), refSize, &primaryCfg);
     }
     if (!font) {

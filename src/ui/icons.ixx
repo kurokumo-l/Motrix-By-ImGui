@@ -48,17 +48,30 @@ export enum class MotrixIcon {
     Dice,
     ChevronDown,
     ChevronUp,
+    TagClose,
 };
 
-export void DrawMotrixIcon(MotrixIcon icon,
-                           float x,
-                           float y,
-                           float width,
-                           float height,
-                           RgbaColor color,
-                           float dpiScale = 1.0f,
-                           bool foreground = false);
+export struct IconSpec {
+    MotrixIcon icon = MotrixIcon::LogoMini;
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 24.0f;
+    float height = 24.0f;
+    RgbaColor color{};
+    float dpiScale = 1.0f;
+    bool foreground = false;
+};
 
-export void DrawEmptyUfoIllustration(float centerX, float topY, float width, float height, bool dark);
+export void DrawMotrixIcon(const IconSpec& spec);
+
+export struct UfoIllustrationSpec {
+    float centerX = 0.0f;
+    float topY = 0.0f;
+    float width = 380.0f;
+    float height = 233.0f;
+    bool dark = false;
+};
+
+export void DrawEmptyUfoIllustration(const UfoIllustrationSpec& spec);
 
 }  // namespace motrix::ui

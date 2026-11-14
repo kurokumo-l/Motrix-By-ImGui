@@ -9,23 +9,82 @@ namespace motrix::app {
 
 namespace {
 
+struct TaskTransferSpec {
+    std::string_view gid;
+    motrix::domain::TaskStatus newStatus;
+    bool zeroSpeed = false;
+};
+
 bool MoveTaskBetweenLists(std::vector<motrix::domain::DownloadTaskView>& from,
                           std::vector<motrix::domain::DownloadTaskView>& to,
-                          std::string_view gid,
-                          motrix::domain::TaskStatus newStatus,
-                          bool zeroSpeed) {
-    auto it = std::find_if(from.begin(), from.end(), [&](const auto& t) { return t.gid == gid; });
+                          const TaskTransferSpec& spec) {
+    auto it = std::find_if(from.begin(), from.end(), [&](const auto& t) { return t.gid == spec.gid; });
     if (it == from.end()) {
         return false;
     }
-    it->status = newStatus;
-    if (zeroSpeed) {
+    it->status = spec.newStatus;
+    if (spec.zeroSpeed) {
         it->downloadSpeed = 0;
         it->uploadSpeed = 0;
     }
     to.push_back(std::move(*it));
     from.erase(it);
     return true;
+}
+
+void PopulateMockBtDetails(AppStateSnapshot& state) {
+    using namespace motrix::domain;
+    state.detailedTrackers = {
+        "udp://tracker.opentrackr.org:1337/announce",
+        "https://tracker.tamersunion.org:443/announce",
+        "udp://open.stealth.si:80/announce",
+    };
+    state.detailedPeers = {
+        TaskPeerView{"-qB4650-mock1",
+                     "qBittorrent 4.6.5",
+                     "185.125.190.58",
+                     51413,
+                     "ffff",
+                     1420000ull,
+                     84000ull,
+                     false,
+                     false,
+                     true,
+                     1.0f},
+        TaskPeerView{"-TR4050-mock2",
+                     "Transmission 4.0.5",
+                     "91.189.91.157",
+                     51414,
+                     "ffc0",
+                     680000ull,
+                     124000ull,
+                     false,
+                     false,
+                     false,
+                     0.625f},
+        TaskPeerView{"-DE2110-mock3",
+                     "Deluge 2.1.1",
+                     "203.0.113.42",
+                     58846,
+                     "f800",
+                     310000ull,
+                     0ull,
+                     false,
+                     true,
+                     false,
+                     0.3125f},
+        TaskPeerView{"aria2/1.37.0",
+                     "aria2",
+                     "198.51.100.77",
+                     6881,
+                     "fff0",
+                     950000ull,
+                     52000ull,
+                     false,
+                     false,
+                     false,
+                     0.75f},
+    };
 }
 
 }  // namespace
@@ -104,25 +163,19 @@ void AppCoordinator::HandleTaskAction(AppStateSnapshot& state, const Command& cm
     if (const auto* c = std::get_if<PauseTaskCmd>(&cmd)) {
         MoveTaskBetweenLists(state.downloadingTasks,
                              state.waitingTasks,
-                             c->gid,
-                             motrix::domain::TaskStatus::Paused,
-                             true);
+                             TaskTransferSpec{c->gid, motrix::domain::TaskStatus::Paused, true});
         return;
     }
     if (const auto* c = std::get_if<ResumeTaskCmd>(&cmd)) {
         MoveTaskBetweenLists(state.waitingTasks,
                              state.downloadingTasks,
-                             c->gid,
-                             motrix::domain::TaskStatus::Active,
-                             false);
+                             TaskTransferSpec{c->gid, motrix::domain::TaskStatus::Active, false});
         return;
     }
     if (const auto* c = std::get_if<RestartTaskCmd>(&cmd)) {
         MoveTaskBetweenLists(state.stoppedTasks,
                              state.downloadingTasks,
-                             c->gid,
-                             motrix::domain::TaskStatus::Active,
-                             false);
+                             TaskTransferSpec{c->gid, motrix::domain::TaskStatus::Active, false});
         return;
     }
     if (const auto* removeCmd = std::get_if<RemoveTaskCmd>(&cmd)) {
@@ -191,57 +244,7 @@ void AppCoordinator::RefreshMockDetail(AppStateSnapshot& state) {
 
     state.detailedTask = *found;
     if (found->taskType == TaskType::BitTorrent) {
-        state.detailedTrackers = {
-            "udp://tracker.opentrackr.org:1337/announce",
-            "https://tracker.tamersunion.org:443/announce",
-            "udp://open.stealth.si:80/announce",
-        };
-        state.detailedPeers = {
-            TaskPeerView{"-qB4650-mock1",
-                         "qBittorrent 4.6.5",
-                         "185.125.190.58",
-                         51413,
-                         "ffff",
-                         1420000ull,
-                         84000ull,
-                         false,
-                         false,
-                         true,
-                         1.0f},
-            TaskPeerView{"-TR4050-mock2",
-                         "Transmission 4.0.5",
-                         "91.189.91.157",
-                         51414,
-                         "ffc0",
-                         680000ull,
-                         124000ull,
-                         false,
-                         false,
-                         false,
-                         0.625f},
-            TaskPeerView{"-DE2110-mock3",
-                         "Deluge 2.1.1",
-                         "203.0.113.42",
-                         58846,
-                         "f800",
-                         310000ull,
-                         0ull,
-                         false,
-                         true,
-                         false,
-                         0.3125f},
-            TaskPeerView{"aria2/1.37.0",
-                         "aria2",
-                         "198.51.100.77",
-                         6881,
-                         "fff0",
-                         950000ull,
-                         52000ull,
-                         false,
-                         false,
-                         false,
-                         0.75f},
-        };
+        PopulateMockBtDetails(state);
     } else {
         state.detailedTrackers.clear();
         state.detailedPeers.clear();

@@ -33,7 +33,7 @@ namespace {
 [[nodiscard]] std::string ReadStr(const nlohmann::json& obj, const char* key) {
     const auto it = obj.find(key);
     if (it != obj.end() && it->is_string()) {
-        return it->get<std::string>();
+        return it->get_ref<const std::string&>();
     }
     return {};
 }
@@ -50,7 +50,7 @@ namespace {
         }
         for (const auto& item : *it) {
             if (item.is_string()) {
-                dest.push_back(item.get<std::string>());
+                dest.push_back(item.get_ref<const std::string&>());
             }
         }
     };
@@ -102,7 +102,7 @@ motrix::core::Result<RpcParsedFrame> ParseRpcFrame(std::string_view raw) {
 
     RpcParsedFrame frame{};
     if (const auto idIt = j.find("id"); idIt != j.end() && !idIt->is_null()) {
-        frame.id = idIt->is_string() ? idIt->get<std::string>() : idIt->dump();
+        frame.id = idIt->is_string() ? idIt->get_ref<const std::string&>() : idIt->dump();
         if (const auto errIt = j.find("error"); errIt != j.end() && errIt->is_object()) {
             frame.hasError = true;
             frame.errorCode = ParseIntField(*errIt, "code", -1);
@@ -151,7 +151,7 @@ motrix::core::Result<std::string> ParseStringResultJson(std::string_view resultJ
                                                        motrix::core::ErrorCode::ParseFailure,
                                                        "Expected string JSON-RPC result"));
     }
-    return j.get<std::string>();
+    return j.get_ref<const std::string&>();
 }
 
 }  // namespace motrix::engine

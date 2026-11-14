@@ -28,6 +28,8 @@ export struct AddTaskFormState {
     int torrentFileFilter = 0;  // 0=All, 1=Video, 2=Audio, 3=Image
     bool showAdvanced = false;
     bool focusRequested = true;
+    bool wasAddOpen = false;
+    bool wasAboutOpen = false;
     std::array<char, 512> userAgentBuffer{};
     std::array<char, 512> authBuffer{};
     std::array<char, 512> refererBuffer{};
@@ -109,10 +111,23 @@ export struct UiFrameContext {
     float viewportH = 768.0f;
 };
 
+export struct PanelRect {
+    float x = 0.0f;
+    float y = 0.0f;
+    float w = 0.0f;
+    float h = 0.0f;
+};
+
+export struct ModalFlowPos {
+    float x0 = 0.0f;
+    float bodyW = 0.0f;
+    float curY = 0.0f;
+};
+
 export void RenderTitlebarOverlay(UiFrameContext& ctx);
 export void RenderAsideRail(UiFrameContext& ctx, float x, float y, float h);
-export void RenderSubnav(UiFrameContext& ctx, float x, float y, float h, int& prefTab);
-export void RenderTaskPanel(UiFrameContext& ctx, float x, float y, float w, float h);
+export void RenderSubnav(UiFrameContext& ctx, const PanelRect& rect, int& prefTab);
+export void RenderTaskPanel(UiFrameContext& ctx, const PanelRect& rect);
 export void
 RenderTaskCard(UiFrameContext& ctx, const motrix::domain::DownloadTaskView& task, float width);
 export void RenderSpeedometer(UiFrameContext& ctx, float rightEdgeX, float bottomEdgeY);
@@ -135,10 +150,11 @@ export void RenderPrefsBasicTab(UiFrameContext& ctx, PrefsFormState& ps);
 export void RenderPrefsAdvancedTab(UiFrameContext& ctx, PrefsFormState& ps);
 export void RenderPrefsAdvancedTail(UiFrameContext& ctx, PrefsFormState& ps);
 export void RenderPrefsLabTab(UiFrameContext& ctx, PrefsFormState& ps);
-export void RenderPreferencesView(
-    UiFrameContext& ctx, float x, float y, float w, float h, int prefTab, PrefsFormState& prefsState);
-export void RenderAddTaskAdvancedFields(
-    UiFrameContext& ctx, AddTaskFormState& form, float x0, float bodyW, float& curY);
+export void RenderPreferencesView(UiFrameContext& ctx,
+                                  const PanelRect& rect,
+                                  int prefTab,
+                                  PrefsFormState& prefsState);
+export void RenderAddTaskAdvancedFields(UiFrameContext& ctx, AddTaskFormState& form, ModalFlowPos& flow);
 export void RenderAboutModalDialog(UiFrameContext& ctx);
 export void RenderModals(UiFrameContext& ctx, AddTaskFormState& addForm);
 

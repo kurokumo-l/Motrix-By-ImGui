@@ -69,8 +69,6 @@ struct Win32WindowHost::Impl {
         std::vector<std::function<void()>> actions;
         {
             std::lock_guard lock(uiActionMutex);
-            if (pendingUiActions.empty())
-                return;
             actions.swap(pendingUiActions);
         }
         for (auto& fn : actions) {
@@ -146,8 +144,7 @@ struct Win32WindowHost::Impl {
 
         if (screenshotMode
             && static_cast<int>(framesRendered) >= std::max(1, state.config.screenshotFrames)) {
-            if (!dx11.CaptureSwapChainPng(
-                    std::filesystem::path(motrix::core::Utf8ToWide(state.config.screenshotPath)))) {
+            if (!dx11.CaptureSwapChainPng(motrix::core::PathFromUtf8(state.config.screenshotPath))) {
                 std::cerr << "[dx11] Failed to write screenshot PNG\n";
             }
             return true;
@@ -158,6 +155,80 @@ struct Win32WindowHost::Impl {
         if (animationActive)
             state.activeFramesRemaining = std::max(state.activeFramesRemaining, 2);
         return false;
+    }
+
+    [[nodiscard]] motrix::core::Result<void> SetupWindowAndDx11(const WindowHostConfig& config,
+                                                                bool screenshotMode) {
+        Win32DestroyTrayIcons(state);
+        state = Win32WindowState{
+            .config = config,
+            .darkFrame = config.initialDark,
+            .bindCloseToHide = config.bindCloseToHide,
+            .autoHideOnBlur = config.autoHideOnBlur,
+            .enableTrayIcon = config.enableTrayIcon,
+            .trayIsZhCn = config.initialZhCn,
+        };
+        lastProgressMode = TaskbarProgressMode::None;
+        lastProgressCompleted = 0;
+        lastProgressTotal = 0;
+
+        wakeEvent.Reset(::CreateEventW(nullptr, FALSE, FALSE, nullptr));
+        if (!wakeEvent.IsValid()) {
+            return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Platform,
+                                                           motrix::core::ErrorCode::IoFailure,
+                                                           "Failed to create Win32 wake event"));
+        }
+
+        Win32EnableDpiAwareness();
+        state.dpiScale = Win32GetPrimaryMonitorDpiScale();
+        if (auto winRes = Win32CreateWindow(state); !winRes) {
+            return std::unexpected(winRes.error());
+        }
+        if (auto dxRes = dx11.Initialize(state.hwnd); !dxRes) {
+            Win32DestroyWindow(state);
+            return std::unexpected(dxRes.error());
+        }
+        if (!screenshotMode && state.enableTrayIcon) {
+            Win32InstallOrUpdateTray(state);
+        }
+        const bool wantMax =
+            (!screenshotMode && config.initialBounds && config.initialBounds->maximized);
+        firstShowMaximized = (config.startHidden && wantMax);
+        if (config.startHidden && !screenshotMode) {
+            state.hiddenToTray = true;
+        } else {
+            Win32ShowWindowMode(state.hwnd, wantMax, !screenshotMode);
+        }
+        return {};
+    }
+
+    void InitImGuiContext(const InitCallback& onImGuiInit) {
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigDpiScaleFonts = true;
+        if (onImGuiInit) {
+            onImGuiInit(*owner);
+        }
+        ImGui_ImplWin32_Init(state.hwnd);
+        ImGui_ImplDX11_Init(static_cast<ID3D11Device*>(dx11.DeviceRaw()),
+                            static_cast<ID3D11DeviceContext*>(dx11.ContextRaw()));
+        if (desiredSleepBlocker) {
+            Win32SetSleepBlocker(true);
+        }
+    }
+
+    void ShutdownSession() {
+        Win32SetSleepBlocker(false);
+        Win32UpdateTaskbarProgress(state.hwnd, TaskbarProgressMode::None, 0, 0);
+        Win32DestroyTrayIcons(state);
+        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        dx11.Shutdown();
+        Win32DestroyWindow(state);
     }
 };
 
@@ -186,66 +257,20 @@ motrix::core::Result<int> Win32WindowHost::Run(const WindowHostConfig& config,
         }
     } runGuard{*impl_};
 
-    Win32DestroyTrayIcons(impl_->state);
-    impl_->state = Win32WindowState{
-        .config = config,
-        .darkFrame = config.initialDark,
-        .bindCloseToHide = config.bindCloseToHide,
-        .autoHideOnBlur = config.autoHideOnBlur,
-        .enableTrayIcon = config.enableTrayIcon,
-        .trayIsZhCn = config.initialZhCn,
-    };
-    impl_->lastProgressMode = TaskbarProgressMode::None;
-    impl_->lastProgressCompleted = 0;
-    impl_->lastProgressTotal = 0;
-
-    impl_->wakeEvent.Reset(::CreateEventW(nullptr, FALSE, FALSE, nullptr));
-    if (!impl_->wakeEvent.IsValid()) {
-        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Platform,
-                                                       motrix::core::ErrorCode::IoFailure,
-                                                       "Failed to create Win32 wake event"));
-    }
-
-    Win32EnableDpiAwareness();
-    impl_->state.dpiScale = Win32GetPrimaryMonitorDpiScale();
-    if (auto winRes = Win32CreateWindow(impl_->state); !winRes) {
-        return std::unexpected(winRes.error());
-    }
-    if (auto dxRes = impl_->dx11.Initialize(impl_->state.hwnd); !dxRes) {
-        Win32DestroyWindow(impl_->state);
-        return std::unexpected(dxRes.error());
-    }
-
     const bool screenshotMode = !config.screenshotPath.empty();
-    if (!screenshotMode && impl_->state.enableTrayIcon)
-        Win32InstallOrUpdateTray(impl_->state);
-    const bool wantMax = (!screenshotMode && config.initialBounds && config.initialBounds->maximized);
-    impl_->firstShowMaximized = (config.startHidden && wantMax);
-    if (config.startHidden && !screenshotMode)
-        impl_->state.hiddenToTray = true;
-    else
-        Win32ShowWindowMode(impl_->state.hwnd, wantMax, !screenshotMode);
+    if (auto setupRes = impl_->SetupWindowAndDx11(config, screenshotMode); !setupRes) {
+        return std::unexpected(setupRes.error());
+    }
 
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = nullptr;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigDpiScaleFonts = true;
-    if (onImGuiInit)
-        onImGuiInit(*this);
-    ImGui_ImplWin32_Init(impl_->state.hwnd);
-    ImGui_ImplDX11_Init(static_cast<ID3D11Device*>(impl_->dx11.DeviceRaw()),
-                        static_cast<ID3D11DeviceContext*>(impl_->dx11.ContextRaw()));
-    if (impl_->desiredSleepBlocker)
-        Win32SetSleepBlocker(true);
-
+    impl_->InitImGuiContext(onImGuiInit);
+    const ImGuiIO& io = ImGui::GetIO();
     bool done = false;
     while (!done) {
         impl_->PumpMessages(done);
         impl_->FlushPendingUiActions();
-        if (done)
+        if (done) {
             break;
+        }
         if (impl_->ShouldSleep(screenshotMode)) {
             impl_->SleepUntilEvent(io.WantTextInput);
             impl_->FlushPendingUiActions();
@@ -254,14 +279,7 @@ motrix::core::Result<int> Win32WindowHost::Run(const WindowHostConfig& config,
         done = impl_->RenderSingleFrame(onFrame, screenshotMode);
     }
 
-    Win32SetSleepBlocker(false);
-    Win32UpdateTaskbarProgress(impl_->state.hwnd, TaskbarProgressMode::None, 0, 0);
-    Win32DestroyTrayIcons(impl_->state);
-    ImGui_ImplDX11_Shutdown();
-    ImGui_ImplWin32_Shutdown();
-    ImGui::DestroyContext();
-    impl_->dx11.Shutdown();
-    Win32DestroyWindow(impl_->state);
+    impl_->ShutdownSession();
     return 0;
 }
 
@@ -365,13 +383,12 @@ void Win32WindowHost::UpdateTaskbarProgress(TaskbarProgressMode mode,
                                             std::uint64_t completed,
                                             std::uint64_t total) {
     impl_->RunOnUiThread([this, mode, completed, total] {
-        if (impl_->lastProgressMode == mode && impl_->lastProgressCompleted == completed
-            && impl_->lastProgressTotal == total) {
+        const auto next = std::tuple(mode, completed, total);
+        if (std::tie(impl_->lastProgressMode, impl_->lastProgressCompleted, impl_->lastProgressTotal)
+            == next) {
             return;
         }
-        impl_->lastProgressMode = mode;
-        impl_->lastProgressCompleted = completed;
-        impl_->lastProgressTotal = total;
+        std::tie(impl_->lastProgressMode, impl_->lastProgressCompleted, impl_->lastProgressTotal) = next;
         Win32UpdateTaskbarProgress(impl_->state.hwnd, mode, completed, total);
     });
 }
@@ -386,10 +403,10 @@ void Win32WindowHost::ShowToastNotification(std::string_view title,
 }
 void Win32WindowHost::SetSleepBlockerEnabled(bool active) noexcept {
     impl_->TryRunOnUiThread([this, active] {
-        if (impl_->desiredSleepBlocker == active)
-            return;
-        impl_->desiredSleepBlocker = active;
-        Win32SetSleepBlocker(active);
+        if (impl_->desiredSleepBlocker != active) {
+            impl_->desiredSleepBlocker = active;
+            Win32SetSleepBlocker(active);
+        }
     });
 }
 void Win32WindowHost::RequestFrame() {
@@ -401,7 +418,6 @@ void Win32WindowHost::RequestFrame() {
     if (impl_->wakeEvent.IsValid())
         ::SetEvent(impl_->wakeEvent.Get());
 }
-
 void Win32WindowHost::NotifyAnimationActive() {
     impl_->animationActive = true;
 }
@@ -417,13 +433,11 @@ void Win32WindowHost::CopyTextToClipboard(std::string_view utf8) {
 void Win32WindowHost::OpenPathInExplorer(std::string_view utf8Path) {
     Win32OpenPathInExplorer(utf8Path);
 }
-
 std::optional<std::string> Win32WindowHost::PickTorrentFile() {
     auto chosen = Win32PickTorrentFile(impl_->state.hwnd);
     RequestFrame();
     return chosen;
 }
-
 std::optional<std::string> Win32WindowHost::PickFolder(std::string_view initialDir) {
     auto chosen = Win32PickFolder(impl_->state.hwnd, initialDir);
     RequestFrame();

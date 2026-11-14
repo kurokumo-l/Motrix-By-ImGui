@@ -86,7 +86,7 @@ void ReadStringArray(const nlohmann::json& j, const char* key, std::vector<std::
     if (const auto it = j.find(key); it != j.end() && it->is_array()) {
         for (const auto& item : *it) {
             if (item.is_string()) {
-                out.push_back(item.get<std::string>());
+                out.push_back(item.get_ref<const std::string&>());
             }
         }
     }
@@ -327,6 +327,25 @@ private:
         return true;
     }
 
+    void ProcessClientPayload(HANDLE ovEvent) {
+        std::uint32_t payloadLen = 0;
+        const bool gotLen =
+            ReadExactOverlapped(pipe_.Get(), stopEvent_.Get(), ovEvent, &payloadLen, sizeof(payloadLen));
+        if (!gotLen || payloadLen == 0 || payloadLen > kMaxIpcPayloadBytes) {
+            return;
+        }
+        std::string jsonBuf(payloadLen, '\0');
+        if (!ReadExactOverlapped(pipe_.Get(), stopEvent_.Get(), ovEvent, jsonBuf.data(), payloadLen)) {
+            return;
+        }
+        auto parsed = DeserializeStartupPayload(jsonBuf);
+        if (parsed && handler_) {
+            handler_(*parsed);
+        } else if (!parsed) {
+            logger_.Warn("ipc", "Invalid IPC StartupPayload: {}", parsed.error().message);
+        }
+    }
+
     void ListenLoop(std::stop_token st) {
         UniquePipeHandle ovEvent(::CreateEventW(nullptr, TRUE, FALSE, nullptr));
         if (!ovEvent.IsValid()) {
@@ -342,23 +361,7 @@ private:
                 }
                 continue;
             }
-
-            std::uint32_t payloadLen = 0;
-            if (ReadExactOverlapped(
-                    pipe_.Get(), stopEvent_.Get(), ovEvent.Get(), &payloadLen, sizeof(payloadLen))
-                && payloadLen > 0 && payloadLen <= kMaxIpcPayloadBytes) {
-                std::string jsonBuf(payloadLen, '\0');
-                if (ReadExactOverlapped(
-                        pipe_.Get(), stopEvent_.Get(), ovEvent.Get(), jsonBuf.data(), payloadLen)) {
-                    auto parsed = DeserializeStartupPayload(jsonBuf);
-                    if (parsed && handler_) {
-                        handler_(*parsed);
-                    } else if (!parsed) {
-                        logger_.Warn("ipc", "Invalid IPC StartupPayload: {}", parsed.error().message);
-                    }
-                }
-            }
-
+            ProcessClientPayload(ovEvent.Get());
             (void)::DisconnectNamedPipe(pipe_.Get());
         }
     }

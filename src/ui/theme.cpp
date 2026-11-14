@@ -37,6 +37,118 @@ namespace {
     return ImVec4(c.r, c.g, c.b, c.a);
 }
 
+void PopulateDarkPalette(MotrixPalette& p) noexcept {
+    p.asideBg = HexColor(0x1F1F1F);
+    p.subnavBg = HexColor(0x2D2D2D);
+    p.subnavTitle = HexColor(0xFFFFFF);
+    p.subnavItemText = HexColor(0xAAAAAA);
+    p.subnavActiveBg = HexColor(0x444444);
+    p.subnavActiveText = HexColor(0xFFFFFF);
+
+    p.mainBg = HexColor(0x343434);
+    p.panelTitle = HexColor(0xFFFFFF);
+    p.panelBorder = HexColor(0xFFFFFF, 0.10f);
+    p.headerAction = HexColor(0xEEEEEE);
+    p.headerActionHover = HexColor(0x5B5BFA);
+    p.headerActionDisabled = HexColor(0xEEEEEE, 0.35f);
+
+    p.taskCardBg = HexColor(0x2D2D2D);
+    p.taskCardBorder = HexColor(0x555555);
+    p.taskNameText = HexColor(0xEEEEEE);
+
+    p.pillBg = HexColor(0x4A4A4A);
+    p.pillBorder = HexColor(0x5F5F5F);
+    p.pillIcon = HexColor(0xC0C0C0);
+
+    p.progressTrack = HexColor(0x4A4A4A);
+    p.emptyText = HexColor(0xAAAAAA);
+    p.speedometerBg = HexColor(0x333333);
+    p.speedometerBorder = HexColor(0x5F5F5F);
+
+    p.titlebarActionFg = HexColor(0xEEEEEE);
+    p.titlebarActionHoverBg = HexColor(0x444444);
+
+    p.modalBg = HexColor(0x343434);
+    p.modalFooterBg = HexColor(0x4A4A4A);
+    p.inputBg = HexColor(0x373737);
+    p.inputBorder = HexColor(0x5F5F5F);
+    p.inputBorderHover = HexColor(0x7A7A7A);
+    p.inputAddonBg = HexColor(0x2F2F2F);
+    p.inputPlaceholder = HexColor(0x777777);
+    p.switchOffBg = HexColor(0x5C5D5F);
+    p.subLabelText = HexColor(0xDFDFDF);
+    p.tagBg = HexColor(0x444444);
+    p.borderSubtle = HexColor(0x565656);
+    p.graphicBoxBg = HexColor(0x3F3F3F);
+    p.graphicAtomOutline = HexColor(0x1B1F23, 0.24f);
+    p.graphicS0 = HexColor(0x161B22);
+    p.graphicS1 = HexColor(0x0E4429);
+    p.graphicS2 = HexColor(0x006D32);
+    p.graphicS3 = HexColor(0x26A641);
+    p.graphicS4 = HexColor(0x39D353);
+    p.tableHeaderBg = HexColor(0x1F2122);
+    p.tableRowBg = HexColor(0x2A2B2C);
+    p.tableRowAltBg = HexColor(0x1F2122);
+    p.tableHoverBg = HexColor(0x565656);
+    p.tableText = HexColor(0x9B9B9B);
+}
+
+void PopulateLightPalette(MotrixPalette& p) noexcept {
+    p.asideBg = HexColor(0x333333);
+    p.subnavBg = HexColor(0xF4F5F7);
+    p.subnavTitle = HexColor(0x303133);
+    p.subnavItemText = HexColor(0x4D515A);
+    p.subnavActiveBg = HexColor(0xEAECF0);
+    p.subnavActiveText = HexColor(0x5B5BFA);
+
+    p.mainBg = HexColor(0xFFFFFF);
+    p.panelTitle = HexColor(0x303133);
+    p.panelBorder = HexColor(0x000000, 0.10f);
+    p.headerAction = HexColor(0x4D515A);
+    p.headerActionHover = HexColor(0x5B5BFA);
+    p.headerActionDisabled = HexColor(0x4D515A, 0.50f);
+
+    p.taskCardBg = HexColor(0xFFFFFF);
+    p.taskCardBorder = HexColor(0xCCCCCC);
+    p.taskNameText = HexColor(0x505753);
+
+    p.pillBg = HexColor(0xFFFFFF);
+    p.pillBorder = HexColor(0xE8E8E8);
+    p.pillIcon = HexColor(0x9B9B9B);
+
+    p.progressTrack = HexColor(0xEBEEF5);
+    p.emptyText = HexColor(0x555555);
+    p.speedometerBg = HexColor(0xFFFFFF);
+    p.speedometerBorder = HexColor(0xCCCCCC);
+
+    p.titlebarActionFg = HexColor(0x1F1F1F);
+    p.titlebarActionHoverBg = HexColor(0xEEEEEE);
+
+    p.modalBg = HexColor(0xFFFFFF);
+    p.modalFooterBg = HexColor(0xF5F5F5);
+    p.inputBg = HexColor(0xFFFFFF);
+    p.inputBorder = HexColor(0xDCDFE6);
+    p.inputBorderHover = HexColor(0xC0C4CC);
+    p.inputAddonBg = HexColor(0xF5F7FA);
+    p.inputPlaceholder = HexColor(0xC0C4CC);
+    p.switchOffBg = HexColor(0xDCDFE6);
+    p.subLabelText = HexColor(0x606266);
+    p.tagBg = HexColor(0xF0F2F5);
+    p.borderSubtle = HexColor(0xEBEEF5);
+    p.graphicBoxBg = HexColor(0xFFFFFF);
+    p.graphicAtomOutline = HexColor(0x1B1F23, 0.08f);
+    p.graphicS0 = HexColor(0xEBEDF0);
+    p.graphicS1 = HexColor(0x9BE9A8);
+    p.graphicS2 = HexColor(0x40C463);
+    p.graphicS3 = HexColor(0x30A14E);
+    p.graphicS4 = HexColor(0x39D353);
+    p.tableHeaderBg = HexColor(0xFAFAFA);
+    p.tableRowBg = HexColor(0xFFFFFF);
+    p.tableRowAltBg = HexColor(0xFAFAFA);
+    p.tableHoverBg = HexColor(0xF5F7FA);
+    p.tableText = HexColor(0x606266);
+}
+
 }  // namespace
 
 MotrixPalette BuildMotrixPalette(bool dark) noexcept {
@@ -62,113 +174,9 @@ MotrixPalette BuildMotrixPalette(bool dark) noexcept {
     p.titlebarCloseHoverFg = HexColor(0xFFFFFF);
 
     if (dark) {
-        p.asideBg = HexColor(0x1F1F1F);
-        p.subnavBg = HexColor(0x2D2D2D);
-        p.subnavTitle = HexColor(0xFFFFFF);
-        p.subnavItemText = HexColor(0xAAAAAA);
-        p.subnavActiveBg = HexColor(0x444444);
-        p.subnavActiveText = HexColor(0xFFFFFF);
-
-        p.mainBg = HexColor(0x343434);
-        p.panelTitle = HexColor(0xFFFFFF);
-        p.panelBorder = HexColor(0xFFFFFF, 0.10f);
-        p.headerAction = HexColor(0xEEEEEE);
-        p.headerActionHover = HexColor(0x5B5BFA);
-        p.headerActionDisabled = HexColor(0xEEEEEE, 0.35f);
-
-        p.taskCardBg = HexColor(0x2D2D2D);
-        p.taskCardBorder = HexColor(0x555555);
-        p.taskNameText = HexColor(0xEEEEEE);
-
-        p.pillBg = HexColor(0x4A4A4A);
-        p.pillBorder = HexColor(0x5F5F5F);
-        p.pillIcon = HexColor(0xC0C0C0);
-
-        p.progressTrack = HexColor(0x4A4A4A);
-        p.emptyText = HexColor(0xAAAAAA);
-        p.speedometerBg = HexColor(0x333333);
-        p.speedometerBorder = HexColor(0x5F5F5F);
-
-        p.titlebarActionFg = HexColor(0xEEEEEE);
-        p.titlebarActionHoverBg = HexColor(0x444444);
-
-        p.modalBg = HexColor(0x343434);
-        p.modalFooterBg = HexColor(0x4A4A4A);
-        p.inputBg = HexColor(0x373737);
-        p.inputBorder = HexColor(0x5F5F5F);
-        p.inputBorderHover = HexColor(0x7A7A7A);
-        p.inputAddonBg = HexColor(0x2F2F2F);
-        p.inputPlaceholder = HexColor(0x777777);
-        p.switchOffBg = HexColor(0x5C5D5F);
-        p.subLabelText = HexColor(0xDFDFDF);
-        p.tagBg = HexColor(0x444444);
-        p.borderSubtle = HexColor(0x565656);
-        p.graphicBoxBg = HexColor(0x3F3F3F);
-        p.graphicAtomOutline = HexColor(0x1B1F23, 0.24f);
-        p.graphicS0 = HexColor(0x161B22);
-        p.graphicS1 = HexColor(0x0E4429);
-        p.graphicS2 = HexColor(0x006D32);
-        p.graphicS3 = HexColor(0x26A641);
-        p.graphicS4 = HexColor(0x39D353);
-        p.tableHeaderBg = HexColor(0x1F2122);
-        p.tableRowBg = HexColor(0x2A2B2C);
-        p.tableRowAltBg = HexColor(0x1F2122);
-        p.tableHoverBg = HexColor(0x565656);
-        p.tableText = HexColor(0x9B9B9B);
+        PopulateDarkPalette(p);
     } else {
-        p.asideBg = HexColor(0x333333);
-        p.subnavBg = HexColor(0xF4F5F7);
-        p.subnavTitle = HexColor(0x303133);
-        p.subnavItemText = HexColor(0x4D515A);
-        p.subnavActiveBg = HexColor(0xEAECF0);
-        p.subnavActiveText = HexColor(0x5B5BFA);
-
-        p.mainBg = HexColor(0xFFFFFF);
-        p.panelTitle = HexColor(0x303133);
-        p.panelBorder = HexColor(0x000000, 0.10f);
-        p.headerAction = HexColor(0x4D515A);
-        p.headerActionHover = HexColor(0x5B5BFA);
-        p.headerActionDisabled = HexColor(0x4D515A, 0.50f);
-
-        p.taskCardBg = HexColor(0xFFFFFF);
-        p.taskCardBorder = HexColor(0xCCCCCC);
-        p.taskNameText = HexColor(0x505753);
-
-        p.pillBg = HexColor(0xFFFFFF);
-        p.pillBorder = HexColor(0xE8E8E8);
-        p.pillIcon = HexColor(0x9B9B9B);
-
-        p.progressTrack = HexColor(0xEBEEF5);
-        p.emptyText = HexColor(0x555555);
-        p.speedometerBg = HexColor(0xFFFFFF);
-        p.speedometerBorder = HexColor(0xCCCCCC);
-
-        p.titlebarActionFg = HexColor(0x1F1F1F);
-        p.titlebarActionHoverBg = HexColor(0xEEEEEE);
-
-        p.modalBg = HexColor(0xFFFFFF);
-        p.modalFooterBg = HexColor(0xF5F5F5);
-        p.inputBg = HexColor(0xFFFFFF);
-        p.inputBorder = HexColor(0xDCDFE6);
-        p.inputBorderHover = HexColor(0xC0C4CC);
-        p.inputAddonBg = HexColor(0xF5F7FA);
-        p.inputPlaceholder = HexColor(0xC0C4CC);
-        p.switchOffBg = HexColor(0xDCDFE6);
-        p.subLabelText = HexColor(0x606266);
-        p.tagBg = HexColor(0xF0F2F5);
-        p.borderSubtle = HexColor(0xEBEEF5);
-        p.graphicBoxBg = HexColor(0xFFFFFF);
-        p.graphicAtomOutline = HexColor(0x1B1F23, 0.08f);
-        p.graphicS0 = HexColor(0xEBEDF0);
-        p.graphicS1 = HexColor(0x9BE9A8);
-        p.graphicS2 = HexColor(0x40C463);
-        p.graphicS3 = HexColor(0x30A14E);
-        p.graphicS4 = HexColor(0x39D353);
-        p.tableHeaderBg = HexColor(0xFAFAFA);
-        p.tableRowBg = HexColor(0xFFFFFF);
-        p.tableRowAltBg = HexColor(0xFAFAFA);
-        p.tableHoverBg = HexColor(0xF5F7FA);
-        p.tableText = HexColor(0x606266);
+        PopulateLightPalette(p);
     }
     return p;
 }

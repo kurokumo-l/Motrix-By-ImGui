@@ -119,13 +119,15 @@ void RenderFloatingPillActions(UiFrameContext& ctx,
         }
         const bool btnHov = ImGui::IsItemHovered();
         const float drawSz = btnHov ? (iconSz * 1.12f) : iconSz;
-        DrawMotrixIcon(actions[i].icon,
-                       bMin.x + (slotW - drawSz) * 0.5f,
-                       bMin.y + (pillH - drawSz) * 0.5f,
-                       drawSz,
-                       drawSz,
-                       iconCol,
-                       s);
+        DrawMotrixIcon(IconSpec{
+            actions[i].icon,
+            bMin.x + (slotW - drawSz) * 0.5f,
+            bMin.y + (pillH - drawSz) * 0.5f,
+            drawSz,
+            drawSz,
+            iconCol,
+            s,
+        });
         if (btnHov) {
             const std::string_view tip = ctx.tr.Tr(actions[i].tooltipKey);
             ImGui::SetTooltip("%.*s", static_cast<int>(tip.size()), tip.data());
@@ -147,6 +149,91 @@ void RenderFloatingPillActions(UiFrameContext& ctx,
     return p.progressWaiting;
 }
 
+struct TaskCardGeometry {
+    ImVec2 cardPos{};
+    ImVec2 cardMax{};
+    float padX = 0.0f;
+    float padY = 0.0f;
+    float progY = 0.0f;
+    float progH = 0.0f;
+    float progW = 0.0f;
+    float nameLineH = 0.0f;
+    float metaY = 0.0f;
+};
+
+void RenderTaskCardNameAndBar(UiFrameContext& ctx,
+                              const motrix::domain::DownloadTaskView& task,
+                              const TaskCardGeometry& g) {
+    const float s = ctx.dpiScale;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    {
+        FontGuard nameFont(ctx.fonts, FontRole::Regular, 15.0f);
+        const float textMaxX = g.cardMax.x - 196.0f * s;
+        ClipRectGuard clip(dl,
+                           {g.cardPos.x + g.padX,
+                            g.cardPos.y + g.padY,
+                            std::max(g.cardPos.x + g.padX + 40.0f * s, textMaxX),
+                            g.cardPos.y + g.padY + g.nameLineH,
+                            true});
+        dl->AddText(ImVec2(g.cardPos.x + g.padX, g.cardPos.y + g.padY + 3.0f * s),
+                    ToAbgrU32(ctx.palette.taskNameText),
+                    task.name.c_str(),
+                    task.name.c_str() + task.name.size());
+    }
+
+    const ImVec2 trackMin(g.cardPos.x + g.padX, g.progY);
+    const ImVec2 trackMax(g.cardPos.x + g.padX + g.progW, g.progY + g.progH);
+    const float progRadius = LayoutMetrics::kProgressRadius * s;
+    dl->AddRectFilled(trackMin, trackMax, ToAbgrU32(ctx.palette.progressTrack), progRadius);
+
+    const float ratio = motrix::domain::ProgressOf(task);
+    if (ratio > 0.001f) {
+        const float fillW = std::max(g.progH, g.progW * ratio);
+        dl->AddRectFilled(trackMin,
+                          ImVec2(trackMin.x + fillW, trackMax.y),
+                          ToAbgrU32(ProgressColorFor(ctx.palette, task)),
+                          progRadius);
+    }
+}
+
+void RenderTaskCardMeta(UiFrameContext& ctx,
+                        const motrix::domain::DownloadTaskView& task,
+                        const TaskCardGeometry& g) {
+    const float s = ctx.dpiScale;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    FontGuard metaFont(ctx.fonts, FontRole::Regular, 13.0f);
+    const std::string sizeText = std::format("{} / {}",
+                                             motrix::domain::FormatBytes(task.completedLength),
+                                             motrix::domain::FormatBytes(task.totalLength));
+    dl->AddText(
+        ImVec2(g.cardPos.x + g.padX, g.metaY), ToAbgrU32(ctx.palette.taskMetaText), sizeText.c_str());
+
+    if (task.status == motrix::domain::TaskStatus::Active) {
+        std::string rightMeta;
+        if (task.taskType == motrix::domain::TaskType::BitTorrent && task.uploadSpeed > 0) {
+            rightMeta += motrix::domain::FormatSpeed(task.uploadSpeed) + "   ";
+        }
+        rightMeta += motrix::domain::FormatSpeed(task.downloadSpeed);
+        if (ctx.viewportW >= LayoutMetrics::kAsideHideThreshold * s) {
+            const std::string eta = motrix::domain::FormatRemainingEta(
+                motrix::domain::RemainingBytesOf(task), task.downloadSpeed, ctx.tr.Tr("task.remaining"));
+            if (!eta.empty()) {
+                rightMeta += " " + eta;
+            }
+        }
+        const ImVec2 rSz = ImGui::CalcTextSize(rightMeta.c_str());
+        dl->AddText(ImVec2(g.cardMax.x - g.padX - rSz.x, g.metaY),
+                    ToAbgrU32(ctx.palette.taskMetaText),
+                    rightMeta.c_str());
+    } else if (task.status == motrix::domain::TaskStatus::Error && !task.errorMessage.empty()) {
+        const ImVec2 rSz = ImGui::CalcTextSize(task.errorMessage.c_str());
+        dl->AddText(
+            ImVec2(std::max(g.cardPos.x + g.padX + 140.0f * s, g.cardMax.x - g.padX - rSz.x), g.metaY),
+            ToAbgrU32(ctx.palette.progressError),
+            task.errorMessage.c_str());
+    }
+}
+
 }  // namespace
 
 void RenderTaskCard(UiFrameContext& ctx, const motrix::domain::DownloadTaskView& task, float width) {
@@ -154,11 +241,8 @@ void RenderTaskCard(UiFrameContext& ctx, const motrix::domain::DownloadTaskView&
     const float padX = LayoutMetrics::kTaskCardPadX * s;
     const float padY = LayoutMetrics::kTaskCardPadY * s;
     const float progH = LayoutMetrics::kProgressHeight * s;
-    const float nameBottomGap = 24.0f * s;
-    const float metaTopGap = 8.0f * s;
     const float nameLineH = 26.0f * s;
-    const float metaLineH = 16.0f * s;
-    const float cardH = padY * 2.0f + nameLineH + nameBottomGap + progH + metaTopGap + metaLineH;
+    const float cardH = padY * 2.0f + nameLineH + 24.0f * s + progH + 8.0f * s + 16.0f * s;
 
     const ImVec2 cardPos = ImGui::GetCursorScreenPos();
     const ImVec2 cardMax(cardPos.x + width, cardPos.y + cardH);
@@ -184,76 +268,20 @@ void RenderTaskCard(UiFrameContext& ctx, const motrix::domain::DownloadTaskView&
         cardPos, cardMax, ToAbgrU32(ctx.palette.taskCardBg), LayoutMetrics::kTaskCardRadius * s);
     dl->AddRect(cardPos, cardMax, ToAbgrU32(borderCol), LayoutMetrics::kTaskCardRadius * s, 0, 1.0f);
 
-    // 1. Task name (left-aligned, truncated cleanly before pill area)
-    {
-        FontGuard nameFont(ctx.fonts, FontRole::Regular, 15.0f);
-        const float textMaxX = cardMax.x - 196.0f * s;
-        dl->PushClipRect(
-            ImVec2(cardPos.x + padX, cardPos.y + padY),
-            ImVec2(std::max(cardPos.x + padX + 40.0f * s, textMaxX), cardPos.y + padY + nameLineH),
-            true);
-        dl->AddText(ImVec2(cardPos.x + padX, cardPos.y + padY + 3.0f * s),
-                    ToAbgrU32(ctx.palette.taskNameText),
-                    task.name.c_str(),
-                    task.name.c_str() + task.name.size());
-        dl->PopClipRect();
-    }
-
-    // 2. Progress bar (6px height, pill radius 3px)
-    const float progY = cardPos.y + padY + nameLineH + nameBottomGap;
-    const float progW = width - padX * 2.0f;
-    const ImVec2 trackMin(cardPos.x + padX, progY);
-    const ImVec2 trackMax(cardPos.x + padX + progW, progY + progH);
-    const float progRadius = LayoutMetrics::kProgressRadius * s;
-    dl->AddRectFilled(trackMin, trackMax, ToAbgrU32(ctx.palette.progressTrack), progRadius);
-
-    const float ratio = motrix::domain::ProgressOf(task);
-    if (ratio > 0.001f) {
-        const float fillW = std::max(progH, progW * ratio);
-        dl->AddRectFilled(trackMin,
-                          ImVec2(trackMin.x + fillW, trackMax.y),
-                          ToAbgrU32(ProgressColorFor(ctx.palette, task)),
-                          progRadius);
-    }
-
-    // 3. Bottom metadata row (completed/total on left, speed + remaining on right)
-    {
-        FontGuard metaFont(ctx.fonts, FontRole::Regular, 13.0f);
-        const float metaY = progY + progH + metaTopGap;
-        const std::string sizeText = std::format("{} / {}",
-                                                 motrix::domain::FormatBytes(task.completedLength),
-                                                 motrix::domain::FormatBytes(task.totalLength));
-        dl->AddText(
-            ImVec2(cardPos.x + padX, metaY), ToAbgrU32(ctx.palette.taskMetaText), sizeText.c_str());
-
-        if (task.status == motrix::domain::TaskStatus::Active) {
-            std::string rightMeta;
-            if (task.taskType == motrix::domain::TaskType::BitTorrent && task.uploadSpeed > 0) {
-                rightMeta += motrix::domain::FormatSpeed(task.uploadSpeed) + "   ";
-            }
-            rightMeta += motrix::domain::FormatSpeed(task.downloadSpeed);
-            if (ctx.viewportW >= LayoutMetrics::kAsideHideThreshold * s) {
-                const std::string eta =
-                    motrix::domain::FormatRemainingEta(motrix::domain::RemainingBytesOf(task),
-                                                       task.downloadSpeed,
-                                                       ctx.tr.Tr("task.remaining"));
-                if (!eta.empty()) {
-                    rightMeta += " " + eta;
-                }
-            }
-            const ImVec2 rSz = ImGui::CalcTextSize(rightMeta.c_str());
-            dl->AddText(ImVec2(cardMax.x - padX - rSz.x, metaY),
-                        ToAbgrU32(ctx.palette.taskMetaText),
-                        rightMeta.c_str());
-        } else if (task.status == motrix::domain::TaskStatus::Error && !task.errorMessage.empty()) {
-            const ImVec2 rSz = ImGui::CalcTextSize(task.errorMessage.c_str());
-            dl->AddText(ImVec2(std::max(cardPos.x + padX + 140.0f * s, cardMax.x - padX - rSz.x), metaY),
-                        ToAbgrU32(ctx.palette.progressError),
-                        task.errorMessage.c_str());
-        }
-    }
-
-    // 4. Floating pill action bar at top-right (interactive on top of card button)
+    const float progY = cardPos.y + padY + nameLineH + 24.0f * s;
+    const TaskCardGeometry geom{
+        cardPos,
+        cardMax,
+        padX,
+        padY,
+        progY,
+        progH,
+        width - padX * 2.0f,
+        nameLineH,
+        progY + progH + 8.0f * s,
+    };
+    RenderTaskCardNameAndBar(ctx, task, geom);
+    RenderTaskCardMeta(ctx, task, geom);
     RenderFloatingPillActions(ctx, task, cardMax.x - padX, cardPos.y + padY);
 
     ImGui::SetCursorScreenPos(ImVec2(cardPos.x, cardMax.y + LayoutMetrics::kTaskCardMarginBottom * s));

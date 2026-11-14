@@ -39,7 +39,7 @@ void RenderSpeedometer(UiFrameContext& ctx, float rightEdgeX, float bottomEdgeY)
     StyleVarGuard winBorder(ImGuiStyleVar_WindowBorderSize, 0.0f);
     constexpr int kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground
                            | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
-    ChildGuard overlay("##motrix_speedometer", w, h, ImGuiChildFlags_None, kFlags);
+    ChildGuard overlay("##motrix_speedometer", ChildWindowSpec{w, h, ImGuiChildFlags_None, kFlags});
     if (!overlay.IsVisible()) {
         return;
     }
@@ -58,7 +58,7 @@ void RenderSpeedometer(UiFrameContext& ctx, float rightEdgeX, float bottomEdgeY)
     const float iconX = pMin.x + (active ? 7.0f * s : (w - iconSz) * 0.5f);
     const float iconY = pMin.y + (h - iconSz) * 0.5f;
     const RgbaColor iconCol = active ? ctx.palette.primary : ctx.palette.speedometerIdleIcon;
-    DrawMotrixIcon(MotrixIcon::Speedometer, iconX, iconY, iconSz, iconSz, iconCol, s);
+    DrawMotrixIcon(IconSpec{MotrixIcon::Speedometer, iconX, iconY, iconSz, iconSz, iconCol, s});
 
     if (active && expandT > 0.65f) {
         const float textAlpha = (expandT - 0.65f) / 0.35f;

@@ -353,6 +353,7 @@ motrix_configure_target(motrix_platform)
 # ---------------------------------------------------------------------------
 add_library(motrix_app STATIC
     src/app/coordinator.cpp
+    src/app/coordinator_commands.cpp
     src/app/coordinator_desktop.cpp
     src/app/coordinator_mock.cpp
     src/app/engine_runtime.cpp

@@ -26,8 +26,14 @@ export [[nodiscard]] std::string BuildGidRpcRequest(std::string_view id,
                                                     std::string_view secret,
                                                     std::string_view gid);
 
-export [[nodiscard]] std::string BuildTellSliceRpcRequest(
-    std::string_view id, std::string_view method, std::string_view secret, int offset, int num);
+export struct RpcTellSliceSpec {
+    std::string_view method;
+    int offset = 0;
+    int num = 0;
+};
+
+export [[nodiscard]] std::string
+BuildTellSliceRpcRequest(std::string_view id, std::string_view secret, const RpcTellSliceSpec& slice);
 
 export [[nodiscard]] std::string
 BuildAddUriRpcRequest(std::string_view id, std::string_view secret, const AddUriRequest& request);

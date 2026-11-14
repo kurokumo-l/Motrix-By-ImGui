@@ -18,10 +18,32 @@ namespace motrix::ui {
 
 namespace {
 
-void DrawAlignedLabel(const UiFrameContext& ctx, float x, float y, float h, std::string_view text) {
+struct AlignLabelPos {
+    float x = 0.0f;
+    float y = 0.0f;
+    float h = 0.0f;
+};
+
+struct AddModalTabSpec {
+    const char* id = "";
+    std::string_view label{};
+    int tabIdx = 0;
+    float tx = 0.0f;
+    float curY = 0.0f;
+};
+
+struct AddModalFooterBox {
+    ImVec2 winPos{};
+    float modalW = 0.0f;
+    float padX = 0.0f;
+    float x0 = 0.0f;
+    float curY = 0.0f;
+};
+
+void DrawAlignedLabel(const UiFrameContext& ctx, const AlignLabelPos& pos, std::string_view text) {
     FontGuard fnt(ctx.fonts, FontRole::Regular, 13.5f);
     const ImVec2 sz = ImGui::CalcTextSize(text.data(), text.data() + text.size());
-    ImGui::GetWindowDrawList()->AddText(ImVec2(x, y + (h - sz.y) * 0.5f),
+    ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x, pos.y + (pos.h - sz.y) * 0.5f),
                                         ToAbgrU32(ctx.palette.subLabelText),
                                         text.data(),
                                         text.data() + text.size());
@@ -137,43 +159,47 @@ void SyncDroppedAndPrefilled(AddTaskFormState& form, const motrix::app::AppState
     }
 }
 
-void RenderAddTaskHeaderTabs(
-    UiFrameContext& ctx, AddTaskFormState& form, float x0, float modalW, float curY) {
+float DrawAddModalTabItem(UiFrameContext& ctx, AddTaskFormState& form, const AddModalTabSpec& spec) {
     const float s = ctx.dpiScale;
+    FontGuard fg(ctx.fonts, form.activeTab == spec.tabIdx ? FontRole::Medium : FontRole::Regular, 14.5f);
+    const ImVec2 sz = ImGui::CalcTextSize(spec.label.data(), spec.label.data() + spec.label.size());
+    ImGui::SetCursorScreenPos(ImVec2(spec.tx, spec.curY));
+    if (ImGui::InvisibleButton(spec.id, ImVec2(sz.x, 30.0f * s)) && form.activeTab != spec.tabIdx) {
+        form.activeTab = spec.tabIdx;
+        if (spec.tabIdx == 0) {
+            form.focusRequested = true;
+        }
+    }
+    const bool hov = ImGui::IsItemHovered();
+    if (hov) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const auto drawTab = [&](const char* id, std::string_view label, int tabIdx, float tx) {
-        FontGuard fg(ctx.fonts, form.activeTab == tabIdx ? FontRole::Medium : FontRole::Regular, 14.5f);
-        const ImVec2 sz = ImGui::CalcTextSize(label.data(), label.data() + label.size());
-        ImGui::SetCursorScreenPos(ImVec2(tx, curY));
-        if (ImGui::InvisibleButton(id, ImVec2(sz.x, 30.0f * s))) {
-            if (form.activeTab != tabIdx) {
-                form.activeTab = tabIdx;
-                if (tabIdx == 0) {
-                    form.focusRequested = true;
-                }
-            }
-        }
-        const bool hov = ImGui::IsItemHovered();
-        if (hov) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        }
-        const bool active = (form.activeTab == tabIdx);
-        const RgbaColor txtCol = (active || hov) ? ctx.palette.primary : ctx.palette.panelTitle;
-        dl->AddText(ImVec2(tx, curY), ToAbgrU32(txtCol), label.data(), label.data() + label.size());
-        if (active) {
-            const float barY = curY + sz.y + 8.0f * s;
-            dl->AddRectFilled(
-                ImVec2(tx, barY), ImVec2(tx + sz.x, barY + 2.0f * s), ToAbgrU32(ctx.palette.primary));
-        }
-        return tx + sz.x;
-    };
+    const bool active = (form.activeTab == spec.tabIdx);
+    const RgbaColor txtCol = (active || hov) ? ctx.palette.primary : ctx.palette.panelTitle;
+    dl->AddText(ImVec2(spec.tx, spec.curY),
+                ToAbgrU32(txtCol),
+                spec.label.data(),
+                spec.label.data() + spec.label.size());
+    if (active) {
+        const float barY = spec.curY + sz.y + 8.0f * s;
+        dl->AddRectFilled(ImVec2(spec.tx, barY),
+                          ImVec2(spec.tx + sz.x, barY + 2.0f * s),
+                          ToAbgrU32(ctx.palette.primary));
+    }
+    return spec.tx + sz.x;
+}
 
-    const float tab0End = drawTab("##tab_uri", ctx.tr.Tr("task.tab_uri"), 0, x0);
-    drawTab("##tab_torrent", ctx.tr.Tr("task.tab_torrent"), 1, tab0End + 30.0f * s);
+void RenderAddTaskHeaderTabs(UiFrameContext& ctx, AddTaskFormState& form, const AddModalFooterBox& box) {
+    const float s = ctx.dpiScale;
+    const float tab0End =
+        DrawAddModalTabItem(ctx, form, {"##tab_uri", ctx.tr.Tr("task.tab_uri"), 0, box.x0, box.curY});
+    DrawAddModalTabItem(
+        ctx, form, {"##tab_torrent", ctx.tr.Tr("task.tab_torrent"), 1, tab0End + 30.0f * s, box.curY});
 
     const float closeBox = 24.0f * s;
-    const float closeX = x0 + (modalW - 48.0f * s) + 24.0f * s - 16.0f * s - closeBox;
-    ImGui::SetCursorScreenPos(ImVec2(closeX, curY - 2.0f * s));
+    const float closeX = box.x0 + (box.modalW - 48.0f * s) + 24.0f * s - 16.0f * s - closeBox;
+    ImGui::SetCursorScreenPos(ImVec2(closeX, box.curY - 2.0f * s));
     if (ImGui::InvisibleButton("##add_modal_close", ImVec2(closeBox, closeBox))) {
         CloseAddModalAndReset(ctx, form);
     }
@@ -182,13 +208,121 @@ void RenderAddTaskHeaderTabs(
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     }
     const float iconSz = 11.0f * s;
-    DrawMotrixIcon(MotrixIcon::WinClose,
-                   closeX + (closeBox - iconSz) * 0.5f,
-                   curY - 2.0f * s + (closeBox - iconSz) * 0.5f,
-                   iconSz,
-                   iconSz,
-                   closeHov ? ctx.palette.primary : ctx.palette.taskMetaText,
-                   s);
+    DrawMotrixIcon(IconSpec{
+        MotrixIcon::WinClose,
+        closeX + (closeBox - iconSz) * 0.5f,
+        box.curY - 2.0f * s + (closeBox - iconSz) * 0.5f,
+        iconSz,
+        iconSz,
+        closeHov ? ctx.palette.primary : ctx.palette.taskMetaText,
+        s,
+    });
+}
+
+void RenderAddTaskPrimaryInputs(UiFrameContext& ctx, AddTaskFormState& form, ModalFlowPos& flow) {
+    const float s = ctx.dpiScale;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s};
+    if (form.activeTab == 0) {
+        if (form.focusRequested) {
+            ImGui::SetKeyboardFocusHere();
+            form.focusRequested = false;
+        }
+        ImGui::SetCursorScreenPos(ImVec2(flow.x0, flow.curY));
+        ElInputTextMultiline(elSt,
+                             {"##add_uris",
+                              form.uriBuffer.data(),
+                              form.uriBuffer.size(),
+                              flow.bodyW,
+                              ctx.tr.Tr("task.uri_tips"),
+                              0,
+                              80.0f * s});
+        flow.curY += 80.0f * s;
+    } else {
+        ImGui::SetCursorScreenPos(ImVec2(flow.x0, flow.curY));
+        StyleVarGuard zeroChildPad(ImGuiStyleVar_WindowPadding, 0.0f, 0.0f);
+        StyleColorGuard clearChildBg(ImGuiCol_ChildBg, RgbaColor{0.0f, 0.0f, 0.0f, 0.0f});
+        float childH = 0.0f;
+        {
+            ChildGuard wrap(
+                "##torrent_tab_wrap",
+                ChildWindowSpec{
+                    flow.bodyW, 0.0f, ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoScrollbar});
+            if (wrap.IsVisible()) {
+                RenderAddTorrentTab(ctx, form);
+            }
+            childH = ImGui::GetWindowSize().y;
+        }
+        flow.curY += std::max(114.0f * s, childH);
+    }
+
+    flow.curY += 16.0f * s;
+    const float rowH = 30.0f * s;
+    const float lblW = 74.0f * s;
+    const float rightColW = 166.0f * s;
+    const float colGap = 16.0f * s;
+    const float renameW = std::max(120.0f * s, flow.bodyW - lblW - colGap - rightColW);
+
+    DrawAlignedLabel(ctx, {flow.x0, flow.curY, rowH}, ctx.tr.Tr("task.rename_label"));
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElInputText(elSt,
+                {"##add_rename",
+                 form.nameBuffer.data(),
+                 form.nameBuffer.size(),
+                 renameW,
+                 ctx.tr.Tr("task.rename_placeholder")});
+
+    const float splitsX = flow.x0 + lblW + renameW + colGap;
+    const float splitsLblW = 60.0f * s;
+    DrawAlignedLabel(ctx, {splitsX, flow.curY, rowH}, ctx.tr.Tr("task.splits"));
+    ImGui::SetCursorScreenPos(ImVec2(splitsX + splitsLblW, flow.curY));
+    ElInputNumberInt(elSt, "##add_splits", {&form.splitCount, 1, 128, 1, rightColW - splitsLblW});
+    flow.curY += rowH + 14.0f * s;
+
+    DrawAlignedLabel(ctx, {flow.x0, flow.curY, rowH}, ctx.tr.Tr("task.save_to"));
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElDirectoryInput(elSt,
+                     {"##add_dir",
+                      form.dirBuffer.data(),
+                      form.dirBuffer.size(),
+                      flow.bodyW - lblW,
+                      ctx.state.prefs.historyDirectories,
+                      ctx.state.prefs.favoriteDirectories,
+                      [&ctx](std::string_view cur) { return ctx.host.PickFolder(cur); }});
+    flow.curY += rowH + 16.0f * s;
+}
+
+void RenderAddTaskFooter(UiFrameContext& ctx, AddTaskFormState& form, const AddModalFooterBox& box) {
+    const float s = ctx.dpiScale;
+    const float footerH = 60.0f * s;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(ImVec2(box.winPos.x, box.curY),
+                      ImVec2(box.winPos.x + box.modalW, box.curY + footerH),
+                      ToAbgrU32(ctx.palette.modalFooterBg),
+                      6.0f * s,
+                      ImDrawFlags_RoundCornersBottom);
+
+    const ElStyle elSt{ctx.palette, ctx.fonts, s};
+    ImGui::SetCursorScreenPos(ImVec2(box.x0, box.curY + (footerH - 20.0f * s) * 0.5f));
+    ElCheckbox(elSt, "##add_adv_toggle", ctx.tr.Tr("task.show_advanced"), &form.showAdvanced);
+
+    const float btnW = 72.0f * s;
+    const float btnH = 32.0f * s;
+    const float btnY = box.curY + (footerH - btnH) * 0.5f;
+    const float submitX = box.winPos.x + box.modalW - box.padX - btnW;
+    const float cancelX = submitX - 10.0f * s - btnW;
+
+    ImGui::SetCursorScreenPos(ImVec2(cancelX, btnY));
+    if (ElSecondaryButton(elSt, {"##add_cancel", ctx.tr.Tr("app.cancel"), btnW, btnH})) {
+        CloseAddModalAndReset(ctx, form);
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(submitX, btnY));
+    if (ElPrimaryButton(elSt, {"##add_submit", ctx.tr.Tr("app.submit"), btnW, btnH})) {
+        SubmitAddTaskForm(ctx, form);
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(box.winPos.x, box.curY + footerH));
+    ImGui::Dummy(ImVec2(box.modalW, 0.0f));
 }
 
 void RenderAddTaskModal(UiFrameContext& ctx, AddTaskFormState& form) {
@@ -214,166 +348,55 @@ void RenderAddTaskModal(UiFrameContext& ctx, AddTaskFormState& form) {
 
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar
                                         | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
-    if (!ImGui::BeginPopupModal("##AddTaskModal", nullptr, kFlags)) {
+    PopupModalGuard modal("##AddTaskModal", nullptr, kFlags);
+    if (!modal.IsOpen()) {
         return;
     }
 
     const ImVec2 winPos = ImGui::GetWindowPos();
     const float padX = 24.0f * s;
-    const float x0 = winPos.x + padX;
-    const float bodyW = modalW - padX * 2.0f;
-    float curY = winPos.y + 18.0f * s;
+    ModalFlowPos flow{winPos.x + padX, modalW - padX * 2.0f, winPos.y + 18.0f * s};
 
-    RenderAddTaskHeaderTabs(ctx, form, x0, modalW, curY);
-    curY += 38.0f * s;
+    RenderAddTaskHeaderTabs(ctx, form, {winPos, modalW, padX, flow.x0, flow.curY});
+    flow.curY += 38.0f * s;
 
-    if (form.activeTab == 0) {
-        if (form.focusRequested) {
-            ImGui::SetKeyboardFocusHere();
-            form.focusRequested = false;
-        }
-        ImGui::SetCursorScreenPos(ImVec2(x0, curY));
-        ElInputTextMultiline("##add_uris",
-                             form.uriBuffer.data(),
-                             form.uriBuffer.size(),
-                             bodyW,
-                             80.0f * s,
-                             ctx.palette,
-                             ctx.fonts,
-                             s,
-                             ctx.tr.Tr("task.uri_tips"));
-        curY += 80.0f * s;
-    } else {
-        ImGui::SetCursorScreenPos(ImVec2(x0, curY));
-        StyleVarGuard zeroChildPad(ImGuiStyleVar_WindowPadding, 0.0f, 0.0f);
-        StyleColorGuard clearChildBg(ImGuiCol_ChildBg, RgbaColor{0.0f, 0.0f, 0.0f, 0.0f});
-        if (ImGui::BeginChild("##torrent_tab_wrap",
-                              ImVec2(bodyW, 0.0f),
-                              ImGuiChildFlags_AutoResizeY,
-                              ImGuiWindowFlags_NoScrollbar)) {
-            RenderAddTorrentTab(ctx, form);
-        }
-        const float childH = ImGui::GetWindowSize().y;
-        ImGui::EndChild();
-        curY += std::max(114.0f * s, childH);
-    }
-
-    curY += 16.0f * s;
-    const float rowH = 30.0f * s;
-    const float lblW = 74.0f * s;
-    const float rightColW = 166.0f * s;
-    const float colGap = 16.0f * s;
-    const float renameW = std::max(120.0f * s, bodyW - lblW - colGap - rightColW);
-
-    DrawAlignedLabel(ctx, x0, curY, rowH, ctx.tr.Tr("task.rename_label"));
-    ImGui::SetCursorScreenPos(ImVec2(x0 + lblW, curY));
-    ElInputText("##add_rename",
-                form.nameBuffer.data(),
-                form.nameBuffer.size(),
-                renameW,
-                ctx.palette,
-                ctx.fonts,
-                s,
-                ctx.tr.Tr("task.rename_placeholder"));
-
-    const float splitsX = x0 + lblW + renameW + colGap;
-    const float splitsLblW = 60.0f * s;
-    DrawAlignedLabel(ctx, splitsX, curY, rowH, ctx.tr.Tr("task.splits"));
-    ImGui::SetCursorScreenPos(ImVec2(splitsX + splitsLblW, curY));
-    ElInputNumberInt(
-        "##add_splits", &form.splitCount, 1, 128, 1, rightColW - splitsLblW, ctx.palette, ctx.fonts, s);
-    curY += rowH + 14.0f * s;
-
-    DrawAlignedLabel(ctx, x0, curY, rowH, ctx.tr.Tr("task.save_to"));
-    ImGui::SetCursorScreenPos(ImVec2(x0 + lblW, curY));
-    ElDirectoryInput(
-        "##add_dir",
-        form.dirBuffer.data(),
-        form.dirBuffer.size(),
-        bodyW - lblW,
-        ctx.state.prefs.historyDirectories,
-        ctx.state.prefs.favoriteDirectories,
-        [&ctx](std::string_view cur) { return ctx.host.PickFolder(cur); },
-        ctx.palette,
-        ctx.fonts,
-        s);
-    curY += rowH + 16.0f * s;
-
+    RenderAddTaskPrimaryInputs(ctx, form, flow);
     if (form.showAdvanced) {
-        RenderAddTaskAdvancedFields(ctx, form, x0, bodyW, curY);
-        curY += 6.0f * s;
+        RenderAddTaskAdvancedFields(ctx, form, flow);
+        flow.curY += 6.0f * s;
     }
 
-    const float footerH = 60.0f * s;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(ImVec2(winPos.x, curY),
-                      ImVec2(winPos.x + modalW, curY + footerH),
-                      ToAbgrU32(ctx.palette.modalFooterBg),
-                      6.0f * s,
-                      ImDrawFlags_RoundCornersBottom);
-
-    ImGui::SetCursorScreenPos(ImVec2(x0, curY + (footerH - 20.0f * s) * 0.5f));
-    ElCheckbox("##add_adv_toggle",
-               ctx.tr.Tr("task.show_advanced"),
-               &form.showAdvanced,
-               ctx.palette,
-               ctx.fonts,
-               s);
-
-    const float btnW = 72.0f * s;
-    const float btnH = 32.0f * s;
-    const float btnY = curY + (footerH - btnH) * 0.5f;
-    const float submitX = winPos.x + modalW - padX - btnW;
-    const float cancelX = submitX - 10.0f * s - btnW;
-
-    ImGui::SetCursorScreenPos(ImVec2(cancelX, btnY));
-    if (ElSecondaryButton(
-            "##add_cancel", ctx.tr.Tr("app.cancel"), btnW, btnH, ctx.palette, ctx.fonts, s)) {
-        CloseAddModalAndReset(ctx, form);
-    }
-
-    ImGui::SetCursorScreenPos(ImVec2(submitX, btnY));
-    if (ElPrimaryButton(
-            "##add_submit", ctx.tr.Tr("app.submit"), btnW, btnH, ctx.palette, ctx.fonts, s)) {
-        SubmitAddTaskForm(ctx, form);
-    }
-
-    ImGui::SetCursorScreenPos(ImVec2(winPos.x, curY + footerH));
-    ImGui::Dummy(ImVec2(modalW, 0.0f));
+    RenderAddTaskFooter(ctx, form, {winPos, modalW, padX, flow.x0, flow.curY});
 
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         CloseAddModalAndReset(ctx, form);
     } else if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Enter)) {
         SubmitAddTaskForm(ctx, form);
     }
-    ImGui::EndPopup();
 }
 
 }  // namespace
 
 void RenderModals(UiFrameContext& ctx, AddTaskFormState& addForm) {
-    static bool wasAddOpen = false;
-    static bool wasAboutOpen = false;
-
     if (ctx.state.activeModal == motrix::app::ActiveModal::AddTask) {
-        if (!wasAddOpen) {
+        if (!addForm.wasAddOpen) {
             addForm.initialized = false;
             ImGui::OpenPopup("##AddTaskModal");
         }
-        wasAddOpen = true;
+        addForm.wasAddOpen = true;
         RenderAddTaskModal(ctx, addForm);
     } else {
-        wasAddOpen = false;
+        addForm.wasAddOpen = false;
     }
 
     if (ctx.state.activeModal == motrix::app::ActiveModal::About) {
-        if (!wasAboutOpen) {
+        if (!addForm.wasAboutOpen) {
             ImGui::OpenPopup("##AboutModal");
         }
-        wasAboutOpen = true;
+        addForm.wasAboutOpen = true;
         RenderAboutModalDialog(ctx);
     } else {
-        wasAboutOpen = false;
+        addForm.wasAboutOpen = false;
     }
 }
 

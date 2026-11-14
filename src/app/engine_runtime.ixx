@@ -52,11 +52,7 @@ export struct EngineRuntimeConfig {
 
 export class EngineRuntime {
 public:
-    using SyncCallback = std::function<void(EngineConnectionState connState,
-                                            const motrix::engine::EngineVersionInfo* version,
-                                            const motrix::engine::EngineSyncSnapshot* sync,
-                                            std::string_view enginePath,
-                                            std::string_view errorMsg)>;
+    using SyncCallback = std::function<void(const EngineSyncUpdate&)>;
     using DetailCallback = std::function<void(std::optional<motrix::engine::TaskDetailResult> detail,
                                               std::vector<motrix::domain::TaskPeerView> peers)>;
 
@@ -74,9 +70,22 @@ public:
     void UpdateUpnpPreference(bool enabled, int btPort, int dhtPort);
 
 private:
+    struct PreparedLaunch {
+        motrix::engine::EngineSpawnSpec spec;
+        std::vector<motrix::engine::EngineOptionPair> globalOpts;
+    };
+
     void RunLoop(std::stop_token st);
+    void RunConnectedSession(std::stop_token st);
+    void ShutdownEngineGracefully();
     [[nodiscard]] bool TryStartAndConnect(std::stop_token st);
+    [[nodiscard]] PreparedLaunch PrepareLaunchSpec(const std::filesystem::path& binPath,
+                                                   motrix::engine::EngineKind kind) const;
+    void FinalizeConnectedSession(const motrix::core::Result<motrix::engine::EngineVersionInfo>& probe,
+                                  const std::vector<motrix::engine::EngineOptionPair>& globalOpts);
     void ProcessCommand(const EngineWorkCommand& cmd, bool& needSync, std::string& lastErr);
+    void HandleTaskControlCommand(const EngineWorkCommand& cmd, bool& needSync, std::string& lastErr);
+    void HandleApplyGlobalOptionsCmd(const EngineWorkCommand& cmd, std::string& lastErr);
     void ApplySyncSnapshot(const motrix::engine::EngineSyncSnapshot& snap, std::string_view err);
     void FetchAndPublishDetail(std::string_view gid);
     void StartOrRefreshUpnpAsync(bool enabled, int btPort, int dhtPort);

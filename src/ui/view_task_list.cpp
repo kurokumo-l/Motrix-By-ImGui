@@ -35,30 +35,41 @@ TasksForActiveCategory(const motrix::app::AppStateSnapshot& state) noexcept {
     return "task.active";
 }
 
-bool HeaderActionIconButton(UiFrameContext& ctx,
-                            const char* id,
-                            MotrixIcon icon,
-                            float x,
-                            float y,
-                            std::string_view tooltip,
-                            bool disabled = false) {
+struct HeaderActionBtnSpec {
+    const char* id = "";
+    MotrixIcon icon = MotrixIcon::Refresh;
+    float x = 0.0f;
+    float y = 0.0f;
+    std::string_view tooltip{};
+    bool disabled = false;
+};
+
+bool HeaderActionIconButton(UiFrameContext& ctx, const HeaderActionBtnSpec& spec) {
     const float s = ctx.dpiScale;
     const float box = 24.0f * s;
     const float iconSz = 14.0f * s;
 
-    ImGui::SetCursorScreenPos(ImVec2(x, y));
-    const bool clicked = ImGui::InvisibleButton(id, ImVec2(box, box));
-    const bool hovered = !disabled && ImGui::IsItemHovered();
+    ImGui::SetCursorScreenPos(ImVec2(spec.x, spec.y));
+    const bool clicked = ImGui::InvisibleButton(spec.id, ImVec2(box, box));
+    const bool hovered = !spec.disabled && ImGui::IsItemHovered();
 
-    const RgbaColor col = disabled
+    const RgbaColor col = spec.disabled
                               ? ctx.palette.headerActionDisabled
                               : (hovered ? ctx.palette.headerActionHover : ctx.palette.headerAction);
-    DrawMotrixIcon(icon, x + (box - iconSz) * 0.5f, y + (box - iconSz) * 0.5f, iconSz, iconSz, col, s);
+    DrawMotrixIcon(IconSpec{
+        spec.icon,
+        spec.x + (box - iconSz) * 0.5f,
+        spec.y + (box - iconSz) * 0.5f,
+        iconSz,
+        iconSz,
+        col,
+        s,
+    });
 
-    if (hovered && !tooltip.empty()) {
-        ImGui::SetTooltip("%.*s", static_cast<int>(tooltip.size()), tooltip.data());
+    if (hovered && !spec.tooltip.empty()) {
+        ImGui::SetTooltip("%.*s", static_cast<int>(spec.tooltip.size()), spec.tooltip.data());
     }
-    return !disabled && clicked;
+    return !spec.disabled && clicked;
 }
 
 void RenderHeaderActions(UiFrameContext& ctx, float rightEdgeX, float topY) {
@@ -68,34 +79,28 @@ void RenderHeaderActions(UiFrameContext& ctx, float rightEdgeX, float topY) {
 
     if (ctx.state.activeCategory == motrix::domain::TaskCategory::Stopped) {
         if (HeaderActionIconButton(
-                ctx, "##act_purge", MotrixIcon::Purge, curX, topY, ctx.tr.Tr("task.purge_record"))) {
+                ctx, {"##act_purge", MotrixIcon::Purge, curX, topY, ctx.tr.Tr("task.purge_record")})) {
             ctx.sink.Dispatch(motrix::app::PurgeStoppedCmd{});
         }
         curX -= step;
     }
 
-    if (HeaderActionIconButton(ctx,
-                               "##act_pause_all",
-                               MotrixIcon::TaskPauseLine,
-                               curX,
-                               topY,
-                               ctx.tr.Tr("task.pause_all"))) {
+    if (HeaderActionIconButton(
+            ctx,
+            {"##act_pause_all", MotrixIcon::TaskPauseLine, curX, topY, ctx.tr.Tr("task.pause_all")})) {
         ctx.sink.Dispatch(motrix::app::PauseAllCmd{});
     }
     curX -= step;
 
-    if (HeaderActionIconButton(ctx,
-                               "##act_resume_all",
-                               MotrixIcon::TaskStartLine,
-                               curX,
-                               topY,
-                               ctx.tr.Tr("task.resume_all"))) {
+    if (HeaderActionIconButton(
+            ctx,
+            {"##act_resume_all", MotrixIcon::TaskStartLine, curX, topY, ctx.tr.Tr("task.resume_all")})) {
         ctx.sink.Dispatch(motrix::app::ResumeAllCmd{});
     }
     curX -= step;
 
     if (HeaderActionIconButton(
-            ctx, "##act_refresh", MotrixIcon::Refresh, curX, topY, ctx.tr.Tr("task.refresh_list"))) {
+            ctx, {"##act_refresh", MotrixIcon::Refresh, curX, topY, ctx.tr.Tr("task.refresh_list")})) {
         ctx.sink.Dispatch(motrix::app::RefreshTasksCmd{});
     }
     curX -= step;
@@ -103,34 +108,33 @@ void RenderHeaderActions(UiFrameContext& ctx, float rightEdgeX, float topY) {
     if (ctx.state.activeCategory != motrix::domain::TaskCategory::Stopped) {
         const bool disabled = ctx.state.selectedTaskGid.empty();
         if (HeaderActionIconButton(ctx,
-                                   "##act_del_sel",
-                                   MotrixIcon::Delete,
-                                   curX,
-                                   topY,
-                                   ctx.tr.Tr("task.delete_selected"),
-                                   disabled)) {
+                                   {"##act_del_sel",
+                                    MotrixIcon::Delete,
+                                    curX,
+                                    topY,
+                                    ctx.tr.Tr("task.delete_selected"),
+                                    disabled})) {
             ctx.sink.Dispatch(motrix::app::RemoveTaskCmd{ctx.state.selectedTaskGid, false});
         }
         curX -= step;
     }
 
-    if (ctx.viewportW < LayoutMetrics::kAsideHideThreshold * s) {
-        if (HeaderActionIconButton(
-                ctx, "##act_add_mobile", MotrixIcon::MenuAdd, curX, topY, ctx.tr.Tr("task.new_task"))) {
-            ctx.sink.Dispatch(motrix::app::OpenModalCmd{motrix::app::ActiveModal::AddTask});
-        }
+    if (ctx.viewportW < LayoutMetrics::kAsideHideThreshold * s
+        && HeaderActionIconButton(
+            ctx, {"##act_add_mobile", MotrixIcon::MenuAdd, curX, topY, ctx.tr.Tr("task.new_task")})) {
+        ctx.sink.Dispatch(motrix::app::OpenModalCmd{motrix::app::ActiveModal::AddTask});
     }
 }
 
-void RenderEmptyState(UiFrameContext& ctx, float x, float y, float w, float h) {
+void RenderEmptyState(UiFrameContext& ctx, const PanelRect& area) {
     const float s = ctx.dpiScale;
-    const float ufoW = std::min(380.0f * s, w * 0.72f);
+    const float ufoW = std::min(380.0f * s, area.w * 0.72f);
     const float ufoH = ufoW * (309.0f / 504.0f);
     const float blockH = ufoH + 28.0f * s;
-    const float topY = y + std::max(24.0f * s, (h - blockH) * 0.42f);
-    const float cx = x + w * 0.5f;
+    const float topY = area.y + std::max(24.0f * s, (area.h - blockH) * 0.42f);
+    const float cx = area.x + area.w * 0.5f;
 
-    DrawEmptyUfoIllustration(cx, topY, ufoW, ufoH, ctx.palette.isDark);
+    DrawEmptyUfoIllustration({cx, topY, ufoW, ufoH, ctx.palette.isDark});
 
     FontGuard emptyFont(ctx.fonts, FontRole::Regular, 15.0f);
     const std::string_view label = ctx.tr.Tr("task.empty");
@@ -144,7 +148,7 @@ void RenderEmptyState(UiFrameContext& ctx, float x, float y, float w, float h) {
 
 }  // namespace
 
-void RenderTaskPanel(UiFrameContext& ctx, float x, float y, float w, float h) {
+void RenderTaskPanel(UiFrameContext& ctx, const PanelRect& rect) {
     const float s = ctx.dpiScale;
     const bool wide = ctx.viewportW >= LayoutMetrics::kSubnavHideThreshold * s;
     const float marginX =
@@ -152,46 +156,44 @@ void RenderTaskPanel(UiFrameContext& ctx, float x, float y, float w, float h) {
     const float headerH = LayoutMetrics::kPanelHeaderHeight * s;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), ToAbgrU32(ctx.palette.mainBg));
+    dl->AddRectFilled(
+        ImVec2(rect.x, rect.y), ImVec2(rect.x + rect.w, rect.y + rect.h), ToAbgrU32(ctx.palette.mainBg));
 
-    // Panel Header
-    const float titleY = y + LayoutMetrics::kPanelHeaderTopPad * s;
+    const float titleY = rect.y + LayoutMetrics::kPanelHeaderTopPad * s;
     {
         FontGuard titleFont(ctx.fonts, FontRole::Regular, 18.0f);
         const std::string_view title = ctx.tr.Tr(CategoryTitleKey(ctx.state.activeCategory));
-        dl->AddText(ImVec2(x + marginX, titleY),
+        dl->AddText(ImVec2(rect.x + marginX, titleY),
                     ToAbgrU32(ctx.palette.panelTitle),
                     title.data(),
                     title.data() + title.size());
     }
-    RenderHeaderActions(ctx, x + w - marginX, titleY);
+    RenderHeaderActions(ctx, rect.x + rect.w - marginX, titleY);
 
-    const float borderY = y + headerH - 2.0f * s;
-    dl->AddRectFilled(ImVec2(x + marginX, borderY),
-                      ImVec2(x + w - marginX, borderY + 2.0f * s),
+    const float borderY = rect.y + headerH - 2.0f * s;
+    dl->AddRectFilled(ImVec2(rect.x + marginX, borderY),
+                      ImVec2(rect.x + rect.w - marginX, borderY + 2.0f * s),
                       ToAbgrU32(ctx.palette.panelBorder));
 
-    // Panel Content
     const auto& tasks = TasksForActiveCategory(ctx.state);
-    const float contentY = y + headerH;
-    const float contentH = std::max(1.0f, h - headerH);
+    const float contentY = rect.y + headerH;
+    const float contentH = std::max(1.0f, rect.h - headerH);
 
     if (tasks.empty()) {
-        RenderEmptyState(ctx, x, contentY, w, contentH);
-        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        RenderEmptyState(ctx, {rect.x, contentY, rect.w, contentH});
+        ImGui::SetCursorScreenPos(ImVec2(rect.x, rect.y));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
         return;
     }
 
-    ImGui::SetCursorScreenPos(ImVec2(x, contentY));
+    ImGui::SetCursorScreenPos(ImVec2(rect.x, contentY));
     StyleVarGuard padGuard(ImGuiStyleVar_WindowPadding, marginX, 16.0f * s);
-    ChildGuard scrollChild("##task_list_scroll",
-                           w,
-                           contentH,
-                           ImGuiChildFlags_AlwaysUseWindowPadding,
-                           ImGuiWindowFlags_None);
+    ChildGuard scrollChild(
+        "##task_list_scroll",
+        ChildWindowSpec{
+            rect.w, contentH, ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None});
     if (scrollChild.IsVisible()) {
-        const float cardW = std::max(120.0f * s, w - marginX * 2.0f);
+        const float cardW = std::max(120.0f * s, rect.w - marginX * 2.0f);
         for (const auto& task : tasks) {
             RenderTaskCard(ctx, task, cardW);
         }
