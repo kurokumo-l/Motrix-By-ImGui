@@ -30,18 +30,19 @@ bool MatchesTorrentFilter(std::string_view path, int filter) noexcept {
 }
 
 void DrawDashedRect(ImDrawList* dl, ImVec2 min, ImVec2 max, ImU32 col, float s) {
-    const float dash = 6.0f * s;
+    const float dash = 4.0f * s;
     const float gap = 4.0f * s;
     const float step = dash + gap;
-    for (float x = min.x; x < max.x; x += step) {
-        const float xEnd = std::min(max.x, x + dash);
-        dl->AddLine(ImVec2(x, min.y), ImVec2(xEnd, min.y), col, 1.2f);
-        dl->AddLine(ImVec2(x, max.y), ImVec2(xEnd, max.y), col, 1.2f);
+    const float r = 4.0f * s;
+    for (float x = min.x + r; x < max.x - r; x += step) {
+        const float xEnd = std::min(max.x - r, x + dash);
+        dl->AddLine(ImVec2(x, min.y), ImVec2(xEnd, min.y), col, 1.0f);
+        dl->AddLine(ImVec2(x, max.y), ImVec2(xEnd, max.y), col, 1.0f);
     }
-    for (float y = min.y; y < max.y; y += step) {
-        const float yEnd = std::min(max.y, y + dash);
-        dl->AddLine(ImVec2(min.x, y), ImVec2(min.x, yEnd), col, 1.2f);
-        dl->AddLine(ImVec2(max.x, y), ImVec2(max.x, yEnd), col, 1.2f);
+    for (float y = min.y + r; y < max.y - r; y += step) {
+        const float yEnd = std::min(max.y - r, y + dash);
+        dl->AddLine(ImVec2(min.x, y), ImVec2(min.x, yEnd), col, 1.0f);
+        dl->AddLine(ImVec2(max.x, y), ImVec2(max.x, yEnd), col, 1.0f);
     }
 }
 
@@ -81,7 +82,7 @@ void RenderAddTorrentTab(UiFrameContext& ctx, AddTaskFormState& form) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
     if (!form.torrentMeta.has_value()) {
-        const float dropH = 148.0f * s;
+        const float dropH = 114.0f * s;
         const ImVec2 dMin = ImGui::GetCursorScreenPos();
         const ImVec2 dMax(dMin.x + fieldW, dMin.y + dropH);
         if (ImGui::InvisibleButton("##torrent_dropzone", ImVec2(fieldW, dropH))) {
@@ -90,15 +91,18 @@ void RenderAddTorrentTab(UiFrameContext& ctx, AddTaskFormState& form) {
             }
         }
         const bool hovered = ImGui::IsItemHovered();
+        if (hovered) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
         dl->AddRectFilled(
-            dMin, dMax, ToAbgrU32(hovered ? ctx.palette.subnavBg : ctx.palette.inputBg), 6.0f * s);
+            dMin, dMax, ToAbgrU32(hovered ? ctx.palette.subnavBg : ctx.palette.inputBg), 4.0f * s);
         DrawDashedRect(
             dl, dMin, dMax, ToAbgrU32(hovered ? ctx.palette.primary : ctx.palette.inputBorder), s);
 
-        const float iconSz = 36.0f * s;
+        const float iconSz = 30.0f * s;
         DrawMotrixIcon(MotrixIcon::Inbox,
                        dMin.x + (fieldW - iconSz) * 0.5f,
-                       dMin.y + 34.0f * s,
+                       dMin.y + 24.0f * s,
                        iconSz,
                        iconSz,
                        hovered ? ctx.palette.primary : ctx.palette.taskMetaText,
@@ -107,7 +111,7 @@ void RenderAddTorrentTab(UiFrameContext& ctx, AddTaskFormState& form) {
         const std::string_view dropLbl = ctx.tr.Tr("task.drop_torrent");
         FontGuard fg(ctx.fonts, FontRole::Regular, 13.5f);
         const ImVec2 txtSz = ImGui::CalcTextSize(dropLbl.data(), dropLbl.data() + dropLbl.size());
-        dl->AddText(ImVec2(dMin.x + (fieldW - txtSz.x) * 0.5f, dMin.y + 84.0f * s),
+        dl->AddText(ImVec2(dMin.x + (fieldW - txtSz.x) * 0.5f, dMin.y + 68.0f * s),
                     ToAbgrU32(ctx.palette.taskMetaText),
                     dropLbl.data(),
                     dropLbl.data() + dropLbl.size());

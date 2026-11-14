@@ -26,6 +26,14 @@ export struct AddTaskFormState {
     std::optional<motrix::domain::TorrentMetadata> torrentMeta;
     std::vector<bool> torrentFileSelected;
     int torrentFileFilter = 0;  // 0=All, 1=Video, 2=Audio, 3=Image
+    bool showAdvanced = false;
+    bool focusRequested = true;
+    std::array<char, 512> userAgentBuffer{};
+    std::array<char, 512> authBuffer{};
+    std::array<char, 512> refererBuffer{};
+    std::array<char, 1024> cookieBuffer{};
+    std::array<char, 512> proxyBuffer{};
+    bool navigateToDownloading = true;
 };
 
 export struct DrawerUiState {
@@ -78,6 +86,14 @@ export struct PrefsFormState {
     bool protocolThunder = true;
     bool protocolMotrix = true;
     std::int64_t loadedSyncTrackerTime = -1;
+    bool hideAppMenu = true;
+    bool autoCheckUpdate = false;
+    bool btSaveMetadata = true;
+    bool btAutoDownloadContent = true;
+    bool btForceEncryption = false;
+    bool dlUnitMb = false;
+    bool ulUnitMb = false;
+    int logLevelIndex = 2;  // 0=debug,1=info,2=notice,3=warn,4=error
 };
 
 export struct UiFrameContext {
@@ -111,10 +127,19 @@ export void RenderAddTorrentTab(UiFrameContext& ctx, AddTaskFormState& form);
 export void LoadTorrentFileIntoForm(AddTaskFormState& form, std::string_view utf8Path);
 export void CopyUtf8ToBuffer(std::string_view src, char* dst, std::size_t cap) noexcept;
 export void DrawPrefsFieldLabel(UiFrameContext& ctx, std::string_view text);
+export void DrawPrefsFormRow(UiFrameContext& ctx,
+                             std::string_view label,
+                             float rowY,
+                             const std::function<void(float, float)>& body);
+export void RenderPrefsBasicTab(UiFrameContext& ctx, PrefsFormState& ps);
 export void RenderPrefsAdvancedTab(UiFrameContext& ctx, PrefsFormState& ps);
+export void RenderPrefsAdvancedTail(UiFrameContext& ctx, PrefsFormState& ps);
 export void RenderPrefsLabTab(UiFrameContext& ctx, PrefsFormState& ps);
 export void RenderPreferencesView(
     UiFrameContext& ctx, float x, float y, float w, float h, int prefTab, PrefsFormState& prefsState);
+export void RenderAddTaskAdvancedFields(
+    UiFrameContext& ctx, AddTaskFormState& form, float x0, float bodyW, float& curY);
+export void RenderAboutModalDialog(UiFrameContext& ctx);
 export void RenderModals(UiFrameContext& ctx, AddTaskFormState& addForm);
 
 }  // namespace motrix::ui

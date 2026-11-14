@@ -92,10 +92,16 @@ MotrixPalette BuildMotrixPalette(bool dark) noexcept {
         p.titlebarActionFg = HexColor(0xEEEEEE);
         p.titlebarActionHoverBg = HexColor(0x444444);
 
-        p.modalBg = HexColor(0x2D2D2D);
-        p.modalFooterBg = HexColor(0x262626);
+        p.modalBg = HexColor(0x343434);
+        p.modalFooterBg = HexColor(0x4A4A4A);
         p.inputBg = HexColor(0x373737);
         p.inputBorder = HexColor(0x5F5F5F);
+        p.inputBorderHover = HexColor(0x7A7A7A);
+        p.inputAddonBg = HexColor(0x2F2F2F);
+        p.inputPlaceholder = HexColor(0x777777);
+        p.switchOffBg = HexColor(0x5C5D5F);
+        p.subLabelText = HexColor(0xDFDFDF);
+        p.tagBg = HexColor(0x444444);
         p.borderSubtle = HexColor(0x565656);
         p.graphicBoxBg = HexColor(0x3F3F3F);
         p.graphicAtomOutline = HexColor(0x1B1F23, 0.24f);
@@ -144,6 +150,12 @@ MotrixPalette BuildMotrixPalette(bool dark) noexcept {
         p.modalFooterBg = HexColor(0xF5F5F5);
         p.inputBg = HexColor(0xFFFFFF);
         p.inputBorder = HexColor(0xDCDFE6);
+        p.inputBorderHover = HexColor(0xC0C4CC);
+        p.inputAddonBg = HexColor(0xF5F7FA);
+        p.inputPlaceholder = HexColor(0xC0C4CC);
+        p.switchOffBg = HexColor(0xDCDFE6);
+        p.subLabelText = HexColor(0x606266);
+        p.tagBg = HexColor(0xF0F2F5);
         p.borderSubtle = HexColor(0xEBEEF5);
         p.graphicBoxBg = HexColor(0xFFFFFF);
         p.graphicAtomOutline = HexColor(0x1B1F23, 0.08f);
@@ -213,6 +225,12 @@ bool ThemeController::Update(float dt) {
     current_.modalFooterBg = LerpRgba(current_.modalFooterBg, target_.modalFooterBg, t);
     current_.inputBg = LerpRgba(current_.inputBg, target_.inputBg, t);
     current_.inputBorder = LerpRgba(current_.inputBorder, target_.inputBorder, t);
+    current_.inputBorderHover = LerpRgba(current_.inputBorderHover, target_.inputBorderHover, t);
+    current_.inputAddonBg = LerpRgba(current_.inputAddonBg, target_.inputAddonBg, t);
+    current_.inputPlaceholder = LerpRgba(current_.inputPlaceholder, target_.inputPlaceholder, t);
+    current_.switchOffBg = LerpRgba(current_.switchOffBg, target_.switchOffBg, t);
+    current_.subLabelText = LerpRgba(current_.subLabelText, target_.subLabelText, t);
+    current_.tagBg = LerpRgba(current_.tagBg, target_.tagBg, t);
     current_.borderSubtle = LerpRgba(current_.borderSubtle, target_.borderSubtle, t);
     current_.graphicBoxBg = LerpRgba(current_.graphicBoxBg, target_.graphicBoxBg, t);
     current_.graphicAtomOutline = LerpRgba(current_.graphicAtomOutline, target_.graphicAtomOutline, t);
@@ -237,13 +255,13 @@ void ThemeController::ApplyImGuiStyleGeometry(float dpiScale) const {
     style.FramePadding = ImVec2(10.0f, 7.0f);
     style.ItemSpacing = ImVec2(8.0f, 8.0f);
     style.ItemInnerSpacing = ImVec2(6.0f, 6.0f);
-    style.ScrollbarSize = 10.0f;
-    style.ScrollbarRounding = 8.0f;
+    style.ScrollbarSize = 7.0f;
+    style.ScrollbarRounding = 6.0f;
     style.InputTextCursorSize = 1.5f;
-    style.WindowRounding = 6.0f;
+    style.WindowRounding = 5.0f;
     style.ChildRounding = 0.0f;
     style.FrameRounding = 4.0f;
-    style.PopupRounding = 6.0f;
+    style.PopupRounding = 4.0f;
     style.WindowBorderSize = 1.0f;
     style.ChildBorderSize = 0.0f;
     style.FrameBorderSize = 1.0f;
@@ -261,7 +279,7 @@ void ThemeController::ApplyImGuiStyleColors() const {
     const MotrixPalette& p = current_;
 
     c[ImGuiCol_Text] = ToImVec4(p.panelTitle);
-    c[ImGuiCol_TextDisabled] = ToImVec4(p.taskMetaText);
+    c[ImGuiCol_TextDisabled] = ToImVec4(p.inputPlaceholder);
     c[ImGuiCol_TextSelectedBg] = ToImVec4(WithAlpha(p.primary, 0.28f));
     c[ImGuiCol_InputTextCursor] = ToImVec4(p.panelTitle);
     c[ImGuiCol_WindowBg] = ToImVec4(p.mainBg);
@@ -269,6 +287,7 @@ void ThemeController::ApplyImGuiStyleColors() const {
     c[ImGuiCol_PopupBg] = ToImVec4(p.modalBg);
     c[ImGuiCol_Border] = ToImVec4(p.inputBorder);
     c[ImGuiCol_BorderShadow] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    c[ImGuiCol_NavCursor] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
 
     c[ImGuiCol_FrameBg] = ToImVec4(p.inputBg);
     c[ImGuiCol_FrameBgHovered] = ToImVec4(p.inputBg);
@@ -285,10 +304,13 @@ void ThemeController::ApplyImGuiStyleColors() const {
     c[ImGuiCol_TitleBg] = ToImVec4(p.modalBg);
     c[ImGuiCol_TitleBgActive] = ToImVec4(p.modalBg);
     c[ImGuiCol_ScrollbarBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
-    c[ImGuiCol_ScrollbarGrab] = ImVec4(0.0f, 0.0f, 0.0f, 0.25f);
-    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.0f, 0.0f, 0.0f, 0.40f);
-    c[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.0f, 0.0f, 0.0f, 0.50f);
-    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.0f, 0.0f, p.isDark ? 0.55f : 0.35f);
+    c[ImGuiCol_ScrollbarGrab] =
+        p.isDark ? ImVec4(1.0f, 1.0f, 1.0f, 0.22f) : ImVec4(0.0f, 0.0f, 0.0f, 0.22f);
+    c[ImGuiCol_ScrollbarGrabHovered] =
+        p.isDark ? ImVec4(1.0f, 1.0f, 1.0f, 0.36f) : ImVec4(0.0f, 0.0f, 0.0f, 0.38f);
+    c[ImGuiCol_ScrollbarGrabActive] =
+        p.isDark ? ImVec4(1.0f, 1.0f, 1.0f, 0.48f) : ImVec4(0.0f, 0.0f, 0.0f, 0.50f);
+    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.0f, 0.0f, p.isDark ? 0.56f : 0.45f);
     c[ImGuiCol_TableHeaderBg] = ToImVec4(p.tableHeaderBg);
     c[ImGuiCol_TableBorderStrong] = ToImVec4(p.borderSubtle);
     c[ImGuiCol_TableBorderLight] = ToImVec4(p.borderSubtle);

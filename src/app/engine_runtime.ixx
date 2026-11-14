@@ -33,6 +33,11 @@ export struct EngineWorkCommand {
     std::string outName;
     std::string dir;
     int split = 64;
+    std::string userAgent;
+    std::string authorization;
+    std::string referer;
+    std::string cookie;
+    std::string allProxy;
     bool taskInStopped = false;
     std::vector<std::pair<std::string, std::string>> options;
 };

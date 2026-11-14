@@ -121,7 +121,7 @@ void RenderSubnav(UiFrameContext& ctx, float x, float y, float h, int& prefTab) 
     } else {
         if (SubnavItemButton(ctx,
                              "##subnav_pref_basic",
-                             std::nullopt,
+                             MotrixIcon::PreferenceBasic,
                              ctx.tr.Tr("prefs.basic"),
                              innerX,
                              itemY,
@@ -132,7 +132,7 @@ void RenderSubnav(UiFrameContext& ctx, float x, float y, float h, int& prefTab) 
         itemY += stepY;
         if (SubnavItemButton(ctx,
                              "##subnav_pref_adv",
-                             std::nullopt,
+                             MotrixIcon::PreferenceAdvanced,
                              ctx.tr.Tr("prefs.advanced"),
                              innerX,
                              itemY,
@@ -143,7 +143,7 @@ void RenderSubnav(UiFrameContext& ctx, float x, float y, float h, int& prefTab) 
         itemY += stepY;
         if (SubnavItemButton(ctx,
                              "##subnav_pref_lab",
-                             std::nullopt,
+                             MotrixIcon::PreferenceLab,
                              ctx.tr.Tr("prefs.lab"),
                              innerX,
                              itemY,

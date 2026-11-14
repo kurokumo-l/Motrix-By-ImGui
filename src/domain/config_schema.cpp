@@ -141,6 +141,14 @@ std::vector<std::pair<std::string, std::string>> SystemConfigToOptionPairs(const
     out.emplace_back("max-overall-upload-limit", std::to_string(cfg.maxOverallUploadLimit));
     out.emplace_back("continue", cfg.continueDownloads ? "true" : "false");
     out.emplace_back("follow-torrent", cfg.followTorrent ? "true" : "false");
+    out.emplace_back("bt-save-metadata", cfg.btSaveMetadata ? "true" : "false");
+    out.emplace_back("pause-metadata", cfg.pauseMetadata ? "true" : "false");
+    if (cfg.btForceEncryption) {
+        out.emplace_back("bt-require-crypto", "true");
+        out.emplace_back("bt-min-crypto-level", "arc4");
+    } else {
+        out.emplace_back("bt-require-crypto", "false");
+    }
     if (!cfg.dir.empty()) {
         out.emplace_back("dir", cfg.dir);
     }
@@ -193,6 +201,8 @@ std::string SerializeUserPreferencesJson(const UserPreferences& prefs) {
         {"autoSyncTracker", prefs.autoSyncTracker},
         {"useProxy", prefs.useProxy},
         {"keepSeeding", prefs.keepSeeding},
+        {"autoCheckUpdate", prefs.autoCheckUpdate},
+        {"lastCheckUpdateTime", prefs.lastCheckUpdateTime},
         {"engineBinPath", prefs.engineBinPath},
         {"logLevel", prefs.logLevel},
         {"favoriteDirectories", prefs.favoriteDirectories},
@@ -257,6 +267,8 @@ motrix::core::Result<UserPreferences> ParseUserPreferencesJson(std::string_view 
     ReadBool(parsed, "autoSyncTracker", prefs.autoSyncTracker);
     ReadBool(parsed, "useProxy", prefs.useProxy);
     ReadBool(parsed, "keepSeeding", prefs.keepSeeding);
+    ReadBool(parsed, "autoCheckUpdate", prefs.autoCheckUpdate);
+    ReadInt64(parsed, "lastCheckUpdateTime", prefs.lastCheckUpdateTime);
     ReadString(parsed, "engineBinPath", prefs.engineBinPath);
     ReadString(parsed, "logLevel", prefs.logLevel);
     ReadStringArray(parsed, "favoriteDirectories", prefs.favoriteDirectories);
@@ -299,6 +311,9 @@ std::string SerializeSystemConfigJson(const SystemConfig& cfg) {
         {"max-overall-upload-limit", cfg.maxOverallUploadLimit},
         {"continue", cfg.continueDownloads},
         {"follow-torrent", cfg.followTorrent},
+        {"bt-save-metadata", cfg.btSaveMetadata},
+        {"bt-force-encryption", cfg.btForceEncryption},
+        {"pause-metadata", cfg.pauseMetadata},
         {"bt-tracker", cfg.btTracker},
         {"all-proxy", cfg.allProxy},
         {"no-proxy", cfg.noProxy},
@@ -330,6 +345,9 @@ motrix::core::Result<SystemConfig> ParseSystemConfigJson(std::string_view jsonTe
     ReadUInt64(parsed, "max-overall-upload-limit", cfg.maxOverallUploadLimit);
     ReadBool(parsed, "continue", cfg.continueDownloads);
     ReadBool(parsed, "follow-torrent", cfg.followTorrent);
+    ReadBool(parsed, "bt-save-metadata", cfg.btSaveMetadata);
+    ReadBool(parsed, "bt-force-encryption", cfg.btForceEncryption);
+    ReadBool(parsed, "pause-metadata", cfg.pauseMetadata);
     ReadString(parsed, "bt-tracker", cfg.btTracker);
     ReadString(parsed, "all-proxy", cfg.allProxy);
     ReadString(parsed, "no-proxy", cfg.noProxy);

@@ -73,6 +73,12 @@ export struct SubmitAddUriCmd {
     std::string outName;
     std::string dir;
     int split = 64;
+    std::string userAgent;
+    std::string authorization;
+    std::string referer;
+    std::string cookie;
+    std::string allProxy;
+    std::optional<bool> newTaskShowDownloading;
 };
 
 export struct CopyTaskLinkCmd {
@@ -90,6 +96,12 @@ export struct SubmitAddTorrentCmd {
     std::string outName;
     std::string dir;
     int split = 64;
+    std::string userAgent;
+    std::string authorization;
+    std::string referer;
+    std::string cookie;
+    std::string allProxy;
+    std::optional<bool> newTaskShowDownloading;
 };
 
 export struct ApplyTaskFileSelectionCmd {
@@ -110,6 +122,9 @@ export struct QueueDroppedFilesCmd {
 export struct SyncTrackersCmd {
     std::vector<std::string> sources;
 };
+
+export struct ResetSessionCmd {};
+export struct FactoryResetCmd {};
 
 export struct HandleStartupPayloadCmd {
     std::vector<std::string> uris;
@@ -155,6 +170,8 @@ export using Command = std::variant<SelectCategoryCmd,
                                     CopyTaskLinkCmd,
                                     ShowInFolderCmd,
                                     SyncTrackersCmd,
+                                    ResetSessionCmd,
+                                    FactoryResetCmd,
                                     HandleStartupPayloadCmd,
                                     HideToTrayCmd,
                                     ShowFromTrayCmd,

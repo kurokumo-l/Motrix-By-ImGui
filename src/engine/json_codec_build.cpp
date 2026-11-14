@@ -21,7 +21,16 @@ namespace {
 [[nodiscard]] nlohmann::json BuildOptionsObject(std::span<const EngineOptionPair> options) {
     nlohmann::json opts = nlohmann::json::object();
     for (const auto& kv : options) {
-        if (!kv.key.empty()) {
+        if (kv.key.empty()) {
+            continue;
+        }
+        if (kv.key == "header") {
+            auto& arr = opts["header"];
+            if (!arr.is_array()) {
+                arr = nlohmann::json::array();
+            }
+            arr.push_back(kv.value);
+        } else {
             opts[kv.key] = kv.value;
         }
     }

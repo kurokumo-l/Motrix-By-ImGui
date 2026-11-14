@@ -92,6 +92,12 @@ export struct MotrixPalette {
     RgbaColor modalFooterBg;
     RgbaColor inputBg;
     RgbaColor inputBorder;
+    RgbaColor inputBorderHover;
+    RgbaColor inputAddonBg;
+    RgbaColor inputPlaceholder;
+    RgbaColor switchOffBg;
+    RgbaColor subLabelText;
+    RgbaColor tagBg;
     RgbaColor borderSubtle;
     RgbaColor graphicBoxBg;
     RgbaColor graphicAtomOutline;

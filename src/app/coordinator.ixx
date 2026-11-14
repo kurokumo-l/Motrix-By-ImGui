@@ -72,6 +72,7 @@ private:
     void HandleStartupPayload(const HandleStartupPayloadCmd& cmd);
     static void SeedPreviewTasks(AppStateSnapshot& state);
     static void RefreshMockDetail(AppStateSnapshot& state);
+    static void RecordHistoryDirectory(motrix::domain::UserPreferences& prefs, std::string_view dir);
     [[nodiscard]] const motrix::domain::DownloadTaskView*
     FindTaskByGid(const AppStateSnapshot& state, std::string_view gid) const noexcept;
 

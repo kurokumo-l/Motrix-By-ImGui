@@ -80,6 +80,12 @@ AppCoordinator::AppCoordinator(CoordinatorOptions options,
     }
 
     RecomputeStats(mutableState_);
+    const std::filesystem::path effectiveDataDir =
+        appDataDir_.empty() ? (std::filesystem::temp_directory_path() / "MotrixNativeEngine")
+                            : appDataDir_;
+    mutableState_.engineConfPath = motrix::core::PathToUtf8(effectiveDataDir / "system.json");
+    mutableState_.sessionFilePath = motrix::core::PathToUtf8(effectiveDataDir / "aria2.session");
+    mutableState_.appLogPath = motrix::core::PathToUtf8(effectiveDataDir / "motrix.log");
     published_.store(std::make_shared<const AppStateSnapshot>(mutableState_), std::memory_order_release);
 
     if (persistConfig_) {
@@ -199,6 +205,23 @@ void AppCoordinator::Dispatch(Command cmd) {
     bool saveSystemCfg = false;
     bool prefsUpdated = false;
     std::optional<EngineWorkCommand> engineWork;
+    const auto applyCommonAdd = [&](EngineWorkCommand& work, const auto& src, AppStateSnapshot& state) {
+        RecordHistoryDirectory(state.prefs, src.dir);
+        saveUserCfg = persistConfig_;
+        work.outName = src.outName;
+        work.dir = src.dir;
+        work.split = src.split;
+        work.userAgent = src.userAgent;
+        work.authorization = src.authorization;
+        work.referer = src.referer;
+        work.cookie = src.cookie;
+        work.allProxy = src.allProxy;
+        state.activeModal = ActiveModal::None;
+        if (src.newTaskShowDownloading.value_or(state.prefs.newTaskShowDownloading)) {
+            state.activeCategory = motrix::domain::TaskCategory::Downloading;
+            state.activeSection = 0;
+        }
+    };
 
     PublishMutated([&](AppStateSnapshot& state) {
         if (const auto* c = std::get_if<SelectCategoryCmd>(&cmd)) {
@@ -350,30 +373,41 @@ void AppCoordinator::Dispatch(Command cmd) {
             engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::ResumeAll};
         } else if (std::holds_alternative<PurgeStoppedCmd>(cmd)) {
             engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::PurgeStopped};
+        } else if (std::holds_alternative<ResetSessionCmd>(cmd)) {
+            if (!state.sessionFilePath.empty()) {
+                std::error_code ec;
+                std::filesystem::remove(
+                    std::filesystem::path(motrix::core::Utf8ToWide(state.sessionFilePath)), ec);
+            }
+            engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::PurgeStopped};
+        } else if (std::holds_alternative<FactoryResetCmd>(cmd)) {
+            const std::string savedDir = state.sysConfig.dir;
+            state.prefs = motrix::domain::DefaultUserPreferences();
+            state.sysConfig = motrix::domain::DefaultSystemConfig();
+            if (!savedDir.empty()) {
+                state.sysConfig.dir = savedDir;
+            }
+            state.sysConfig.rpcSecret = GenerateHexSecret();
+            saveUserCfg = persistConfig_;
+            saveSystemCfg = persistConfig_;
+            prefsUpdated = true;
+            if (!previewMockMode_ && engineRuntime_) {
+                engineWork = EngineWorkCommand{
+                    .kind = EngineWorkCommand::Kind::ApplyGlobalOptions,
+                    .options = motrix::domain::SystemConfigToOptionPairs(state.sysConfig),
+                };
+            }
         } else if (const auto* addCmd = std::get_if<SubmitAddUriCmd>(&cmd)) {
-            engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::AddUri,
-                                           .uris = addCmd->uris,
-                                           .outName = addCmd->outName,
-                                           .dir = addCmd->dir,
-                                           .split = addCmd->split};
-            state.activeModal = ActiveModal::None;
-            if (state.prefs.newTaskShowDownloading) {
-                state.activeCategory = motrix::domain::TaskCategory::Downloading;
-                state.activeSection = 0;
-            }
+            auto work = EngineWorkCommand{.kind = EngineWorkCommand::Kind::AddUri, .uris = addCmd->uris};
+            applyCommonAdd(work, *addCmd, state);
+            engineWork = std::move(work);
         } else if (const auto* addTorCmd = std::get_if<SubmitAddTorrentCmd>(&cmd)) {
-            engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::AddTorrent,
-                                           .torrentBase64 = addTorCmd->torrentBase64,
-                                           .selectedIndices = addTorCmd->selectedIndices,
-                                           .totalFiles = addTorCmd->totalFiles,
-                                           .outName = addTorCmd->outName,
-                                           .dir = addTorCmd->dir,
-                                           .split = addTorCmd->split};
-            state.activeModal = ActiveModal::None;
-            if (state.prefs.newTaskShowDownloading) {
-                state.activeCategory = motrix::domain::TaskCategory::Downloading;
-                state.activeSection = 0;
-            }
+            auto work = EngineWorkCommand{.kind = EngineWorkCommand::Kind::AddTorrent,
+                                          .torrentBase64 = addTorCmd->torrentBase64,
+                                          .selectedIndices = addTorCmd->selectedIndices,
+                                          .totalFiles = addTorCmd->totalFiles};
+            applyCommonAdd(work, *addTorCmd, state);
+            engineWork = std::move(work);
         } else if (const auto* fileSelCmd = std::get_if<ApplyTaskFileSelectionCmd>(&cmd)) {
             engineWork = EngineWorkCommand{.kind = EngineWorkCommand::Kind::ChangeTaskOption,
                                            .gid = fileSelCmd->gid,

@@ -122,10 +122,10 @@ void MotrixUiShell::RenderFrame(const motrix::app::AppStateSnapshot& state,
             const float mainW = std::max(120.0f * dpi, (vp->Pos.x + vp->Size.x) - curX);
             if (state.activeSection == 0) {
                 RenderTaskPanel(ctx, curX, topY, mainW, totalH);
-                RenderSpeedometer(ctx, vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
             } else {
                 RenderPreferencesView(ctx, curX, topY, mainW, totalH, impl_->prefTab, impl_->prefsForm);
             }
+            RenderSpeedometer(ctx, vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
 
             if (state.prefs.hideAppMenu) {
                 RenderTitlebarOverlay(ctx);

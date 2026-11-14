@@ -385,7 +385,11 @@ add_library(motrix_ui STATIC
     src/ui/fonts.cpp
     src/ui/scope_guard.cpp
     src/ui/icons.cpp
+    src/ui/icons_extra.cpp
     src/ui/icons_ufo.cpp
+    src/ui/el_widgets.cpp
+    src/ui/el_inputs.cpp
+    src/ui/el_selects.cpp
     src/ui/view_titlebar.cpp
     src/ui/view_aside.cpp
     src/ui/view_subnav.cpp
@@ -396,9 +400,12 @@ add_library(motrix_ui STATIC
     src/ui/view_drawer_activity.cpp
     src/ui/view_drawer_tabs.cpp
     src/ui/view_prefs.cpp
+    src/ui/view_prefs_basic.cpp
     src/ui/view_prefs_advanced.cpp
+    src/ui/view_prefs_lab.cpp
     src/ui/view_add_torrent.cpp
     src/ui/view_modals.cpp
+    src/ui/view_modal_about.cpp
     src/ui/shell.cpp
 )
 target_sources(motrix_ui
@@ -418,6 +425,7 @@ target_sources(motrix_ui
         BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
         FILES
             src/ui/views_internal.ixx
+            src/ui/el_widgets.ixx
 )
 target_link_libraries(motrix_ui
     PUBLIC

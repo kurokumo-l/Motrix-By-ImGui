@@ -35,6 +35,8 @@ export struct UserPreferences {
     bool autoSyncTracker = true;
     bool useProxy = false;
     bool keepSeeding = false;
+    bool autoCheckUpdate = false;
+    std::int64_t lastCheckUpdateTime = 0;
     std::string engineBinPath;
     std::string logLevel = "warn";
     std::vector<std::string> favoriteDirectories;
@@ -66,6 +68,9 @@ export struct SystemConfig {
     std::uint64_t maxOverallUploadLimit = 0;
     bool continueDownloads = true;
     bool followTorrent = true;
+    bool btSaveMetadata = true;
+    bool btForceEncryption = false;
+    bool pauseMetadata = false;
     std::string btTracker;
     std::string allProxy;
     std::string noProxy;

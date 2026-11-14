@@ -88,8 +88,18 @@ void DrawEllipseFilledRot(ImDrawList* dl,
 }
 
 void DrawPineTree(ImDrawList* dl, float baseX, float baseY, float w, float h, ImU32 col) {
-    dl->AddTriangleFilled(
-        ImVec2(baseX, baseY - h), ImVec2(baseX - w * 0.5f, baseY), ImVec2(baseX + w * 0.5f, baseY), col);
+    // Two-tier stylized Motrix conifer matching no-task.svg
+    const float lowerTopY = baseY - h * 0.64f;
+    const float upperTopY = baseY - h;
+    const float upperBotY = baseY - h * 0.34f;
+    dl->AddTriangleFilled(ImVec2(baseX + w * 0.03f, lowerTopY),
+                          ImVec2(baseX - w * 0.50f, baseY),
+                          ImVec2(baseX + w * 0.50f, baseY),
+                          col);
+    dl->AddTriangleFilled(ImVec2(baseX, upperTopY),
+                          ImVec2(baseX - w * 0.44f, upperBotY),
+                          ImVec2(baseX + w * 0.44f, upperBotY),
+                          col);
 }
 
 }  // namespace
@@ -140,54 +150,64 @@ void DrawEmptyUfoIllustration(float centerX, float topY, float width, float heig
     const float y0 = topY;
     const auto pt = [&](float vx, float vy) { return ImVec2(x0 + vx * sx, y0 + vy * sy); };
 
-    // 1. Two overlapping misty hills tapering seamlessly to 0 alpha at boundaries
-    const RgbaColor hillLeftTop = dark ? HexColor(0xFFFFFF, 0.11f) : HexColor(0xD2D8E0, 0.34f);
-    const RgbaColor hillRightTop = dark ? HexColor(0xFFFFFF, 0.16f) : HexColor(0xCBD2DC, 0.44f);
+    // 1. Two soft overlapping mist hills fading downward seamlessly
+    const RgbaColor hillLeftTop = dark ? HexColor(0xFFFFFF, 0.13f) : HexColor(0xD4DAE2, 0.42f);
+    const RgbaColor hillRightTop = dark ? HexColor(0xFFFFFF, 0.18f) : HexColor(0xC9D0DA, 0.52f);
     const RgbaColor hillBot = dark ? HexColor(0x343434, 0.0f) : HexColor(0xFFFFFF, 0.0f);
-    DrawSoftBellHill(dl, x0, y0, sx, sy, 28.0f, 305.0f, 54.0f, 304.0f, hillLeftTop, hillBot);
-    DrawSoftBellHill(dl, x0, y0, sx, sy, 156.0f, 476.0f, 78.0f, 306.0f, hillRightTop, hillBot);
+    DrawSoftBellHill(dl, x0, y0, sx, sy, 48.0f, 326.0f, 52.0f, 296.0f, hillLeftTop, hillBot);
+    DrawSoftBellHill(dl, x0, y0, sx, sy, 165.0f, 474.0f, 78.0f, 294.0f, hillRightTop, hillBot);
 
-    // 2. Geometric pine trees on left & right hill crests
-    const ImU32 treeDark = ToAbgrU32(dark ? HexColor(0x787878, 0.90f) : HexColor(0x5E5E5E, 0.92f));
-    const ImU32 treeSoft = ToAbgrU32(dark ? HexColor(0x6C6C6C, 0.50f) : HexColor(0x9A9A9A, 0.45f));
-    DrawPineTree(dl, x0 + 132.0f * sx, y0 + 258.0f * sy, 11.0f * sx, 22.0f * sy, treeSoft);
-    DrawPineTree(dl, x0 + 150.0f * sx, y0 + 255.0f * sy, 16.0f * sx, 36.0f * sy, treeDark);
-    DrawPineTree(dl, x0 + 340.0f * sx, y0 + 234.0f * sy, 12.0f * sx, 24.0f * sy, treeSoft);
-    DrawPineTree(dl, x0 + 365.0f * sx, y0 + 238.0f * sy, 22.0f * sx, 46.0f * sy, treeDark);
+    // 2. Two-tier stylized pine trees on hills (exact ground-truth placement)
+    const ImU32 treeDark = ToAbgrU32(dark ? HexColor(0x7B7B7B, 0.92f) : HexColor(0x5E5E5E, 0.94f));
+    const ImU32 treeSoft = ToAbgrU32(dark ? HexColor(0x6C6C6C, 0.48f) : HexColor(0xB4B4B4, 0.55f));
+    dl->AddTriangleFilled(pt(130.0f, 232.0f), pt(124.5f, 255.0f), pt(135.5f, 255.0f), treeSoft);
+    DrawPineTree(dl, x0 + 148.0f * sx, y0 + 252.0f * sy, 18.0f * sx, 38.0f * sy, treeDark);
+    dl->AddTriangleFilled(pt(337.0f, 209.0f), pt(331.0f, 234.0f), pt(343.0f, 234.0f), treeSoft);
+    DrawPineTree(dl, x0 + 364.0f * sx, y0 + 236.0f * sy, 23.0f * sx, 49.0f * sy, treeDark);
 
-    // 3. UFO Tractor Beam (tilted ~17deg down-right, fading softly)
-    const RgbaColor beamTop = HexColor(0x5B5AEA, 0.48f);
-    const RgbaColor beamBot = dark ? HexColor(0x343434, 0.0f) : HexColor(0xFFFFFF, 0.0f);
+    // 3. UFO Outer wide soft grey tractor cone + vibrant #5B5AEA inner cone (no-task.svg)
+    const RgbaColor outerTop = dark ? HexColor(0xBBBBBB, 0.20f) : HexColor(0x707070, 0.25f);
+    const RgbaColor outerBot = dark ? HexColor(0x404040, 0.03f) : HexColor(0x9A9A9A, 0.06f);
     DrawGradientQuadStrip(dl,
-                          pt(194.0f, 66.0f),
-                          pt(238.0f, 52.0f),
-                          pt(292.0f, 192.0f),
-                          pt(206.0f, 212.0f),
-                          beamTop,
-                          beamBot,
+                          pt(191.0f, 67.0f),
+                          pt(243.0f, 51.0f),
+                          pt(318.0f, 188.0f),
+                          pt(210.0f, 224.0f),
+                          outerTop,
+                          outerBot,
+                          24);
+    const RgbaColor innerTop = HexColor(0x5B5AEA, 0.56f);
+    const RgbaColor innerBot = dark ? HexColor(0x5B5AEA, 0.0f) : HexColor(0xE7D1AF, 0.0f);
+    DrawGradientQuadStrip(dl,
+                          pt(199.0f, 65.0f),
+                          pt(235.0f, 54.0f),
+                          pt(296.0f, 182.0f),
+                          pt(222.0f, 206.0f),
+                          innerTop,
+                          innerBot,
                           24);
 
     // 4. Tilted UFO Saucer body
     const float ufoCx = x0 + 216.0f * sx;
-    const float ufoCy = y0 + 50.0f * sy;
-    const float tilt = -0.33f;  // ~ -19 degrees
+    const float ufoCy = y0 + 51.0f * sy;
+    const float tilt = -0.34f;
 
     // Top cockpit dome
     DrawEllipseFilledRot(dl,
-                         ufoCx - 3.0f * sx,
-                         ufoCy - 11.0f * sy,
-                         24.0f * sx,
-                         13.0f * sy,
+                         ufoCx - 3.5f * sx,
+                         ufoCy - 11.5f * sy,
+                         25.0f * sx,
+                         13.5f * sy,
                          tilt,
                          ToAbgrU32(HexColor(0x4C4C4C)),
                          ToAbgrU32(HexColor(0x1B1B1B)),
-                         1.3f * sx);
+                         1.4f * sx);
     // Main saucer hull
     DrawEllipseFilledRot(dl,
                          ufoCx,
                          ufoCy,
-                         54.0f * sx,
-                         15.5f * sy,
+                         55.5f * sx,
+                         16.0f * sy,
                          tilt,
                          ToAbgrU32(HexColor(0x3E3E3E)),
                          ToAbgrU32(HexColor(0x1B1B1B)),
@@ -196,10 +216,10 @@ void DrawEmptyUfoIllustration(float centerX, float topY, float width, float heig
     DrawEllipseFilledRot(dl,
                          ufoCx - 0.5f * sx,
                          ufoCy - 2.0f * sy,
-                         50.0f * sx,
-                         12.0f * sy,
+                         51.0f * sx,
+                         12.5f * sy,
                          tilt,
-                         ToAbgrU32(HexColor(0x5A5860, 0.55f)),
+                         ToAbgrU32(HexColor(0x6C6971, 0.45f)),
                          0u,
                          0.0f);
     // Underside dark emitter cavity + purple glow

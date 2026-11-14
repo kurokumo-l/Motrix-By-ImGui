@@ -40,6 +40,14 @@ export enum class MotrixIcon {
     Video,
     Audio,
     Image,
+    PreferenceBasic,
+    PreferenceAdvanced,
+    PreferenceLab,
+    TaskHistory,
+    Sync,
+    Dice,
+    ChevronDown,
+    ChevronUp,
 };
 
 export void DrawMotrixIcon(MotrixIcon icon,

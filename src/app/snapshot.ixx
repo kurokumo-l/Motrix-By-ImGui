@@ -35,6 +35,9 @@ export struct AppStateSnapshot {
     motrix::engine::EngineVersionInfo engineInfo;
     std::string engineError;
     std::string resolvedEnginePath;
+    std::string engineConfPath;
+    std::string sessionFilePath;
+    std::string appLogPath;
     GlobalStatSnapshot globalStat;
     motrix::domain::UserPreferences prefs = motrix::domain::DefaultUserPreferences();
     motrix::domain::SystemConfig sysConfig = motrix::domain::DefaultSystemConfig();

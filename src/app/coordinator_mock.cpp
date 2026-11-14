@@ -272,6 +272,7 @@ void AppCoordinator::HandleBulkAndSubmit(AppStateSnapshot& state, const Command&
         return;
     }
     if (const auto* addUriCmd = std::get_if<SubmitAddUriCmd>(&cmd)) {
+        RecordHistoryDirectory(state.prefs, addUriCmd->dir);
         for (const auto& uri : addUriCmd->uris) {
             motrix::domain::DownloadTaskView task{};
             task.gid = std::format("{:016x}", nextLocalGid_++);
@@ -284,7 +285,7 @@ void AppCoordinator::HandleBulkAndSubmit(AppStateSnapshot& state, const Command&
             state.downloadingTasks.push_back(std::move(task));
         }
         state.activeModal = ActiveModal::None;
-        if (state.prefs.newTaskShowDownloading) {
+        if (addUriCmd->newTaskShowDownloading.value_or(state.prefs.newTaskShowDownloading)) {
             state.activeCategory = motrix::domain::TaskCategory::Downloading;
             state.activeSection = 0;
         }
@@ -292,6 +293,7 @@ void AppCoordinator::HandleBulkAndSubmit(AppStateSnapshot& state, const Command&
         return;
     }
     if (const auto* addTorCmd = std::get_if<SubmitAddTorrentCmd>(&cmd)) {
+        RecordHistoryDirectory(state.prefs, addTorCmd->dir);
         motrix::domain::DownloadTaskView task{};
         task.gid = std::format("{:016x}", nextLocalGid_++);
         task.name = !addTorCmd->outName.empty() ? addTorCmd->outName : "torrent-task";
@@ -300,11 +302,24 @@ void AppCoordinator::HandleBulkAndSubmit(AppStateSnapshot& state, const Command&
         task.taskType = motrix::domain::TaskType::BitTorrent;
         state.downloadingTasks.push_back(std::move(task));
         state.activeModal = ActiveModal::None;
-        if (state.prefs.newTaskShowDownloading) {
+        if (addTorCmd->newTaskShowDownloading.value_or(state.prefs.newTaskShowDownloading)) {
             state.activeCategory = motrix::domain::TaskCategory::Downloading;
             state.activeSection = 0;
         }
         logger_.Info("app", "Submitted torrent '{}' (mock)", addTorCmd->outName);
+    }
+}
+
+void AppCoordinator::RecordHistoryDirectory(motrix::domain::UserPreferences& prefs,
+                                            std::string_view dir) {
+    if (dir.empty()) {
+        return;
+    }
+    auto& hist = prefs.historyDirectories;
+    hist.erase(std::remove(hist.begin(), hist.end(), dir), hist.end());
+    hist.insert(hist.begin(), std::string(dir));
+    if (hist.size() > 5) {
+        hist.resize(5);
     }
 }
 

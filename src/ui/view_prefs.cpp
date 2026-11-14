@@ -9,80 +9,84 @@ import motrix.core;
 import motrix.domain;
 import motrix.app;
 import :views_internal;
+import :el_widgets;
 import :theme;
 import :icons;
 import :scope_guard;
 
 namespace motrix::ui {
 
-void CopyUtf8ToBuffer(std::string_view src, char* dst, std::size_t cap) noexcept {
-    if (cap == 0) {
-        return;
-    }
-    const std::size_t n = std::min(src.size(), cap - 1);
-    std::memcpy(dst, src.data(), n);
-    dst[n] = '\0';
-}
-
-void DrawPrefsFieldLabel(UiFrameContext& ctx, std::string_view text) {
-    FontGuard fg(ctx.fonts, FontRole::Medium, 13.5f);
-    StyleColorGuard cg(ImGuiCol_Text, ctx.palette.panelTitle);
-    ImGui::TextUnformatted(text.data(), text.data() + text.size());
-}
-
 namespace {
 
-[[nodiscard]] std::vector<std::string> CollectSelectedTrackerUrls(const PrefsFormState& ps) {
-    const auto allOpts = motrix::domain::AllTrackerSourceOptions();
-    std::vector<std::string> out;
-    for (std::size_t i = 0; i < allOpts.size() && i < ps.trackerSourceSelected.size(); ++i) {
-        if (ps.trackerSourceSelected[i]) {
-            out.emplace_back(allOpts[i].url);
+constexpr std::array<std::string_view, 5> kLogLevels{"debug", "info", "notice", "warn", "error"};
+
+int FindLogLevelIndex(std::string_view lvl) noexcept {
+    for (int i = 0; i < static_cast<int>(kLogLevels.size()); ++i) {
+        if (kLogLevels[static_cast<std::size_t>(i)] == lvl) {
+            return i;
         }
     }
-    return out;
+    return 3;  // warn
 }
 
-void LoadFromSnapshot(PrefsFormState& ps,
-                      const motrix::domain::UserPreferences& prefs,
-                      const motrix::domain::SystemConfig& sys,
-                      std::uint64_t rev) {
-    ps.initialized = true;
-    ps.loadedRevision = rev;
-    ps.themeIndex = static_cast<int>(prefs.theme);
-    ps.localeIndex = (prefs.locale == motrix::core::Locale::ZhCN) ? 1 : 0;
-    ps.runModeIndex = std::clamp(static_cast<int>(prefs.runMode) - 1, 0, 2);
+void LoadPrefsFromSnapshot(const motrix::app::AppStateSnapshot& st, PrefsFormState& ps) {
+    const auto& pr = st.prefs;
+    const auto& sys = st.sysConfig;
+
+    ps.themeIndex = static_cast<int>(pr.theme);
+    ps.localeIndex = (pr.locale == motrix::core::Locale::ZhCN) ? 1 : 0;
+    ps.runModeIndex = std::clamp(static_cast<int>(pr.runMode) - 1, 0, 2);
+
+    ps.hideAppMenu = pr.hideAppMenu;
+    ps.keepWindowState = pr.keepWindowState;
+    ps.autoHideWindow = pr.autoHideWindow;
+    ps.openAtLogin = pr.openAtLogin;
+    ps.resumeAllWhenAppLaunched = pr.resumeAllWhenAppLaunched;
+    ps.showProgressBar = pr.showProgressBar;
+    ps.taskNotification = pr.taskNotification;
+    ps.traySpeedometer = pr.traySpeedometer;
+    ps.newTaskShowDownloading = pr.newTaskShowDownloading;
+    ps.noConfirmBeforeDelete = pr.noConfirmBeforeDeleteTask;
+    ps.enableUpnp = pr.enableUpnp;
+    ps.autoSyncTracker = pr.autoSyncTracker;
+    ps.useProxy = pr.useProxy;
+    ps.keepSeeding = pr.keepSeeding;
+    ps.autoCheckUpdate = pr.autoCheckUpdate;
+    ps.protocolMagnet = pr.protocolMagnet;
+    ps.protocolThunder = pr.protocolThunder;
+    ps.protocolMotrix = pr.protocolMotrix;
+    ps.logLevelIndex = FindLogLevelIndex(pr.logLevel);
+
+    CopyUtf8ToBuffer(pr.engineBinPath, ps.enginePathBuffer.data(), ps.enginePathBuffer.size());
+
+    const auto allSources = motrix::domain::AllTrackerSourceOptions();
+    ps.trackerSourceSelected.assign(allSources.size(), false);
+    for (const auto& savedUrl : pr.trackerSource) {
+        for (std::size_t i = 0; i < allSources.size(); ++i) {
+            if (allSources[i].url == savedUrl) {
+                ps.trackerSourceSelected[i] = true;
+            }
+        }
+    }
+    ps.loadedSyncTrackerTime = pr.lastSyncTrackerTime;
+
     CopyUtf8ToBuffer(sys.dir, ps.dirBuffer.data(), ps.dirBuffer.size());
     ps.maxConcurrent = std::clamp(sys.maxConcurrentDownloads, 1, 64);
-    ps.maxConnPerServer = std::clamp(sys.maxConnectionPerServer, 1, 64);
-    ps.dlLimitKbps = static_cast<int>(sys.maxOverallDownloadLimit / 1024u);
-    ps.ulLimitKbps = static_cast<int>(sys.maxOverallUploadLimit / 1024u);
+    ps.maxConnPerServer = std::clamp(sys.maxConnectionPerServer, 1, 128);
+
+    const std::uint64_t dlKb = sys.maxOverallDownloadLimit / 1024ULL;
+    ps.dlUnitMb = (dlKb > 0 && dlKb % 1024ULL == 0);
+    ps.dlLimitKbps = static_cast<int>(ps.dlUnitMb ? (dlKb / 1024ULL) : dlKb);
+
+    const std::uint64_t ulKb = sys.maxOverallUploadLimit / 1024ULL;
+    ps.ulUnitMb = (ulKb > 0 && ulKb % 1024ULL == 0);
+    ps.ulLimitKbps = static_cast<int>(ps.ulUnitMb ? (ulKb / 1024ULL) : ulKb);
+
     ps.continueDownloads = sys.continueDownloads;
-    ps.newTaskShowDownloading = prefs.newTaskShowDownloading;
-    ps.noConfirmBeforeDelete = prefs.noConfirmBeforeDeleteTask;
     ps.followTorrent = sys.followTorrent;
-    ps.keepWindowState = prefs.keepWindowState;
-    ps.autoHideWindow = prefs.autoHideWindow;
-    ps.openAtLogin = prefs.openAtLogin;
-    ps.resumeAllWhenAppLaunched = prefs.resumeAllWhenAppLaunched;
-    ps.showProgressBar = prefs.showProgressBar;
-    ps.taskNotification = prefs.taskNotification;
-    ps.traySpeedometer = prefs.traySpeedometer;
-    ps.enableUpnp = prefs.enableUpnp;
-    ps.autoSyncTracker = prefs.autoSyncTracker;
-    ps.useProxy = prefs.useProxy;
-    ps.keepSeeding = prefs.keepSeeding;
-    ps.protocolMagnet = prefs.protocolMagnet;
-    ps.protocolThunder = prefs.protocolThunder;
-    ps.protocolMotrix = prefs.protocolMotrix;
-    CopyUtf8ToBuffer(sys.allProxy, ps.allProxyBuffer.data(), ps.allProxyBuffer.size());
-    CopyUtf8ToBuffer(sys.noProxy, ps.noProxyBuffer.data(), ps.noProxyBuffer.size());
-    CopyUtf8ToBuffer(motrix::domain::ConvertTrackerDataToLine(sys.btTracker),
-                     ps.btTrackerBuffer.data(),
-                     ps.btTrackerBuffer.size());
-    ps.loadedSyncTrackerTime = prefs.lastSyncTrackerTime;
-    CopyUtf8ToBuffer(sys.userAgent, ps.userAgentBuffer.data(), ps.userAgentBuffer.size());
-    CopyUtf8ToBuffer(prefs.engineBinPath, ps.enginePathBuffer.data(), ps.enginePathBuffer.size());
+    ps.btSaveMetadata = sys.btSaveMetadata;
+    ps.btAutoDownloadContent = !sys.pauseMetadata;
+    ps.btForceEncryption = sys.btForceEncryption;
     ps.seedRatio = static_cast<float>(sys.seedRatio);
     ps.seedTime = sys.seedTime;
     ps.rpcPort = static_cast<int>(sys.rpcListenPort);
@@ -90,275 +94,250 @@ void LoadFromSnapshot(PrefsFormState& ps,
     ps.btPort = sys.listenPort;
     ps.dhtPort = sys.dhtListenPort;
 
-    const auto allOpts = motrix::domain::AllTrackerSourceOptions();
-    ps.trackerSourceSelected.assign(allOpts.size(), false);
-    for (std::size_t i = 0; i < allOpts.size(); ++i) {
-        const auto found =
-            std::find(prefs.trackerSource.begin(), prefs.trackerSource.end(), allOpts[i].url);
-        if (found != prefs.trackerSource.end()) {
-            ps.trackerSourceSelected[i] = true;
-        }
-    }
+    CopyUtf8ToBuffer(sys.allProxy, ps.allProxyBuffer.data(), ps.allProxyBuffer.size());
+    CopyUtf8ToBuffer(sys.noProxy, ps.noProxyBuffer.data(), ps.noProxyBuffer.size());
+    const std::string lineTrackers = motrix::domain::ConvertTrackerDataToLine(sys.btTracker);
+    CopyUtf8ToBuffer(lineTrackers, ps.btTrackerBuffer.data(), ps.btTrackerBuffer.size());
+    CopyUtf8ToBuffer(sys.userAgent, ps.userAgentBuffer.data(), ps.userAgentBuffer.size());
+
+    ps.loadedRevision = st.revision;
+    ps.initialized = true;
 }
 
-void RenderBasicTab(UiFrameContext& ctx, PrefsFormState& ps) {
-    const float s = ctx.dpiScale;
-    const float inputW = std::min(460.0f * s, ImGui::GetContentRegionAvail().x - 16.0f * s);
+void ApplyPrefsDraft(UiFrameContext& ctx, PrefsFormState& ps) {
+    motrix::domain::UserPreferences pr = ctx.state.prefs;
+    motrix::domain::SystemConfig sys = ctx.state.sysConfig;
 
-    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.appearance"));
-    const std::array<std::string_view, 3> themeKeys{
-        "prefs.theme_auto",
-        "prefs.theme_light",
-        "prefs.theme_dark",
-    };
-    for (int i = 0; i < 3; ++i) {
-        if (i > 0) {
-            ImGui::SameLine(0.0f, 10.0f * s);
-        }
-        const bool active = (ps.themeIndex == i);
-        StyleColorGuard bg(ImGuiCol_Button, active ? ctx.palette.primary : ctx.palette.subnavBg);
-        StyleColorGuard fgCol(ImGuiCol_Text, active ? HexColor(0xFFFFFF) : ctx.palette.panelTitle);
-        FontGuard fnt(ctx.fonts, FontRole::Regular, 13.5f);
-        if (ImGui::Button(ctx.tr.Tr(themeKeys[static_cast<std::size_t>(i)]).data(),
-                          ImVec2(88.0f * s, 30.0f * s))) {
-            ps.themeIndex = i;
-        }
-    }
-    ImGui::Dummy(ImVec2(0.0f, 10.0f * s));
+    pr.theme = static_cast<motrix::domain::ThemePreference>(std::clamp(ps.themeIndex, 0, 2));
+    pr.locale = (ps.localeIndex == 1) ? motrix::core::Locale::ZhCN : motrix::core::Locale::EnUS;
+    pr.runMode = static_cast<motrix::domain::RunMode>(std::clamp(ps.runModeIndex, 0, 2) + 1);
+    pr.hideAppMenu = ps.hideAppMenu;
+    pr.keepWindowState = ps.keepWindowState;
+    pr.autoHideWindow = ps.autoHideWindow;
+    pr.openAtLogin = ps.openAtLogin;
+    pr.resumeAllWhenAppLaunched = ps.resumeAllWhenAppLaunched;
+    pr.showProgressBar = ps.showProgressBar;
+    pr.taskNotification = ps.taskNotification;
+    pr.traySpeedometer = ps.traySpeedometer;
+    pr.newTaskShowDownloading = ps.newTaskShowDownloading;
+    pr.noConfirmBeforeDeleteTask = ps.noConfirmBeforeDelete;
+    pr.enableUpnp = ps.enableUpnp;
+    pr.autoSyncTracker = ps.autoSyncTracker;
+    pr.useProxy = ps.useProxy;
+    pr.keepSeeding = ps.keepSeeding;
+    pr.autoCheckUpdate = ps.autoCheckUpdate;
+    pr.protocolMagnet = ps.protocolMagnet;
+    pr.protocolThunder = ps.protocolThunder;
+    pr.protocolMotrix = ps.protocolMotrix;
+    pr.engineBinPath = ps.enginePathBuffer.data();
+    pr.logLevel = std::string(kLogLevels[static_cast<std::size_t>(std::clamp(ps.logLevelIndex, 0, 4))]);
 
-    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.language"));
-    ImGui::SetNextItemWidth(200.0f * s);
-    static constexpr const char* kLangItems[] = {"English", "简体中文"};
-    {
-        FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
-        ImGui::Combo("##pref_locale", &ps.localeIndex, kLangItems, 2);
-    }
-    ImGui::Dummy(ImVec2(0.0f, 10.0f * s));
-
-    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.run_mode"));
-    ImGui::SetNextItemWidth(240.0f * s);
-    {
-        const std::array<const char*, 3> runModeLabels{
-            ctx.tr.Tr("prefs.run_mode_standard").data(),
-            ctx.tr.Tr("prefs.run_mode_tray").data(),
-            ctx.tr.Tr("prefs.run_mode_hide_tray").data(),
-        };
-        FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
-        ImGui::Combo("##pref_run_mode", &ps.runModeIndex, runModeLabels.data(), 3);
-    }
-    ImGui::Dummy(ImVec2(0.0f, 8.0f * s));
-
-    {
-        FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
-        ImGui::Checkbox(ctx.tr.Tr("prefs.open_at_login").data(), &ps.openAtLogin);
-        ImGui::Checkbox(ctx.tr.Tr("prefs.keep_window_state").data(), &ps.keepWindowState);
-        ImGui::Checkbox(ctx.tr.Tr("prefs.auto_hide_window").data(), &ps.autoHideWindow);
-        ImGui::Checkbox(ctx.tr.Tr("prefs.resume_all_launch").data(), &ps.resumeAllWhenAppLaunched);
-        ImGui::Checkbox(ctx.tr.Tr("prefs.show_progress_bar").data(), &ps.showProgressBar);
-        ImGui::Checkbox(ctx.tr.Tr("prefs.task_notification").data(), &ps.taskNotification);
-    }
-    ImGui::Dummy(ImVec2(0.0f, 10.0f * s));
-
-    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.default_dir"));
-    const float browseW = 84.0f * s;
-    ImGui::SetNextItemWidth(std::max(160.0f * s, inputW - browseW - 8.0f * s));
-    {
-        FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
-        ImGui::InputText("##pref_dir", ps.dirBuffer.data(), ps.dirBuffer.size());
-    }
-    ImGui::SameLine(0.0f, 8.0f * s);
-    {
-        StyleColorGuard bg(ImGuiCol_Button, ctx.palette.subnavBg);
-        StyleColorGuard fgCol(ImGuiCol_Text, ctx.palette.panelTitle);
-        FontGuard fnt(ctx.fonts, FontRole::Regular, 13.0f);
-        if (ImGui::Button(ctx.tr.Tr("task.browse").data(), ImVec2(browseW, 30.0f * s))) {
-            if (auto chosen = ctx.host.PickFolder(ps.dirBuffer.data())) {
-                CopyUtf8ToBuffer(*chosen, ps.dirBuffer.data(), ps.dirBuffer.size());
-            }
+    const auto allSources = motrix::domain::AllTrackerSourceOptions();
+    pr.trackerSource.clear();
+    for (std::size_t i = 0; i < allSources.size() && i < ps.trackerSourceSelected.size(); ++i) {
+        if (ps.trackerSourceSelected[i]) {
+            pr.trackerSource.emplace_back(allSources[i].url);
         }
     }
-    ImGui::Dummy(ImVec2(0.0f, 10.0f * s));
 
-    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.concurrency"));
-    ImGui::SetNextItemWidth(inputW);
-    {
-        FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
-        ImGui::SliderInt("##pref_conc", &ps.maxConcurrent, 1, 32);
-    }
-    ImGui::Dummy(ImVec2(0.0f, 8.0f * s));
+    sys.dir = ps.dirBuffer.data();
+    sys.maxConcurrentDownloads = std::clamp(ps.maxConcurrent, 1, 64);
+    sys.maxConnectionPerServer = std::clamp(ps.maxConnPerServer, 1, 128);
+    sys.split = sys.maxConnectionPerServer;
 
-    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.split"));
-    ImGui::SetNextItemWidth(inputW);
-    {
-        FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
-        ImGui::SliderInt("##pref_conn", &ps.maxConnPerServer, 1, 64);
-    }
-    ImGui::Dummy(ImVec2(0.0f, 8.0f * s));
+    const std::uint64_t dlMul = ps.dlUnitMb ? (1024ULL * 1024ULL) : 1024ULL;
+    sys.maxOverallDownloadLimit = static_cast<std::uint64_t>(std::max(0, ps.dlLimitKbps)) * dlMul;
+    const std::uint64_t ulMul = ps.ulUnitMb ? (1024ULL * 1024ULL) : 1024ULL;
+    sys.maxOverallUploadLimit = static_cast<std::uint64_t>(std::max(0, ps.ulLimitKbps)) * ulMul;
 
-    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.max_dl_limit"));
-    ImGui::SetNextItemWidth(200.0f * s);
-    {
-        FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
-        if (ImGui::InputInt("##pref_dl_limit", &ps.dlLimitKbps, 100, 1024)) {
-            ps.dlLimitKbps = std::max(0, ps.dlLimitKbps);
-        }
-    }
-    ImGui::Dummy(ImVec2(0.0f, 6.0f * s));
+    sys.continueDownloads = ps.continueDownloads;
+    sys.followTorrent = ps.followTorrent;
+    sys.btSaveMetadata = ps.btSaveMetadata;
+    sys.pauseMetadata = !ps.btAutoDownloadContent;
+    sys.btForceEncryption = ps.btForceEncryption;
+    sys.seedRatio = static_cast<double>(std::clamp(ps.seedRatio, 0.0f, 100.0f));
+    sys.seedTime = std::clamp(ps.seedTime, 0, 525600);
+    sys.rpcListenPort = static_cast<std::uint16_t>(std::clamp(ps.rpcPort, 1024, 65535));
+    sys.rpcSecret = ps.rpcSecretBuffer.data();
+    sys.listenPort = std::clamp(ps.btPort, 1024, 65535);
+    sys.dhtListenPort = std::clamp(ps.dhtPort, 1024, 65535);
+    sys.allProxy = ps.allProxyBuffer.data();
+    sys.noProxy = ps.noProxyBuffer.data();
+    sys.btTracker = motrix::domain::ConvertTrackerDataToComma(ps.btTrackerBuffer.data());
+    sys.userAgent = ps.userAgentBuffer.data();
 
-    DrawPrefsFieldLabel(ctx, ctx.tr.Tr("prefs.max_ul_limit"));
-    ImGui::SetNextItemWidth(200.0f * s);
-    {
-        FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
-        if (ImGui::InputInt("##pref_ul_limit", &ps.ulLimitKbps, 100, 1024)) {
-            ps.ulLimitKbps = std::max(0, ps.ulLimitKbps);
-        }
-    }
-    ImGui::Dummy(ImVec2(0.0f, 10.0f * s));
+    const bool needRestart = (pr.engineBinPath != ctx.state.prefs.engineBinPath)
+                             || (pr.enableUpnp != ctx.state.prefs.enableUpnp)
+                             || (sys.rpcListenPort != ctx.state.sysConfig.rpcListenPort)
+                             || (sys.rpcSecret != ctx.state.sysConfig.rpcSecret)
+                             || (sys.listenPort != ctx.state.sysConfig.listenPort)
+                             || (sys.dhtListenPort != ctx.state.sysConfig.dhtListenPort)
+                             || (sys.btSaveMetadata != ctx.state.sysConfig.btSaveMetadata)
+                             || (sys.btForceEncryption != ctx.state.sysConfig.btForceEncryption);
 
-    FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
-    ImGui::Checkbox(ctx.tr.Tr("prefs.continue").data(), &ps.continueDownloads);
-    ImGui::Checkbox(ctx.tr.Tr("prefs.new_task_show").data(), &ps.newTaskShowDownloading);
-    ImGui::Checkbox(ctx.tr.Tr("prefs.no_confirm_del").data(), &ps.noConfirmBeforeDelete);
-    ImGui::Checkbox(ctx.tr.Tr("prefs.follow_torrent").data(), &ps.followTorrent);
-}
-
-void ApplyDraftToCommands(const UiFrameContext& ctx, const PrefsFormState& ps) {
-    auto newPrefs = ctx.state.prefs;
-    newPrefs.theme = static_cast<motrix::domain::ThemePreference>(std::clamp(ps.themeIndex, 0, 2));
-    newPrefs.locale = (ps.localeIndex == 1) ? motrix::core::Locale::ZhCN : motrix::core::Locale::EnUS;
-    newPrefs.runMode = static_cast<motrix::domain::RunMode>(std::clamp(ps.runModeIndex, 0, 2) + 1);
-    newPrefs.keepWindowState = ps.keepWindowState;
-    newPrefs.autoHideWindow = ps.autoHideWindow;
-    newPrefs.openAtLogin = ps.openAtLogin;
-    newPrefs.resumeAllWhenAppLaunched = ps.resumeAllWhenAppLaunched;
-    newPrefs.showProgressBar = ps.showProgressBar;
-    newPrefs.taskNotification = ps.taskNotification;
-    newPrefs.traySpeedometer = ps.traySpeedometer;
-    newPrefs.newTaskShowDownloading = ps.newTaskShowDownloading;
-    newPrefs.noConfirmBeforeDeleteTask = ps.noConfirmBeforeDelete;
-    newPrefs.enableUpnp = ps.enableUpnp;
-    newPrefs.autoSyncTracker = ps.autoSyncTracker;
-    newPrefs.useProxy = ps.useProxy;
-    newPrefs.keepSeeding = ps.keepSeeding;
-    newPrefs.protocolMagnet = ps.protocolMagnet;
-    newPrefs.protocolThunder = ps.protocolThunder;
-    newPrefs.protocolMotrix = ps.protocolMotrix;
-    newPrefs.trackerSource = CollectSelectedTrackerUrls(ps);
-    newPrefs.engineBinPath = ps.enginePathBuffer.data();
-
-    auto newSys = ctx.state.sysConfig;
-    newSys.dir = ps.dirBuffer.data();
-    newSys.maxConcurrentDownloads = std::clamp(ps.maxConcurrent, 1, 64);
-    newSys.maxConnectionPerServer = std::clamp(ps.maxConnPerServer, 1, 64);
-    newSys.split = newSys.maxConnectionPerServer;
-    newSys.maxOverallDownloadLimit = static_cast<std::uint64_t>(std::max(0, ps.dlLimitKbps)) * 1024u;
-    newSys.maxOverallUploadLimit = static_cast<std::uint64_t>(std::max(0, ps.ulLimitKbps)) * 1024u;
-    newSys.continueDownloads = ps.continueDownloads;
-    newSys.followTorrent = ps.followTorrent;
-    newSys.allProxy = ps.useProxy ? std::string(ps.allProxyBuffer.data()) : std::string{};
-    newSys.noProxy = ps.noProxyBuffer.data();
-    newSys.btTracker = motrix::domain::ConvertTrackerDataToComma(ps.btTrackerBuffer.data());
-    newSys.userAgent = ps.userAgentBuffer.data();
-    newSys.seedRatio = static_cast<double>(ps.seedRatio);
-    newSys.seedTime = ps.seedTime;
-    newSys.rpcListenPort = static_cast<std::uint16_t>(std::clamp(ps.rpcPort, 1024, 65535));
-    newSys.rpcSecret = ps.rpcSecretBuffer.data();
-    newSys.listenPort = std::clamp(ps.btPort, 1024, 65535);
-    newSys.dhtListenPort = std::clamp(ps.dhtPort, 1024, 65535);
-
-    ctx.sink.Dispatch(motrix::app::SavePreferencesCmd{std::move(newPrefs), std::move(newSys), false});
+    ctx.sink.Dispatch(motrix::app::SavePreferencesCmd{std::move(pr), std::move(sys), needRestart});
+    ps.initialized = false;
 }
 
 }  // namespace
 
+void CopyUtf8ToBuffer(std::string_view src, char* dst, std::size_t cap) noexcept {
+    if (!dst || cap == 0) {
+        return;
+    }
+    const std::size_t n = std::min(src.size(), cap - 1);
+    if (n > 0) {
+        std::memcpy(dst, src.data(), n);
+    }
+    dst[n] = '\0';
+}
+
+void DrawPrefsFieldLabel(UiFrameContext& ctx, std::string_view text) {
+    FontGuard fg(ctx.fonts, FontRole::Regular, 13.5f);
+    StyleColorGuard col(ImGuiCol_Text, ctx.palette.subLabelText);
+    ImGui::TextUnformatted(text.data(), text.data() + text.size());
+}
+
+void DrawPrefsFormRow(UiFrameContext& ctx,
+                      std::string_view label,
+                      float alignH,
+                      const std::function<void(float, float)>& body) {
+    const float s = ctx.dpiScale;
+    const ImVec2 startPos = ImGui::GetCursorScreenPos();
+    const float availW = ImGui::GetContentRegionAvail().x;
+    const float labelColW = std::clamp(availW * 0.22f, 108.0f * s, 146.0f * s);
+    const float colGap = 16.0f * s;
+    const float bodyX = startPos.x + labelColW + colGap;
+    const float bodyW = std::max(140.0f * s, availW - labelColW - colGap);
+
+    if (!label.empty()) {
+        FontGuard fg(ctx.fonts, FontRole::Regular, 13.5f);
+        const ImVec2 sz = ImGui::CalcTextSize(label.data(), label.data() + label.size());
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (sz.x <= labelColW) {
+            const float lblY = startPos.y + std::max(0.0f, (alignH - sz.y) * 0.5f);
+            dl->AddText(ImVec2(startPos.x + labelColW - sz.x, lblY),
+                        ToAbgrU32(ctx.palette.panelTitle),
+                        label.data(),
+                        label.data() + label.size());
+        } else {
+            dl->AddText(ImGui::GetFont(),
+                        ImGui::GetFontSize(),
+                        ImVec2(startPos.x, startPos.y + 4.0f * s),
+                        ToAbgrU32(ctx.palette.panelTitle),
+                        label.data(),
+                        label.data() + label.size(),
+                        labelColW);
+        }
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(bodyX, startPos.y));
+    ImGui::BeginGroup();
+    if (body) {
+        body(bodyX, bodyW);
+    }
+    ImGui::EndGroup();
+    const float nextY = ImGui::GetItemRectMax().y + 20.0f * s;
+    ImGui::SetCursorScreenPos(ImVec2(startPos.x, nextY));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+}
+
 void RenderPreferencesView(
-    UiFrameContext& ctx, float x, float y, float w, float h, int prefTab, PrefsFormState& ps) {
-    if (!ps.initialized) {
-        LoadFromSnapshot(ps, ctx.state.prefs, ctx.state.sysConfig, ctx.state.revision);
-    } else if (ctx.state.prefs.lastSyncTrackerTime != ps.loadedSyncTrackerTime) {
-        ps.loadedSyncTrackerTime = ctx.state.prefs.lastSyncTrackerTime;
-        CopyUtf8ToBuffer(motrix::domain::ConvertTrackerDataToLine(ctx.state.sysConfig.btTracker),
-                         ps.btTrackerBuffer.data(),
-                         ps.btTrackerBuffer.size());
+    UiFrameContext& ctx, float x, float y, float w, float h, int prefTab, PrefsFormState& prefsState) {
+    if (!prefsState.initialized) {
+        LoadPrefsFromSnapshot(ctx.state, prefsState);
+    } else if (ctx.state.prefs.lastSyncTrackerTime != prefsState.loadedSyncTrackerTime) {
+        prefsState.loadedSyncTrackerTime = ctx.state.prefs.lastSyncTrackerTime;
+        const std::string lineTrackers =
+            motrix::domain::ConvertTrackerDataToLine(ctx.state.sysConfig.btTracker);
+        CopyUtf8ToBuffer(
+            lineTrackers, prefsState.btTrackerBuffer.data(), prefsState.btTrackerBuffer.size());
     }
 
     const float s = ctx.dpiScale;
-    const float marginX = (ctx.viewportW >= LayoutMetrics::kAsideHideThreshold * s)
-                              ? LayoutMetrics::kPanelMarginWide * s
-                              : LayoutMetrics::kPanelMarginNarrow * s;
+    const bool wide = ctx.viewportW >= LayoutMetrics::kSubnavHideThreshold * s;
+    const float marginX =
+        (wide ? LayoutMetrics::kPanelMarginWide : LayoutMetrics::kPanelMarginNarrow) * s;
     const float headerH = LayoutMetrics::kPanelHeaderHeight * s;
-    const float footerH = 60.0f * s;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), ToAbgrU32(ctx.palette.mainBg));
 
+    const std::string_view titleKey =
+        (prefTab == 0) ? "prefs.basic" : ((prefTab == 1) ? "prefs.advanced" : "prefs.lab");
     {
-        FontGuard tf(ctx.fonts, FontRole::Regular, 18.0f);
-        const std::string_view tabTitle =
-            (prefTab == 0) ? ctx.tr.Tr("prefs.basic")
-                           : ((prefTab == 1) ? ctx.tr.Tr("prefs.advanced") : ctx.tr.Tr("prefs.lab"));
+        FontGuard titleFont(ctx.fonts, FontRole::Regular, 18.0f);
+        const std::string_view title = ctx.tr.Tr(titleKey);
         dl->AddText(ImVec2(x + marginX, y + LayoutMetrics::kPanelHeaderTopPad * s),
                     ToAbgrU32(ctx.palette.panelTitle),
-                    tabTitle.data(),
-                    tabTitle.data() + tabTitle.size());
+                    title.data(),
+                    title.data() + title.size());
     }
-    dl->AddLine(ImVec2(x + marginX, y + headerH),
-                ImVec2(x + w - marginX, y + headerH),
-                ToAbgrU32(ctx.palette.panelBorder),
-                1.0f);
+    const float borderY = y + headerH - 2.0f * s;
+    dl->AddRectFilled(ImVec2(x + marginX, borderY),
+                      ImVec2(x + w - marginX, borderY + 2.0f * s),
+                      ToAbgrU32(ctx.palette.panelBorder));
 
-    const float bodyY = y + headerH + 16.0f * s;
-    const float bodyH = std::max(80.0f * s, h - headerH - footerH - 16.0f * s);
-    ImGui::SetCursorScreenPos(ImVec2(x + marginX, bodyY));
+    const bool hasActionsBar = (prefTab == 0 || prefTab == 1);
+    const float actionsH = hasActionsBar ? 68.0f * s : 0.0f;
+    const float scrollY = y + headerH;
+    const float scrollH = std::max(1.0f, h - headerH - actionsH);
+
+    ImGui::SetCursorScreenPos(ImVec2(x, scrollY));
     {
-        ChildGuard scroll("##prefs_scroll",
-                          std::max(100.0f * s, w - marginX * 2.0f),
-                          bodyH,
-                          ImGuiChildFlags_None,
-                          ImGuiWindowFlags_None);
-        if (scroll.IsVisible()) {
+        StyleVarGuard childPad(ImGuiStyleVar_WindowPadding, marginX, 22.0f * s);
+        ChildGuard scrollChild("##prefs_scroll_area",
+                               w,
+                               scrollH,
+                               ImGuiChildFlags_AlwaysUseWindowPadding,
+                               ImGuiWindowFlags_None);
+        if (scrollChild.IsVisible()) {
             if (prefTab == 0) {
-                RenderBasicTab(ctx, ps);
+                RenderPrefsBasicTab(ctx, prefsState);
             } else if (prefTab == 1) {
-                RenderPrefsAdvancedTab(ctx, ps);
+                RenderPrefsAdvancedTab(ctx, prefsState);
             } else {
-                RenderPrefsLabTab(ctx, ps);
+                RenderPrefsLabTab(ctx, prefsState);
             }
+            ImGui::Dummy(ImVec2(0.0f, 18.0f * s));
         }
     }
 
-    const float footY = y + h - footerH;
-    dl->AddLine(ImVec2(x + marginX, footY),
-                ImVec2(x + w - marginX, footY),
-                ToAbgrU32(ctx.palette.borderSubtle),
-                1.0f);
+    if (hasActionsBar) {
+        const float barY = y + h - actionsH;
+        dl->AddRectFilled(ImVec2(x, barY), ImVec2(x + w, y + h), ToAbgrU32(ctx.palette.mainBg));
+        const float btnH = 32.0f * s;
+        const float btnY = barY + (actionsH - btnH) * 0.5f;
+        float saveW = 96.0f * s;
+        float discW = 66.0f * s;
+        {
+            FontGuard bf(ctx.fonts, FontRole::Medium, 13.5f);
+            const std::string_view sl = ctx.tr.Tr("prefs.save_apply");
+            const std::string_view dsl = ctx.tr.Tr("common.discard");
+            saveW =
+                std::max(90.0f * s, ImGui::CalcTextSize(sl.data(), sl.data() + sl.size()).x + 28.0f * s);
+            discW = std::max(64.0f * s,
+                             ImGui::CalcTextSize(dsl.data(), dsl.data() + dsl.size()).x + 28.0f * s);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(x + marginX, btnY));
+        if (ElPrimaryButton(
+                "##prefs_save", ctx.tr.Tr("prefs.save_apply"), saveW, btnH, ctx.palette, ctx.fonts, s)) {
+            ApplyPrefsDraft(ctx, prefsState);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(x + marginX + saveW + 12.0f * s, btnY));
+        if (ElSecondaryButton("##prefs_discard",
+                              ctx.tr.Tr("common.discard"),
+                              discW,
+                              btnH,
+                              ctx.palette,
+                              ctx.fonts,
+                              s)) {
+            LoadPrefsFromSnapshot(ctx.state, prefsState);
+        }
+    }
 
-    const float btnH = 34.0f * s;
-    const float btnY = footY + (footerH - btnH) * 0.5f;
-    ImGui::SetCursorScreenPos(ImVec2(x + marginX, btnY));
-    {
-        StyleColorGuard bg(ImGuiCol_Button, ctx.palette.primary);
-        StyleColorGuard fg(ImGuiCol_Text, HexColor(0xFFFFFF));
-        FontGuard fnt(ctx.fonts, FontRole::Medium, 14.0f);
-        if (ImGui::Button(ctx.tr.Tr("prefs.save_apply").data(), ImVec2(128.0f * s, btnH))) {
-            ApplyDraftToCommands(ctx, ps);
-        }
-    }
-    ImGui::SameLine(0.0f, 12.0f * s);
-    {
-        StyleColorGuard bg(ImGuiCol_Button, ctx.palette.subnavBg);
-        StyleColorGuard fg(ImGuiCol_Text, ctx.palette.panelTitle);
-        FontGuard fnt(ctx.fonts, FontRole::Regular, 14.0f);
-        if (ImGui::Button(ctx.tr.Tr("prefs.reset").data(), ImVec2(96.0f * s, btnH))) {
-            LoadFromSnapshot(ps,
-                             motrix::domain::DefaultUserPreferences(),
-                             motrix::domain::DefaultSystemConfig(),
-                             ctx.state.revision);
-            if (!ctx.state.sysConfig.dir.empty()) {
-                CopyUtf8ToBuffer(ctx.state.sysConfig.dir, ps.dirBuffer.data(), ps.dirBuffer.size());
-            }
-        }
-    }
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
 }  // namespace motrix::ui

@@ -100,14 +100,15 @@ void RenderHeaderActions(UiFrameContext& ctx, float rightEdgeX, float topY) {
     }
     curX -= step;
 
-    if (ctx.state.activeCategory != motrix::domain::TaskCategory::Stopped
-        && !ctx.state.selectedTaskGid.empty()) {
+    if (ctx.state.activeCategory != motrix::domain::TaskCategory::Stopped) {
+        const bool disabled = ctx.state.selectedTaskGid.empty();
         if (HeaderActionIconButton(ctx,
                                    "##act_del_sel",
                                    MotrixIcon::Delete,
                                    curX,
                                    topY,
-                                   ctx.tr.Tr("task.delete_selected"))) {
+                                   ctx.tr.Tr("task.delete_selected"),
+                                   disabled)) {
             ctx.sink.Dispatch(motrix::app::RemoveTaskCmd{ctx.state.selectedTaskGid, false});
         }
         curX -= step;

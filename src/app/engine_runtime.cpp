@@ -33,6 +33,21 @@ BuildAddUriOptions(const EngineWorkCommand& cmd) {
         out.push_back({"split", std::to_string(cmd.split)});
         out.push_back({"max-connection-per-server", std::to_string(std::clamp(cmd.split, 1, 64))});
     }
+    if (!cmd.userAgent.empty()) {
+        out.push_back({"user-agent", cmd.userAgent});
+    }
+    if (!cmd.referer.empty()) {
+        out.push_back({"referer", cmd.referer});
+    }
+    if (!cmd.allProxy.empty()) {
+        out.push_back({"all-proxy", cmd.allProxy});
+    }
+    if (!cmd.authorization.empty()) {
+        out.push_back({"header", std::format("Authorization: {}", cmd.authorization)});
+    }
+    if (!cmd.cookie.empty()) {
+        out.push_back({"header", std::format("Cookie: {}", cmd.cookie)});
+    }
     return out;
 }
 

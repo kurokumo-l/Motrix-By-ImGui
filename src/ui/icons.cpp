@@ -363,6 +363,15 @@ void DrawMetaAndWindowIcons(MotrixIcon icon, const IconCanvas& c, float dpiScale
 
 }  // namespace
 
+void DrawExtraMotrixIcon(ImDrawList* dl,
+                         MotrixIcon icon,
+                         float x,
+                         float y,
+                         float width,
+                         float height,
+                         RgbaColor color,
+                         float dpiScale);
+
 void DrawMotrixIcon(MotrixIcon icon,
                     float x,
                     float y,
@@ -374,6 +383,13 @@ void DrawMotrixIcon(MotrixIcon icon,
     ImDrawList* dl = foreground ? ImGui::GetForegroundDrawList() : ImGui::GetWindowDrawList();
     float vbW = 24.0f;
     float vbH = 24.0f;
+    if (icon == MotrixIcon::PreferenceBasic || icon == MotrixIcon::PreferenceAdvanced
+        || icon == MotrixIcon::PreferenceLab || icon == MotrixIcon::TaskHistory
+        || icon == MotrixIcon::Sync || icon == MotrixIcon::Dice || icon == MotrixIcon::ChevronDown
+        || icon == MotrixIcon::ChevronUp) {
+        DrawExtraMotrixIcon(dl, icon, x, y, width, height, color, dpiScale);
+        return;
+    }
     if (icon == MotrixIcon::LogoMini) {
         vbW = 28.0f;
         vbH = 14.0f;
