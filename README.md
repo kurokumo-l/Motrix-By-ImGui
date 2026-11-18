@@ -2,6 +2,10 @@
 
 使用 C++（C++23 / Win32 / DirectX 11）+ [Dear ImGui](https://github.com/ocornut/imgui) 对 [Motrix](https://github.com/agalwood/Motrix) 的非官方原生复刻，底层下载引擎切换为 [aria2-next](https://github.com/AnInsomniacy/aria2-next)（也兼容传统 `aria2c`）。
 
+项目目的：**在保留 Motrix 1.0 视觉与交互体验的前提下，尽可能降低内存占用。**
+
+![Motrix By ImGui](docs/screenshot.png)
+
 ## 说明
 
 - 本项目仅保证对 Motrix 原有功能的复刻与支持。
