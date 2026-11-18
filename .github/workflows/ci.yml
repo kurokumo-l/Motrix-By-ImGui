@@ -12,6 +12,8 @@ jobs:
   build-windows:
     name: Build & Test (Windows x64 Release)
     runs-on: windows-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
