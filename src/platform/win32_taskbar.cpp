@@ -64,6 +64,82 @@ void Win32UpdateTaskbarProgress(void* hwndVoid,
     }
 }
 
+void Win32SetCachedTaskbarProgress(Win32WindowState& state,
+                                   TaskbarProgressMode mode,
+                                   std::uint64_t completed,
+                                   std::uint64_t total) noexcept {
+    const auto next = std::tuple(mode, completed, total);
+    if (std::tie(state.lastProgressMode, state.lastProgressCompleted, state.lastProgressTotal) == next) {
+        return;
+    }
+    std::tie(state.lastProgressMode, state.lastProgressCompleted, state.lastProgressTotal) = next;
+    Win32UpdateTaskbarProgress(state.hwnd, mode, completed, total);
+}
+
+void Win32RegisterShellMessages(Win32WindowState& state) noexcept {
+    state.wmTaskbarCreated = ::RegisterWindowMessageW(L"TaskbarCreated");
+    state.wmTaskbarButtonCreated = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
+}
+
+bool Win32HandleShellOrEndSession(Win32WindowState& state,
+                                  std::uint32_t msg,
+                                  std::uint64_t wParam,
+                                  std::int64_t& resultOut) {
+    if (msg == WM_QUERYENDSESSION) {
+        if (state.config.onSessionEnding) {
+            state.config.onSessionEnding(true);
+        }
+        resultOut = TRUE;
+        return true;
+    }
+    if (msg == WM_ENDSESSION) {
+        if (wParam != FALSE) {
+            state.explicitQuitRequested = true;
+            if (state.config.onSessionEnding) {
+                state.config.onSessionEnding(true);
+            }
+            if (state.config.onBoundsChanged && state.hwnd) {
+                state.config.onBoundsChanged(Win32ReadWindowBounds(state.hwnd));
+            }
+            if (state.config.onQuitRequested) {
+                state.config.onQuitRequested();
+            }
+            Win32PostCloseWindow(state.hwnd);
+        } else if (state.config.onSessionEnding) {
+            state.config.onSessionEnding(false);
+        }
+        resultOut = 0;
+        return true;
+    }
+    if (state.wmTaskbarCreated != 0 && msg == state.wmTaskbarCreated) {
+        if (state.enableTrayIcon && state.config.screenshotPath.empty()) {
+            state.trayInstalled = false;
+            Win32InstallOrUpdateTray(state);
+        }
+        resultOut = 0;
+        return true;
+    }
+    if (state.wmTaskbarButtonCreated != 0 && msg == state.wmTaskbarButtonCreated) {
+        if (state.lastProgressMode != TaskbarProgressMode::None) {
+            Win32UpdateTaskbarProgress(state.hwnd,
+                                       state.lastProgressMode,
+                                       state.lastProgressCompleted,
+                                       state.lastProgressTotal);
+        }
+        resultOut = 0;
+        return true;
+    }
+    return false;
+}
+
+void Win32HandleImmersiveColorChange(Win32WindowState& state, std::int64_t lParam) {
+    if (lParam != 0 && ::_wcsicmp(reinterpret_cast<const wchar_t*>(lParam), L"ImmersiveColorSet") == 0) {
+        state.systemDark = QuerySystemDarkMode();
+        Win32RefreshIconsOnThemeOrDpi(state);
+        state.activeFramesRemaining = std::max(state.activeFramesRemaining, 3);
+    }
+}
+
 void Win32ShowWindowMode(void* hwndVoid, bool maximized, bool activate) noexcept {
     if (!maximized || !hwndVoid) {
         Win32ShowWindow(hwndVoid, true, activate);

@@ -2,7 +2,7 @@ module;
 
 #include "stb_image_write.h"
 #include <d3d11.h>
-#include <dxgi.h>
+#include <dxgi1_3.h>
 
 module motrix.platform;
 
@@ -27,6 +27,7 @@ struct Dx11Context::Impl {
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<IDXGISwapChain> swapChain;
     ComPtr<ID3D11RenderTargetView> rtv;
+    std::vector<ComPtr<ID3D11ShaderResourceView>> userTextures;
     bool occluded = false;
 
     void CreateRenderTarget() {
@@ -105,13 +106,30 @@ motrix::core::Result<void> Dx11Context::Initialize(void* hwndPtr) {
 }
 
 void Dx11Context::Shutdown() {
-    if (!impl_) {
-        return;
-    }
+    impl_->userTextures.clear();
     impl_->rtv.Reset();
     impl_->swapChain.Reset();
     impl_->context.Reset();
     impl_->device.Reset();
+}
+
+void Dx11Context::Trim() noexcept {
+    if (!impl_->device) {
+        return;
+    }
+    if (impl_->context) {
+        impl_->context->ClearState();
+        impl_->context->Flush();
+    }
+    ComPtr<IDXGIDevice3> dxgiDev3;
+    if (SUCCEEDED(impl_->device->QueryInterface(IID_PPV_ARGS(dxgiDev3.ReleaseAndGetAddressOf())))
+        && dxgiDev3) {
+        dxgiDev3->Trim();
+    }
+}
+
+bool Dx11Context::IsInitialized() const noexcept {
+    return static_cast<bool>(impl_->device);
 }
 
 void Dx11Context::Resize(std::uint32_t width, std::uint32_t height) {
@@ -207,6 +225,58 @@ void* Dx11Context::DeviceRaw() const noexcept {
 
 void* Dx11Context::ContextRaw() const noexcept {
     return impl_->context.Get();
+}
+
+std::uint64_t Dx11Context::UploadRgbaTexture(std::uint64_t existingId,
+                                             int width,
+                                             int height,
+                                             std::span<const std::uint8_t> rgba) {
+    if (!impl_->device || width <= 0 || height <= 0) {
+        return 0;
+    }
+    const auto needed = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u;
+    if (rgba.size() < needed) {
+        return 0;
+    }
+
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = static_cast<UINT>(width);
+    desc.Height = static_cast<UINT>(height);
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData{rgba.data(), static_cast<UINT>(width) * 4u, 0u};
+    ComPtr<ID3D11Texture2D> tex;
+    if (FAILED(impl_->device->CreateTexture2D(&desc, &initData, tex.ReleaseAndGetAddressOf())) || !tex) {
+        return 0;
+    }
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Format = desc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    if (FAILED(
+            impl_->device->CreateShaderResourceView(tex.Get(), &srvDesc, srv.ReleaseAndGetAddressOf()))
+        || !srv) {
+        return 0;
+    }
+
+    const auto outId = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(srv.Get()));
+    if (existingId != 0) {
+        for (auto& slot : impl_->userTextures) {
+            if (static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(slot.Get())) == existingId) {
+                slot = std::move(srv);
+                return outId;
+            }
+        }
+    }
+    impl_->userTextures.push_back(std::move(srv));
+    return outId;
 }
 
 }  // namespace motrix::platform

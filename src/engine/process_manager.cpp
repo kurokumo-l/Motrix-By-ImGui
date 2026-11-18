@@ -63,6 +63,11 @@ public:
 
     motrix::core::Result<void> Start(const EngineSpawnSpec& spec) override {
         (void)Stop(std::chrono::milliseconds(1000));
+        if (IsOsSessionShuttingDown()) {
+            return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                                           motrix::core::ErrorCode::Cancelled,
+                                                           "OS session shutdown in progress"));
+        }
         if (!IsRegularFileSafe(spec.executablePath)) {
             return std::unexpected(
                 motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
@@ -90,8 +95,8 @@ public:
             return std::unexpected(piRes.error());
         }
 
-        ScopedWinHandle childProc(piRes->hProcess);
-        ScopedWinHandle childThread(piRes->hThread);
+        ScopedWinHandle childProc(piRes->process);
+        ScopedWinHandle childThread(piRes->thread);
         if (!::AssignProcessToJobObject(job->Get(), childProc.Get())) {
             ::TerminateProcess(childProc.Get(), 1);
             state_.store(EngineProcessState::Stopped, std::memory_order_release);
@@ -105,14 +110,14 @@ public:
 
         jobHandle_ = std::move(*job);
         procHandle_ = std::move(childProc);
-        pid_.store(piRes->dwProcessId, std::memory_order_release);
+        pid_.store(piRes->processId, std::memory_order_release);
         activeKind_.store(kind, std::memory_order_release);
         state_.store(EngineProcessState::Running, std::memory_order_release);
 
         logger_.Info("engine",
                      "Started {} (pid={}, kind={})",
                      motrix::core::PathToUtf8(spec.executablePath),
-                     piRes->dwProcessId,
+                     piRes->processId,
                      dialect->Name());
         logThread_ = std::jthread([this, pipe = std::move(pipeRead)](std::stop_token st) mutable {
             DrainPipeLoop(std::move(pipe), st);
@@ -168,45 +173,28 @@ public:
     }
 
 private:
-    [[nodiscard]] motrix::core::Result<PROCESS_INFORMATION>
+    [[nodiscard]] motrix::core::Result<detail::ChildProcessHandles>
     LaunchSuspendedChild(const EngineSpawnSpec& spec, const IEngineDialect& dialect, HANDLE stdWrite) {
         auto launchOpts = spec.launchOptions;
         if (launchOpts.hostPid == 0) {
             launchOpts.hostPid = ::GetCurrentProcessId();
         }
         const std::vector<std::string> args = dialect.BuildLaunchArgs(launchOpts, spec.initialOptions);
-        std::wstring cmdLine = BuildCommandLineW(spec.executablePath, args);
-
-        STARTUPINFOW si{};
-        si.cb = sizeof(si);
-        si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        si.hStdOutput = stdWrite;
-        si.hStdError = stdWrite;
-        si.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
-
-        PROCESS_INFORMATION pi{};
         state_.store(EngineProcessState::Starting, std::memory_order_release);
-        const std::wstring workDir = spec.executablePath.parent_path().wstring();
-        const BOOL ok = ::CreateProcessW(spec.executablePath.c_str(),
-                                         cmdLine.data(),
-                                         nullptr,
-                                         nullptr,
-                                         TRUE,
-                                         CREATE_NO_WINDOW | CREATE_SUSPENDED,
-                                         nullptr,
-                                         workDir.empty() ? nullptr : workDir.c_str(),
-                                         &si,
-                                         &pi);
-        if (!ok) {
-            const DWORD err = ::GetLastError();
+        detail::ChildProcessLaunchSpec launchSpec{
+            .executablePath = spec.executablePath,
+            .commandLine = BuildCommandLineW(spec.executablePath, args),
+            .workingDir = spec.executablePath.parent_path(),
+            .stdOutErrHandle = stdWrite,
+            .creationFlags = CREATE_NO_WINDOW | CREATE_SUSPENDED,
+            .suppressErrorDialogs = true,
+        };
+        auto launched = detail::LaunchChildProcessWithHandleList(launchSpec);
+        if (!launched) {
             state_.store(EngineProcessState::Stopped, std::memory_order_release);
-            return std::unexpected(
-                motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
-                                        motrix::core::ErrorCode::IoFailure,
-                                        std::format("CreateProcessW failed with Win32 error {}", err)));
+            return std::unexpected(launched.error());
         }
-        return pi;
+        return *launched;
     }
 
     void DrainPipeLoop(ScopedWinHandle pipe, std::stop_token st) {
@@ -244,17 +232,35 @@ private:
         }
     }
 
+    void HandleWatchedProcessExit(std::stop_token st) {
+        DWORD exitCode = 0;
+        ::GetExitCodeProcess(procHandle_.Get(), &exitCode);
+        if (IsSessionTerminationExitCode(exitCode)) {
+            for (int i = 0; i < 6 && !st.stop_requested() && !IsOsSessionShuttingDown(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            if (st.stop_requested() || IsOsSessionShuttingDown()) {
+                EngineProcessState expected = EngineProcessState::Running;
+                if (state_.compare_exchange_strong(
+                        expected, EngineProcessState::Stopped, std::memory_order_acq_rel)) {
+                    logger_.Info(
+                        "engine", "Engine exited during OS session shutdown (code={})", exitCode);
+                }
+                return;
+            }
+        }
+        EngineProcessState expected = EngineProcessState::Running;
+        if (state_.compare_exchange_strong(
+                expected, EngineProcessState::Crashed, std::memory_order_acq_rel)) {
+            logger_.Warn("engine", "Engine process exited unexpectedly (code={})", exitCode);
+        }
+    }
+
     void WatchProcessExit(std::stop_token st) {
         while (!st.stop_requested() && procHandle_.IsValid()) {
             const DWORD wr = ::WaitForSingleObject(procHandle_.Get(), 200);
             if (wr == WAIT_OBJECT_0) {
-                DWORD exitCode = 0;
-                ::GetExitCodeProcess(procHandle_.Get(), &exitCode);
-                EngineProcessState expected = EngineProcessState::Running;
-                if (state_.compare_exchange_strong(
-                        expected, EngineProcessState::Crashed, std::memory_order_acq_rel)) {
-                    logger_.Warn("engine", "Engine process exited unexpectedly (code={})", exitCode);
-                }
+                HandleWatchedProcessExit(st);
                 break;
             }
         }
@@ -271,6 +277,14 @@ private:
 };
 
 }  // namespace
+
+bool IsOsSessionShuttingDown() noexcept {
+    return ::GetSystemMetrics(SM_SHUTTINGDOWN) != 0;
+}
+
+bool IsSessionTerminationExitCode(std::uint32_t exitCode) noexcept {
+    return exitCode == 0x40010004u || exitCode == 0xC000013Au;
+}
 
 std::unique_ptr<IEngineProcessManager> CreateEngineProcessManager(motrix::core::Logger& logger) {
     return std::make_unique<Win32EngineProcessManager>(logger);

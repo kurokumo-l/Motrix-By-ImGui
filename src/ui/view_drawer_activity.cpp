@@ -5,319 +5,489 @@ module;
 module motrix.ui;
 
 import std;
+import motrix.core;
 import motrix.domain;
 import motrix.app;
 import :views_internal;
+import :el_widgets;
 import :theme;
 import :icons;
 import :scope_guard;
 
 namespace motrix::ui {
+
 namespace {
 
-[[nodiscard]] RgbaColor StatusBadgeColor(const UiFrameContext& ctx,
-                                         motrix::domain::TaskStatus status) noexcept {
-    using S = motrix::domain::TaskStatus;
-    switch (status) {
-        case S::Active: return ctx.palette.primary;
-        case S::Waiting: return HexColor(0x909399);
-        case S::Paused: return HexColor(0xE6A23C);
-        case S::Complete: return HexColor(0x67C23A);
-        case S::Error:
-        case S::Removed: return ctx.palette.progressError;
-    }
-    return ctx.palette.taskMetaText;
-}
+constexpr float kDetailLabelW = 104.0f;
+constexpr float kDetailColGap = 14.0f;
+constexpr float kDetailRowGap = 12.0f;
 
-[[nodiscard]] std::string_view StatusLabelKey(motrix::domain::TaskStatus status) noexcept {
-    using S = motrix::domain::TaskStatus;
-    switch (status) {
-        case S::Active: return "status.active";
-        case S::Waiting: return "status.waiting";
-        case S::Paused: return "status.paused";
-        case S::Complete: return "status.complete";
-        case S::Error: return "status.error";
-        case S::Removed: return "status.removed";
-    }
-    return "status.waiting";
-}
-
-struct DetailRowSpec {
-    std::string_view label{};
-    std::string_view value{};
-    float labelW = 128.0f;
-    std::optional<RgbaColor> valColor{};
-    std::optional<MotrixIcon> actionIcon{};
-    const char* actionId = nullptr;
-    std::function<void()> onAction{};
+struct StatusTagVisual {
+    const char* label = "WAITING";
+    RgbaColor color{};
 };
 
-void DrawFormRow(UiFrameContext& ctx, const DetailRowSpec& row) {
+struct DetailRowSpec {
+    std::string_view label;
+    std::string_view value;
+    float labelW = 104.0f;
+    RgbaColor valueColor{};
+    bool customColor = false;
+    bool wrapValue = false;
+};
+
+[[nodiscard]] StatusTagVisual StatusTagFor(const UiFrameContext& ctx,
+                                           const motrix::domain::DownloadTaskView& task) noexcept {
+    using motrix::domain::TaskStatus;
+    const MotrixPalette& p = ctx.palette;
+    switch (task.status) {
+        case TaskStatus::Active:
+            if (task.isSeeding) {
+                return {"SEEDING", p.progressComplete};
+            }
+            return {"ACTIVE", p.primary};
+        case TaskStatus::Waiting: return {"WAITING", p.subLabelText};
+        case TaskStatus::Paused: return {"PAUSED", p.subLabelText};
+        case TaskStatus::Complete: return {"COMPLETE", p.progressComplete};
+        case TaskStatus::Error: return {"ERROR", p.progressError};
+        case TaskStatus::Removed: return {"REMOVED", p.subLabelText};
+    }
+    return {"WAITING", p.subLabelText};
+}
+
+[[nodiscard]] std::string TrimTrailingZeros(std::string text) {
+    const auto dotPos = text.find('.');
+    if (dotPos == std::string::npos) {
+        return text;
+    }
+    while (!text.empty() && text.back() == '0') {
+        text.pop_back();
+    }
+    if (!text.empty() && text.back() == '.') {
+        text.pop_back();
+    }
+    return text;
+}
+
+[[nodiscard]] std::string FormatTrimmedPercent(double fraction) {
+    const double pct = std::clamp(fraction * 100.0, 0.0, 100.0);
+    return TrimTrailingZeros(std::format("{:.2f}", pct)) + "%";
+}
+
+[[nodiscard]] std::string FormatTrimmedRatio(std::uint64_t uploaded, std::uint64_t total) {
+    if (total == 0 || uploaded == 0) {
+        return "0";
+    }
+    const double ratio = static_cast<double>(uploaded) / static_cast<double>(total);
+    return TrimTrailingZeros(std::format("{:.4f}", ratio));
+}
+
+struct ColonLabelSpec {
+    ImVec2 pos{};
+    float labelW = 104.0f;
+    float rowH = 24.0f;
+    std::string_view label;
+};
+
+void DrawColonLabel(const UiFrameContext& ctx, const ColonLabelSpec& spec) {
+    if (spec.label.empty()) {
+        return;
+    }
+    const std::string text = std::format("{}:", spec.label);
+    FontGuard lf(ctx.fonts, FontRole::Regular, 13.5f);
+    const ImVec2 sz = ImGui::CalcTextSize(text.data(), text.data() + text.size());
+    const float lx = spec.pos.x + std::max(0.0f, spec.labelW - sz.x);
+    const float ly = spec.pos.y + (spec.rowH - sz.y) * 0.5f;
+    ImGui::GetWindowDrawList()->AddText(
+        ImVec2(lx, ly), ToAbgrU32(ctx.palette.subLabelText), text.data(), text.data() + text.size());
+}
+
+void DrawDetailValueRow(UiFrameContext& ctx, const DetailRowSpec& row) {
     const float s = ctx.dpiScale;
-    const float startX = ImGui::GetCursorPosX();
-    {
-        FontGuard fg(ctx.fonts, FontRole::Regular, 13.0f);
-        StyleColorGuard cg(ImGuiCol_Text, ctx.palette.taskMetaText);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(row.label.data(), row.label.data() + row.label.size());
-    }
-    ImGui::SameLine(startX + row.labelW);
-    {
-        FontGuard fg(ctx.fonts, FontRole::Regular, 13.5f);
-        StyleColorGuard cg(ImGuiCol_Text, row.valColor.value_or(ctx.palette.panelTitle));
-        const float wrapW = std::max(
-            80.0f * s, ImGui::GetContentRegionAvail().x - (row.actionIcon ? 32.0f * s : 4.0f * s));
-        TextWrapGuard wrap(ImGui::GetCursorPosX() + wrapW);
+    const float labelW = row.labelW * s;
+    const float gap = kDetailColGap * s;
+    const float rowH = 24.0f * s;
+    const float availW = ImGui::GetContentRegionAvail().x;
+    const float valW = std::max(80.0f * s, availW - labelW - gap);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+
+    DrawColonLabel(ctx, {origin, labelW, rowH, row.label});
+
+    FontGuard vf(ctx.fonts, FontRole::Regular, 13.5f);
+    const float textY = origin.y + (rowH - ImGui::GetFontSize()) * 0.5f;
+    const RgbaColor valCol = row.customColor ? row.valueColor : ctx.palette.panelTitle;
+    float consumedH = rowH;
+    if (row.wrapValue) {
+        StyleColorGuard tc(ImGuiCol_Text, valCol);
+        TextWrapGuard wrap(origin.x - ImGui::GetWindowPos().x + labelW + gap + valW);
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + labelW + gap, textY));
         ImGui::TextUnformatted(row.value.data(), row.value.data() + row.value.size());
+        consumedH = std::max(rowH, ImGui::GetItemRectMax().y - origin.y);
+    } else {
+        ImGui::GetWindowDrawList()->AddText(ImVec2(origin.x + labelW + gap, textY),
+                                            ToAbgrU32(valCol),
+                                            row.value.data(),
+                                            row.value.data() + row.value.size());
     }
-    if (row.actionIcon && row.actionId != nullptr) {
-        ImGui::SameLine();
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float btnSz = 22.0f * s;
-        const float iconSz = 13.0f * s;
-        if (ImGui::InvisibleButton(row.actionId, ImVec2(btnSz, btnSz)) && row.onAction) {
-            row.onAction();
-        }
-        const bool hov = ImGui::IsItemHovered();
-        DrawMotrixIcon(IconSpec{
-            *row.actionIcon,
-            p.x + (btnSz - iconSz) * 0.5f,
-            p.y + (btnSz - iconSz) * 0.5f,
-            iconSz,
-            iconSz,
-            hov ? ctx.palette.primary : ctx.palette.pillIcon,
-            s,
-        });
-    }
-    ImGui::Dummy(ImVec2(0.0f, 4.0f * s));
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + consumedH + 8.0f * s));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
-int HexNibbleVal(char ch) noexcept {
-    if (ch >= '0' && ch <= '9') {
-        return ch - '0';
-    }
-    if (ch >= 'a' && ch <= 'f') {
-        return 10 + (ch - 'a');
-    }
-    if (ch >= 'A' && ch <= 'F') {
-        return 10 + (ch - 'A');
-    }
-    return 0;
+void DrawStatusTagRow(UiFrameContext& ctx, const motrix::domain::DownloadTaskView& task) {
+    const float s = ctx.dpiScale;
+    const float labelW = kDetailLabelW * s;
+    const float gap = kDetailColGap * s;
+    const float rowH = 26.0f * s;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    DrawColonLabel(ctx, {origin, labelW, rowH, ctx.tr.Tr("detail.status")});
+
+    const StatusTagVisual tag = StatusTagFor(ctx, task);
+    FontGuard tf(ctx.fonts, FontRole::Regular, 11.5f);
+    const ImVec2 txtSz = ImGui::CalcTextSize(tag.label);
+    const float padX = 9.0f * s;
+    const float tagW = txtSz.x + padX * 2.0f;
+    const float tagH = 24.0f * s;
+    const ImVec2 tMin(origin.x + labelW + gap, origin.y + (rowH - tagH) * 0.5f);
+    const ImVec2 tMax(tMin.x + tagW, tMin.y + tagH);
+
+    const float fillA = ctx.palette.isDark ? 0.14f : 0.10f;
+    const float borderA = ctx.palette.isDark ? 0.36f : 0.28f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(tMin, tMax, ToAbgrU32(WithAlpha(tag.color, fillA)), 4.0f * s);
+    dl->AddRect(tMin, tMax, ToAbgrU32(WithAlpha(tag.color, borderA)), 4.0f * s, 0, 1.0f);
+    dl->AddText(
+        ImVec2(tMin.x + padX, tMin.y + (tagH - txtSz.y) * 0.5f), ToAbgrU32(tag.color), tag.label);
+
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + rowH + 8.0f * s));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
-RgbaColor BucketColor(const MotrixPalette& p, int nibble) noexcept {
-    if (nibble <= 0) {
-        return p.graphicS0;
+void DrawDirPathRow(UiFrameContext& ctx, const motrix::domain::DownloadTaskView& task) {
+    const float s = ctx.dpiScale;
+    const float labelW = kDetailLabelW * s;
+    const float gap = kDetailColGap * s;
+    const float rowH = 32.0f * s;
+    const float availW = ImGui::GetContentRegionAvail().x;
+    const float fieldW = std::max(120.0f * s, availW - labelW - gap);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    DrawColonLabel(ctx, {origin, labelW, rowH, ctx.tr.Tr("detail.dir")});
+
+    const std::string fullPath = motrix::domain::ResolveTaskFullPath(task);
+    std::array<char, 1024> dirBuf{};
+    CopyUtf8ToBuffer(fullPath, dirBuf.data(), dirBuf.size());
+
+    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
+    ImGui::SetCursorScreenPos(ImVec2(origin.x + labelW + gap, origin.y));
+    const ElCompositeResult res = ElCompositeInput(elSt,
+                                                   ElCompositeSpec{
+                                                       "##drw_save_path",
+                                                       dirBuf.data(),
+                                                       dirBuf.size(),
+                                                       fieldW,
+                                                       std::nullopt,
+                                                       MotrixIcon::Folder,
+                                                       {},
+                                                       true,
+                                                       false,
+                                                       false,
+                                                   });
+    if (res.rightClicked) {
+        ctx.sink.Dispatch(motrix::app::ShowInFolderCmd{task.gid});
     }
-    if (nibble <= 4) {
-        return p.graphicS1;
-    }
-    if (nibble <= 9) {
-        return p.graphicS2;
-    }
-    if (nibble <= 14) {
-        return p.graphicS3;
-    }
-    return p.graphicS4;
+
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + rowH + kDetailRowGap * s));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
-void RenderTaskGraphicHeatmap(UiFrameContext& ctx,
-                              std::string_view bitfieldHex,
-                              std::uint32_t numPieces) {
+void DrawBtInfoDivider(const UiFrameContext& ctx) {
     const float s = ctx.dpiScale;
     const float availW = ImGui::GetContentRegionAvail().x;
-    const float pad = 12.0f * s;
-    const float atom = 10.0f * s;
-    const float gutter = 3.0f * s;
-    const float step = atom + gutter;
-    const float radius = 2.0f * s;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float divH = 34.0f * s;
+    const float lineY = origin.y + divH * 0.5f;
+    const std::string_view btLbl = ctx.tr.Tr("detail.bt_info");
 
-    const int cols = std::max(1, static_cast<int>((availW - pad * 2.0f + gutter) / step));
-    const std::size_t rawCount =
-        !bitfieldHex.empty() ? bitfieldHex.size()
-                             : std::clamp<std::size_t>(numPieces > 0 ? (numPieces + 3) / 4 : 36, 24, 96);
-    constexpr std::size_t kMaxCells = 360;
-    const std::size_t cellCount = std::min(rawCount, kMaxCells);
-    const int rows = static_cast<int>((cellCount + static_cast<std::size_t>(cols) - 1)
-                                      / static_cast<std::size_t>(cols));
-    const float boxH = pad * 2.0f + static_cast<float>(rows) * atom
-                       + static_cast<float>(std::max(0, rows - 1)) * gutter;
+    FontGuard bf(ctx.fonts, FontRole::Regular, 13.0f);
+    const ImVec2 txtSz = ImGui::CalcTextSize(btLbl.data(), btLbl.data() + btLbl.size());
+    const float iconSz = 13.0f * s;
+    const float iconGap = 6.0f * s;
+    const float padX = 12.0f * s;
+    const float contentW = iconSz + iconGap + txtSz.x;
+    const float cx = origin.x + availW * 0.5f;
+    const float gapL = cx - contentW * 0.5f - padX;
+    const float gapR = cx + contentW * 0.5f + padX;
 
-    const ImVec2 min = ImGui::GetCursorScreenPos();
-    const ImVec2 max(min.x + availW, min.y + boxH);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(min, max, ToAbgrU32(ctx.palette.graphicBoxBg), 4.0f * s);
-    dl->AddRect(min, max, ToAbgrU32(ctx.palette.borderSubtle), 4.0f * s, 0, 1.0f);
-
-    const ImU32 outlineCol = ToAbgrU32(ctx.palette.graphicAtomOutline);
-    for (std::size_t i = 0; i < cellCount; ++i) {
-        const int r = static_cast<int>(i / static_cast<std::size_t>(cols));
-        const int c = static_cast<int>(i % static_cast<std::size_t>(cols));
-        const float ax = min.x + pad + static_cast<float>(c) * step;
-        const float ay = min.y + pad + static_cast<float>(r) * step;
-
-        int nib = 0;
-        if (!bitfieldHex.empty()) {
-            const std::size_t srcIdx = (i * bitfieldHex.size()) / cellCount;
-            nib = HexNibbleVal(bitfieldHex[std::min(srcIdx, bitfieldHex.size() - 1)]);
-        }
-        const RgbaColor fill = BucketColor(ctx.palette, nib);
-        dl->AddRectFilled(ImVec2(ax, ay), ImVec2(ax + atom, ay + atom), ToAbgrU32(fill), radius);
-        dl->AddRect(ImVec2(ax, ay), ImVec2(ax + atom, ay + atom), outlineCol, radius, 0, 1.0f);
+    const ImU32 lineCol = ToAbgrU32(ctx.palette.borderSubtle);
+    if (gapL > origin.x) {
+        dl->AddLine(ImVec2(origin.x, lineY), ImVec2(gapL, lineY), lineCol, 1.0f);
+    }
+    if (gapR < origin.x + availW) {
+        dl->AddLine(ImVec2(gapR, lineY), ImVec2(origin.x + availW, lineY), lineCol, 1.0f);
     }
 
-    ImGui::Dummy(ImVec2(availW, boxH + 12.0f * s));
+    const float contentX = cx - contentW * 0.5f;
+    DrawMotrixIcon(IconSpec{
+        MotrixIcon::Magnet,
+        contentX,
+        lineY - iconSz * 0.5f,
+        iconSz,
+        iconSz,
+        ctx.palette.panelTitle,
+        s,
+    });
+    dl->AddText(ImVec2(contentX + iconSz + iconGap, lineY - txtSz.y * 0.5f),
+                ToAbgrU32(ctx.palette.panelTitle),
+                btLbl.data(),
+                btLbl.data() + btLbl.size());
+
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + divH + 6.0f * s));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+}
+
+void DrawInfoHashRow(UiFrameContext& ctx, std::string_view hash) {
+    const float s = ctx.dpiScale;
+    const float labelW = kDetailLabelW * s;
+    const float gap = kDetailColGap * s;
+    const float rowH = 24.0f * s;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    DrawColonLabel(ctx, {origin, labelW, rowH, ctx.tr.Tr("detail.info_hash")});
+
+    FontGuard hf(ctx.fonts, FontRole::Regular, 13.5f);
+    const float valX = origin.x + labelW + gap;
+    const float textY = origin.y + (rowH - ImGui::GetFontSize()) * 0.5f;
+    const ImVec2 hSz = ImGui::CalcTextSize(hash.data(), hash.data() + hash.size());
+    ImGui::GetWindowDrawList()->AddText(
+        ImVec2(valX, textY), ToAbgrU32(ctx.palette.panelTitle), hash.data(), hash.data() + hash.size());
+
+    const float btnSz = 20.0f * s;
+    const ImVec2 btnPos(valX + hSz.x + 6.0f * s, origin.y + (rowH - btnSz) * 0.5f);
+    ImGui::SetCursorScreenPos(btnPos);
+    if (ImGui::InvisibleButton("##drw_copy_hash", ImVec2(btnSz, btnSz))) {
+        ctx.host.CopyTextToClipboard(hash);
+    }
+    const bool hov = ImGui::IsItemHovered();
+    if (hov) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        ElDrawTooltip({ctx.palette, ctx.fonts, s, &ctx.anim},
+                      {ctx.tr.Tr("task.copy_link"), ElTooltipPlacement::Top});
+    }
+    const float icoSz = 12.0f * s;
+    DrawMotrixIcon(IconSpec{
+        MotrixIcon::Link,
+        btnPos.x + (btnSz - icoSz) * 0.5f,
+        btnPos.y + (btnSz - icoSz) * 0.5f,
+        icoSz,
+        icoSz,
+        hov ? ctx.palette.primary : ctx.palette.subLabelText,
+        s,
+    });
+
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + rowH + 8.0f * s));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+}
+
+[[nodiscard]] RgbaColor BucketColor(const MotrixPalette& p, int nibble) noexcept {
+    if (nibble <= 3) {
+        return p.graphicS0;
+    }
+    if (nibble <= 7) {
+        return p.graphicS1;
+    }
+    if (nibble <= 11) {
+        return p.graphicS2;
+    }
+    return p.graphicS3;
+}
+
+void RenderTaskGraphicHeatmap(UiFrameContext& ctx, std::string_view bitfieldHex) {
+    const float s = ctx.dpiScale;
+    const float availW = ImGui::GetContentRegionAvail().x;
+    const float atom = 10.0f * s;
+    const float gutter = 4.0f * s;
+    const float step = atom + gutter;
+    const float padX = 16.0f * s;
+    const float padY = 14.0f * s;
+    const int cols = std::max(1, static_cast<int>((availW - padX * 2.0f + gutter) / step));
+    const std::size_t cellCount = bitfieldHex.size();
+    const int rows =
+        cellCount == 0 ? 1 : static_cast<int>((cellCount + static_cast<std::size_t>(cols) - 1) / cols);
+    const float boxH = padY * 2.0f + static_cast<float>(rows) * atom
+                       + static_cast<float>(std::max(0, rows - 1)) * gutter;
+
+    const ImVec2 boxMin = ImGui::GetCursorScreenPos();
+    const ImVec2 boxMax(boxMin.x + availW, boxMin.y + boxH);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(boxMin, boxMax, ToAbgrU32(ctx.palette.graphicBoxBg), 4.0f * s);
+    dl->AddRect(boxMin, boxMax, ToAbgrU32(ctx.palette.borderSubtle), 4.0f * s, 0, 1.0f);
+
+    const float startX =
+        (cellCount >= static_cast<std::size_t>(cols))
+            ? boxMin.x + std::max(padX, (availW - static_cast<float>(cols) * step + gutter) * 0.5f)
+            : boxMin.x + padX;
+    for (std::size_t i = 0; i < cellCount; ++i) {
+        const char ch = bitfieldHex[i];
+        int nib = 0;
+        if (ch >= '0' && ch <= '9') {
+            nib = ch - '0';
+        } else if (ch >= 'a' && ch <= 'f') {
+            nib = 10 + (ch - 'a');
+        } else if (ch >= 'A' && ch <= 'F') {
+            nib = 10 + (ch - 'A');
+        }
+        const int col = static_cast<int>(i) % cols;
+        const int row = static_cast<int>(i) / cols;
+        const float cx = startX + static_cast<float>(col) * step;
+        const float cy = boxMin.y + padY + static_cast<float>(row) * step;
+        dl->AddRectFilled(ImVec2(cx, cy),
+                          ImVec2(cx + atom, cy + atom),
+                          ToAbgrU32(BucketColor(ctx.palette, nib)),
+                          2.0f * s);
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(boxMin.x, boxMax.y + 18.0f * s));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+}
+
+void DrawActivityProgressBlock(UiFrameContext& ctx, const motrix::domain::DownloadTaskView& task) {
+    const float s = ctx.dpiScale;
+    const float labelW = kDetailLabelW * s;
+    const float gap = kDetailColGap * s;
+    const float rowH = 24.0f * s;
+    const float availW = ImGui::GetContentRegionAvail().x;
+    const float valW = std::max(100.0f * s, availW - labelW - gap);
+    const float barX = ImGui::GetCursorScreenPos().x + labelW + gap;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+
+    DrawColonLabel(ctx, {origin, labelW, rowH, ctx.tr.Tr("detail.progress_info")});
+
+    const double frac = (task.totalLength > 0) ? std::clamp(static_cast<double>(task.completedLength)
+                                                                / static_cast<double>(task.totalLength),
+                                                            0.0,
+                                                            1.0)
+                                               : 0.0;
+    const std::string pctStr = FormatTrimmedPercent(frac);
+
+    FontGuard pf(ctx.fonts, FontRole::Regular, 13.5f);
+    const float pctSlotW = 54.0f * s;
+    const float barW = std::max(60.0f * s, valW - pctSlotW - 10.0f * s);
+    const float barH = 6.0f * s;
+    const float barY = origin.y + (rowH - barH) * 0.5f;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(ImVec2(barX, barY),
+                      ImVec2(barX + barW, barY + barH),
+                      ToAbgrU32(ctx.palette.progressTrack),
+                      barH * 0.5f);
+    if (frac > 0.001) {
+        const float fillW = std::max(barH, barW * static_cast<float>(frac));
+        dl->AddRectFilled(ImVec2(barX, barY),
+                          ImVec2(barX + fillW, barY + barH),
+                          ToAbgrU32(ProgressColorFor(ctx.palette, task)),
+                          barH * 0.5f);
+    }
+
+    const float pctTextY = origin.y + (rowH - ImGui::GetFontSize()) * 0.5f;
+    dl->AddText(
+        ImVec2(barX + barW + 14.0f * s, pctTextY), ToAbgrU32(ctx.palette.panelTitle), pctStr.c_str());
+
+    const float sizeRowY = origin.y + rowH + 6.0f * s;
+    const std::string sizeText = std::format("{} / {}",
+                                             motrix::domain::FormatBytesFixed(task.completedLength, 2),
+                                             motrix::domain::FormatBytesFixed(task.totalLength, 2));
+    dl->AddText(ImVec2(barX, sizeRowY), ToAbgrU32(ctx.palette.subLabelText), sizeText.c_str());
+
+    if (task.status == motrix::domain::TaskStatus::Active && !task.isSeeding) {
+        if (const auto eta = motrix::domain::EtaSecondsOf(task); eta.has_value()) {
+            const std::string etaText = motrix::domain::FormatRemainingEta(
+                motrix::domain::RemainingBytesOf(task), task.downloadSpeed, ctx.tr.Tr("task.remaining"));
+            const ImVec2 eSz = ImGui::CalcTextSize(etaText.c_str());
+            dl->AddText(ImVec2(barX + barW - eSz.x, sizeRowY),
+                        ToAbgrU32(ctx.palette.subLabelText),
+                        etaText.c_str());
+        }
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, sizeRowY + 26.0f * s + 4.0f * s));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
 }  // namespace
 
-void RenderGeneralBtMetaRows(UiFrameContext& ctx,
-                             const motrix::domain::DownloadTaskView& task,
-                             float labelW) {
-    if (task.taskType != motrix::domain::TaskType::BitTorrent && !task.btInfo.has_value()) {
-        if (!task.uri.empty()) {
-            DrawFormRow(ctx,
-                        DetailRowSpec{
-                            "URL",
-                            task.uri,
-                            labelW,
-                            std::nullopt,
-                            MotrixIcon::Link,
-                            "##detail_copy_uri",
-                            [&]() { ctx.sink.Dispatch(motrix::app::CopyTaskLinkCmd{task.gid}); },
-                        });
-        }
-        return;
-    }
-
-    if (task.btInfo && !task.btInfo->infoHash.empty()) {
-        DrawFormRow(ctx,
-                    DetailRowSpec{
-                        ctx.tr.Tr("detail.info_hash"),
-                        task.btInfo->infoHash,
-                        labelW,
-                        std::nullopt,
-                        MotrixIcon::Link,
-                        "##detail_copy_hash",
-                        [&]() { ctx.sink.Dispatch(motrix::app::CopyTaskLinkCmd{task.gid}); },
-                    });
-    }
-    if (task.pieceLength > 0) {
-        DrawFormRow(ctx,
-                    DetailRowSpec{ctx.tr.Tr("detail.piece_length"),
-                                  motrix::domain::FormatBytes(task.pieceLength),
-                                  labelW});
-    }
-    if (task.numPieces > 0) {
-        DrawFormRow(
-            ctx, DetailRowSpec{ctx.tr.Tr("detail.num_pieces"), std::to_string(task.numPieces), labelW});
-    }
-    if (task.btInfo && !task.btInfo->creationDate.empty() && task.btInfo->creationDate != "0") {
-        DrawFormRow(ctx,
-                    DetailRowSpec{ctx.tr.Tr("detail.creation_date"), task.btInfo->creationDate, labelW});
-    }
-    if (task.btInfo && !task.btInfo->comment.empty()) {
-        DrawFormRow(ctx, DetailRowSpec{ctx.tr.Tr("detail.comment"), task.btInfo->comment, labelW});
-    }
-}
-
 void RenderGeneralTab(UiFrameContext& ctx, const motrix::domain::DownloadTaskView& task) {
-    const float labelW = 128.0f * ctx.dpiScale;
+    const float s = ctx.dpiScale;
+    ImGui::Dummy(ImVec2(0.0f, 4.0f * s));
 
-    DrawFormRow(ctx, DetailRowSpec{ctx.tr.Tr("detail.name"), task.name, labelW});
-    DrawFormRow(ctx,
-                DetailRowSpec{
-                    ctx.tr.Tr("detail.dir"),
-                    task.dir,
-                    labelW,
-                    std::nullopt,
-                    MotrixIcon::Folder,
-                    "##detail_open_dir",
-                    [&]() { ctx.sink.Dispatch(motrix::app::ShowInFolderCmd{task.gid}); },
-                });
-
-    const RgbaColor stColor = StatusBadgeColor(ctx, task.status);
-    DrawFormRow(
-        ctx,
-        DetailRowSpec{
-            ctx.tr.Tr("detail.status"), ctx.tr.Tr(StatusLabelKey(task.status)), labelW, stColor});
+    const std::string_view displayName =
+        (task.btInfo.has_value() && !task.btInfo->name.empty()) ? task.btInfo->name : task.name;
+    DrawDetailValueRow(ctx, {ctx.tr.Tr("detail.name"), displayName, kDetailLabelW, {}, false, true});
+    DrawDirPathRow(ctx, task);
+    DrawStatusTagRow(ctx, task);
 
     if (task.errorCode != 0) {
-        DrawFormRow(ctx,
-                    DetailRowSpec{ctx.tr.Tr("detail.error_code"),
-                                  std::to_string(task.errorCode),
-                                  labelW,
-                                  ctx.palette.progressError});
+        DrawDetailValueRow(ctx,
+                           {ctx.tr.Tr("detail.error_code"),
+                            std::to_string(task.errorCode),
+                            kDetailLabelW,
+                            ctx.palette.progressError,
+                            true});
     }
     if (!task.errorMessage.empty()) {
-        DrawFormRow(
-            ctx,
-            DetailRowSpec{
-                ctx.tr.Tr("detail.error_msg"), task.errorMessage, labelW, ctx.palette.progressError});
+        DrawDetailValueRow(ctx,
+                           {ctx.tr.Tr("detail.error_msg"),
+                            task.errorMessage,
+                            kDetailLabelW,
+                            ctx.palette.progressError,
+                            true,
+                            true});
     }
 
-    RenderGeneralBtMetaRows(ctx, task, labelW);
+    if (task.taskType == motrix::domain::TaskType::BitTorrent && task.btInfo.has_value()) {
+        const auto& bt = *task.btInfo;
+        DrawBtInfoDivider(ctx);
+        if (!bt.infoHash.empty()) {
+            DrawInfoHashRow(ctx, bt.infoHash);
+        }
+        DrawDetailValueRow(
+            ctx,
+            {ctx.tr.Tr("detail.piece_length"), motrix::domain::FormatBytesFixed(task.pieceLength, 1)});
+        DrawDetailValueRow(ctx, {ctx.tr.Tr("detail.num_pieces"), std::to_string(task.numPieces)});
+        const bool zhCn = (ctx.tr.CurrentLocale() == motrix::core::Locale::ZhCN);
+        const std::string creationStr =
+            (bt.creationTimestamp > 0)
+                ? motrix::domain::FormatUnixTimestampLocal(bt.creationTimestamp, zhCn)
+                : bt.creationDate;
+        if (!creationStr.empty()) {
+            DrawDetailValueRow(ctx, {ctx.tr.Tr("detail.creation_date"), creationStr});
+        }
+        if (!bt.comment.empty()) {
+            DrawDetailValueRow(
+                ctx, {ctx.tr.Tr("detail.comment"), bt.comment, kDetailLabelW, {}, false, true});
+        }
+    }
 }
 
 void RenderActivityTab(UiFrameContext& ctx, const motrix::domain::DownloadTaskView& task) {
     const float s = ctx.dpiScale;
-    const float labelW = 128.0f * s;
-
-    RenderTaskGraphicHeatmap(ctx, task.bitfieldHex, task.numPieces);
-
-    const float progress = motrix::domain::ProgressOf(task);
-    const float barW = std::max(100.0f * s, ImGui::GetContentRegionAvail().x - 56.0f * s);
-    const ImVec2 bMin = ImGui::GetCursorScreenPos();
-    const float barH = 6.0f * s;
-    const float barY = bMin.y + 6.0f * s;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(ImVec2(bMin.x, barY),
-                      ImVec2(bMin.x + barW, barY + barH),
-                      ToAbgrU32(ctx.palette.progressTrack),
-                      3.0f * s);
-    if (progress > 0.0f) {
-        const RgbaColor fill = (task.status == motrix::domain::TaskStatus::Complete)
-                                   ? HexColor(0x67C23A)
-                                   : ctx.palette.primary;
-        dl->AddRectFilled(ImVec2(bMin.x, barY),
-                          ImVec2(bMin.x + barW * std::clamp(progress, 0.0f, 1.0f), barY + barH),
-                          ToAbgrU32(fill),
-                          3.0f * s);
-    }
-    ImGui::SetCursorScreenPos(ImVec2(bMin.x + barW + 10.0f * s, bMin.y));
-    {
-        FontGuard fg(ctx.fonts, FontRole::Medium, 13.0f);
-        StyleColorGuard cg(ImGuiCol_Text, ctx.palette.taskMetaText);
-        ImGui::Text("%.1f%%", progress * 100.0f);
-    }
-    ImGui::Dummy(ImVec2(0.0f, 10.0f * s));
-
-    const std::string compText = std::format("{} / {}",
-                                             motrix::domain::FormatBytes(task.completedLength),
-                                             motrix::domain::FormatBytes(task.totalLength));
-    DrawFormRow(ctx, DetailRowSpec{ctx.tr.Tr("detail.completed"), compText, labelW});
-    DrawFormRow(ctx,
-                DetailRowSpec{ctx.tr.Tr("detail.dl_speed"),
-                              motrix::domain::FormatSpeed(task.downloadSpeed),
-                              labelW});
-    DrawFormRow(
-        ctx, DetailRowSpec{ctx.tr.Tr("detail.connections"), std::to_string(task.connections), labelW});
+    ImGui::Dummy(ImVec2(0.0f, 4.0f * s));
+    RenderTaskGraphicHeatmap(ctx, task.bitfieldHex);
+    DrawActivityProgressBlock(ctx, task);
 
     if (task.taskType == motrix::domain::TaskType::BitTorrent) {
-        DrawFormRow(ctx,
-                    DetailRowSpec{ctx.tr.Tr("detail.seeders"), std::to_string(task.numSeeders), labelW});
-        DrawFormRow(ctx,
-                    DetailRowSpec{ctx.tr.Tr("detail.ul_speed"),
-                                  motrix::domain::FormatSpeed(task.uploadSpeed),
-                                  labelW});
-        DrawFormRow(ctx,
-                    DetailRowSpec{ctx.tr.Tr("detail.uploaded"),
-                                  motrix::domain::FormatBytes(task.uploadLength),
-                                  labelW});
-        const double ratio = (task.completedLength > 0) ? static_cast<double>(task.uploadLength)
-                                                              / static_cast<double>(task.completedLength)
-                                                        : 0.0;
-        DrawFormRow(ctx, DetailRowSpec{ctx.tr.Tr("detail.ratio"), std::format("{:.2f}", ratio), labelW});
+        DrawDetailValueRow(ctx, {ctx.tr.Tr("detail.seeders"), std::to_string(task.numSeeders)});
+        DrawDetailValueRow(ctx, {ctx.tr.Tr("detail.connections"), std::to_string(task.connections)});
+        DrawDetailValueRow(
+            ctx, {ctx.tr.Tr("detail.dl_speed"), motrix::domain::FormatSpeed(task.downloadSpeed)});
+        DrawDetailValueRow(
+            ctx, {ctx.tr.Tr("detail.ul_speed"), motrix::domain::FormatSpeed(task.uploadSpeed)});
+        DrawDetailValueRow(
+            ctx, {ctx.tr.Tr("detail.uploaded"), motrix::domain::FormatBytesFixed(task.uploadLength, 1)});
+        DrawDetailValueRow(
+            ctx, {ctx.tr.Tr("detail.ratio"), FormatTrimmedRatio(task.uploadLength, task.totalLength)});
+    } else {
+        DrawDetailValueRow(ctx, {ctx.tr.Tr("detail.connections"), std::to_string(task.connections)});
+        DrawDetailValueRow(
+            ctx, {ctx.tr.Tr("detail.dl_speed"), motrix::domain::FormatSpeed(task.downloadSpeed)});
     }
 }
 

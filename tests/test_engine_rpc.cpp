@@ -4,6 +4,8 @@ import std;
 import motrix.core;
 import motrix.domain;
 import motrix.engine;
+import motrix.app;
+import motrix.test_server;
 
 using namespace motrix::domain;
 using namespace motrix::engine;
@@ -12,7 +14,8 @@ TEST_CASE("UserPreferences and SystemConfig JSON round-trip cleanly", "[domain][
     UserPreferences prefs{};
     prefs.theme = ThemePreference::Dark;
     prefs.locale = motrix::core::Locale::ZhCN;
-    prefs.hideAppMenu = true;
+    prefs.traySpeedometer = false;
+    prefs.aria2NextMirrorPrefix = "https://ghproxy.net/";
     prefs.newTaskShowDownloading = false;
     prefs.engineBinPath = "C:/Tools/aria2c.exe";
 
@@ -21,7 +24,8 @@ TEST_CASE("UserPreferences and SystemConfig JSON round-trip cleanly", "[domain][
     REQUIRE(parsedPrefs.has_value());
     CHECK(parsedPrefs->theme == ThemePreference::Dark);
     CHECK(parsedPrefs->locale == motrix::core::Locale::ZhCN);
-    CHECK(parsedPrefs->hideAppMenu == true);
+    CHECK_FALSE(parsedPrefs->traySpeedometer);
+    CHECK(parsedPrefs->aria2NextMirrorPrefix == "https://ghproxy.net/");
     CHECK(parsedPrefs->newTaskShowDownloading == false);
     CHECK(parsedPrefs->engineBinPath == "C:/Tools/aria2c.exe");
 
@@ -198,6 +202,7 @@ TEST_CASE("Live engine process spawn and WebSocket JSON-RPC smoke test", "[engin
         .stateOrSessionPath = probeDialect->UsesStateDirInsteadOfAria2Files()
                                   ? (tempDir / "state")
                                   : (tempDir / "engine.session"),
+        .sessionFilePath = tempDir / "engine.session",
         .hostPid = CurrentHostProcessId(),
     };
 
@@ -264,11 +269,169 @@ TEST_CASE("Live engine process spawn and WebSocket JSON-RPC smoke test", "[engin
     CHECK(sync2->waiting.empty());
     CHECK(sync2->stopped.empty());
 
-    if (!probeDialect->UsesStateDirInsteadOfAria2Files()) {
-        CHECK(rpc->SaveSession().has_value());
-    }
+    CHECK(rpc->SaveSession().has_value());
     (void)rpc->Shutdown(false);
     rpc->Disconnect();
     CHECK(proc->Stop(std::chrono::milliseconds(3000)).has_value());
     CHECK(proc->State() == EngineProcessState::Stopped);
+}
+
+namespace {
+
+struct ConfSyncTempDir {
+    std::filesystem::path root;
+    explicit ConfSyncTempDir(std::string_view suffix)
+        : root(std::filesystem::temp_directory_path() / suffix) {
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+        std::filesystem::create_directories(root / "app", ec);
+        std::filesystem::create_directories(root / "dl", ec);
+    }
+    ~ConfSyncTempDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+    }
+};
+
+[[nodiscard]] std::string WriteConfSyncConfigs(const ConfSyncTempDir& td) {
+    UserPreferences prefs = DefaultUserPreferences();
+    prefs.autoSyncTracker = false;
+    prefs.enableUpnp = false;
+    SystemConfig sys = DefaultSystemConfig();
+    sys.rpcListenPort = motrix::test::PickFreeEphemeralPort();
+    sys.rpcSecret = "conf_sync_sec";
+    sys.dir = motrix::core::PathToUtf8(td.root / "dl");
+    sys.listenPort = motrix::test::PickFreeEphemeralPort();
+    sys.dhtListenPort = motrix::test::PickFreeEphemeralPort();
+    REQUIRE(
+        motrix::core::WriteTextAtomic(td.root / "app" / "user.json", SerializeUserPreferencesJson(prefs))
+            .has_value());
+    REQUIRE(
+        motrix::core::WriteTextAtomic(td.root / "app" / "system.json", SerializeSystemConfigJson(sys))
+            .has_value());
+    return sys.dir;
+}
+
+}  // namespace
+
+TEST_CASE("Live aria2.conf generation and SavePreferencesCmd live RPC option sync",
+          "[downloads][live][config]") {
+    using namespace motrix::app;
+    using namespace motrix::test;
+    const auto exeOpt = DiscoverEngineExecutable("");
+    if (!exeOpt.has_value()) {
+        SUCCEED("No local aria2c/aria2-next binary found; skipping.");
+        return;
+    }
+    const auto probe = ProbeEngineBinaryVersion(*exeOpt);
+    REQUIRE(probe.has_value());
+    if (probe->kind != EngineKind::Aria2Next) {
+        SUCCEED("aria2-next test skipped on classic aria2.");
+        return;
+    }
+
+    ConfSyncTempDir td("motrix_native_conf_sync_suite");
+    LocalTestServer server;
+    const std::string dlDir = WriteConfSyncConfigs(td);
+
+    motrix::core::Logger logger;
+    CoordinatorOptions opts{};
+    opts.loadPersistedConfig = true;
+    opts.appDataDir = td.root / "app";
+    opts.defaultDownloadDir = dlDir;
+    AppCoordinator coord(opts, logger);
+    REQUIRE(
+        WaitUntil([&] { return coord.Snapshot()->engineState == EngineConnectionState::Connected; }));
+    CHECK(coord.Snapshot()->engineError.empty());
+
+    const auto confPath = td.root / "app" / "aria2.conf";
+    REQUIRE(WaitUntil([&] { return std::filesystem::is_regular_file(confPath); }));
+    const auto initConf = motrix::core::ReadFileUtf8(confPath);
+    REQUIRE(initConf.has_value());
+    CHECK(initConf->find("bt-encryption=preferred") != std::string::npos);
+    CHECK(initConf->find("bt-enable-lpd=true") != std::string::npos);
+
+    auto snap = coord.Snapshot();
+    UserPreferences prefs = snap->prefs;
+    SystemConfig sys = snap->sysConfig;
+    prefs.keepSeeding = true;
+    sys.btEncryption = "required";
+    sys.btTransport = "tcp";
+    sys.fileAllocation = "prealloc";
+    sys.mediaMode = "file";
+    sys.btFirstLastPieceFirst = true;
+    sys.detachShareOnly = true;
+    sys.btMaxPeers = 42;
+    coord.Dispatch(SavePreferencesCmd{prefs, sys, false});
+
+    REQUIRE(WaitUntil([&] {
+        const auto txt = motrix::core::ReadFileUtf8(confPath);
+        return txt && txt->find("bt-encryption=required") != std::string::npos
+               && txt->find("bt-transport=tcp") != std::string::npos
+               && txt->find("media=file") != std::string::npos
+               && txt->find("seed-ratio=0.00") != std::string::npos
+               && txt->find("bt-max-peers=42") != std::string::npos;
+    }));
+
+    prefs.useProxy = true;
+    sys.allProxy = "http://127.0.0.1:18089";
+    sys.noProxy = "example.invalid";
+    sys.userAgent = "MotrixTestUA/1.0";
+    sys.btTracker = "udp://tracker.example.invalid:6969/announce";
+    coord.Dispatch(SavePreferencesCmd{prefs, sys, false});
+    REQUIRE(WaitUntil([&] {
+        const auto txt = motrix::core::ReadFileUtf8(confPath);
+        return txt && txt->find("all-proxy=http://127.0.0.1:18089") != std::string::npos
+               && txt->find("user-agent=MotrixTestUA/1.0") != std::string::npos
+               && txt->find("bt-tracker=udp://tracker.example.invalid:6969/announce")
+                      != std::string::npos;
+    }));
+
+    prefs.useProxy = false;
+    sys.userAgent.clear();
+    sys.btTracker.clear();
+    coord.Dispatch(SavePreferencesCmd{prefs, sys, false});
+    REQUIRE(WaitUntil([&] {
+        const auto txt = motrix::core::ReadFileUtf8(confPath);
+        return txt && txt->find("all-proxy=") == std::string::npos
+               && txt->find("no-proxy=") == std::string::npos
+               && txt->find("user-agent=") == std::string::npos
+               && txt->find("bt-tracker=") == std::string::npos;
+    }));
+
+    coord.Dispatch(SubmitAddUriCmd{
+        .uris = {server.BaseUrl() + "/exact/small/after_prefs.bin"},
+        .dir = dlDir,
+        .split = 2,
+    });
+    REQUIRE(WaitUntil([&] {
+        for (const auto& t : coord.Snapshot()->stoppedTasks) {
+            if (t.name.find("after_prefs.bin") != std::string::npos
+                && t.status == TaskStatus::Complete) {
+                return true;
+            }
+        }
+        return false;
+    }));
+    CHECK(coord.Snapshot()->engineError.empty());
+}
+
+TEST_CASE("motrix.engine and app OS shutdown session guards and idempotent teardown",
+          "[engine][shutdown]") {
+    CHECK(IsSessionTerminationExitCode(0x40010004u));
+    CHECK(IsSessionTerminationExitCode(0xC000013Au));
+    CHECK_FALSE(IsSessionTerminationExitCode(0u));
+    CHECK_FALSE(IsSessionTerminationExitCode(1u));
+    CHECK_FALSE(IsOsSessionShuttingDown());
+
+    motrix::core::Logger logger;
+    motrix::app::CoordinatorOptions opts{};
+    opts.enableEngine = false;
+    opts.loadPersistedConfig = false;
+    motrix::app::AppCoordinator coord(opts, logger);
+    coord.SetSessionEnding(true);
+    coord.SetSessionEnding(false);
+    coord.BeginShutdown();
+    coord.BeginShutdown();
+    SUCCEED();
 }

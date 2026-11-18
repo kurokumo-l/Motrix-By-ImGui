@@ -26,6 +26,16 @@ export [[nodiscard]] constexpr RgbaColor WithAlpha(RgbaColor c, float alpha) noe
     return c;
 }
 
+export [[nodiscard]] constexpr RgbaColor LerpColor(RgbaColor a, RgbaColor b, float t) noexcept {
+    const float k = std::clamp(t, 0.0f, 1.0f);
+    return RgbaColor{
+        .r = a.r + (b.r - a.r) * k,
+        .g = a.g + (b.g - a.g) * k,
+        .b = a.b + (b.b - a.b) * k,
+        .a = a.a + (b.a - a.a) * k,
+    };
+}
+
 export [[nodiscard]] constexpr std::uint32_t ToAbgrU32(RgbaColor c) noexcept {
     const auto clampByte = [](float v) constexpr noexcept -> std::uint32_t {
         const float clamped = (v < 0.0f) ? 0.0f : (v > 1.0f ? 1.0f : v);

@@ -11,6 +11,8 @@ export enum class LogLevel {
     Error,
 };
 
+export [[nodiscard]] LogLevel ParseLogLevel(std::string_view raw) noexcept;
+
 export struct LoggerOptions {
     std::filesystem::path logFilePath;
     LogLevel minLevel = LogLevel::Info;

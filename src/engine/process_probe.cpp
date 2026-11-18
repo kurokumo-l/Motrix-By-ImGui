@@ -29,11 +29,13 @@ std::optional<std::filesystem::path> DiscoverEngineExecutable(std::string_view c
 
     const auto exeDir = detail::GetExecutableDir();
     const auto localAppData = detail::GetLocalAppDataDir();
-    const std::array<std::filesystem::path, 6> candidates = {
+    const std::array<std::filesystem::path, 8> candidates = {
         exeDir / "engine" / "aria2-next.exe",
         exeDir / "engine" / "aria2c.exe",
         exeDir / "assets" / "engine" / "aria2-next.exe",
         exeDir / "assets" / "engine" / "aria2c.exe",
+        localAppData / "MotrixNative" / "engine" / "aria2-next.exe",
+        localAppData / "MotrixNative" / "engine" / "aria2c.exe",
         localAppData / "Programs" / "Motrix" / "resources" / "engine" / "aria2-next.exe",
         localAppData / "Programs" / "Motrix" / "resources" / "engine" / "aria2c.exe",
     };
@@ -56,9 +58,51 @@ std::optional<std::filesystem::path> DiscoverEngineExecutable(std::string_view c
     return std::nullopt;
 }
 
+namespace {
+
+[[nodiscard]] bool DrainStdoutAndWaitExit(HANDLE proc,
+                                          HANDLE pipeRead,
+                                          std::chrono::milliseconds timeout,
+                                          std::string& output) {
+    const auto clampedMs = std::max<std::int64_t>(100, timeout.count());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(clampedMs);
+    std::array<char, 1024> buf{};
+
+    auto drainAvailable = [&]() {
+        DWORD avail = 0;
+        while (::PeekNamedPipe(pipeRead, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+            const DWORD want = (std::min)(avail, static_cast<DWORD>(buf.size()));
+            DWORD got = 0;
+            if (!::ReadFile(pipeRead, buf.data(), want, &got, nullptr) || got == 0) {
+                break;
+            }
+            output.append(buf.data(), got);
+        }
+    };
+
+    for (;;) {
+        drainAvailable();
+        if (::WaitForSingleObject(proc, 0) == WAIT_OBJECT_0) {
+            drainAvailable();
+            return true;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        ::Sleep(10);
+    }
+}
+
+}  // namespace
+
 motrix::core::Result<EngineVersionInfo>
 ProbeEngineBinaryVersion(const std::filesystem::path& executablePath,
                          std::chrono::milliseconds timeout) {
+    if (IsOsSessionShuttingDown()) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                                       motrix::core::ErrorCode::Cancelled,
+                                                       "OS session shutdown in progress"));
+    }
     if (!detail::IsRegularFileSafe(executablePath)) {
         return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
                                                        motrix::core::ErrorCode::NotFound,
@@ -78,50 +122,30 @@ ProbeEngineBinaryVersion(const std::filesystem::path& executablePath,
     detail::ScopedWinHandle pipeWrite(rawWrite);
     ::SetHandleInformation(pipeRead.Get(), HANDLE_FLAG_INHERIT, 0);
 
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    si.hStdOutput = pipeWrite.Get();
-    si.hStdError = pipeWrite.Get();
-
-    PROCESS_INFORMATION pi{};
-    std::wstring cmd = detail::BuildCommandLineW(executablePath, {"--version"});
-    if (!::CreateProcessW(executablePath.c_str(),
-                          cmd.data(),
-                          nullptr,
-                          nullptr,
-                          TRUE,
-                          CREATE_NO_WINDOW,
-                          nullptr,
-                          nullptr,
-                          &si,
-                          &pi)) {
-        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
-                                                       motrix::core::ErrorCode::IoFailure,
-                                                       "Failed to run --version probe"));
-    }
+    detail::ChildProcessLaunchSpec launchSpec{
+        .executablePath = executablePath,
+        .commandLine = detail::BuildCommandLineW(executablePath, {"--version"}),
+        .workingDir = executablePath.parent_path(),
+        .stdOutErrHandle = pipeWrite.Get(),
+        .creationFlags = CREATE_NO_WINDOW,
+        .suppressErrorDialogs = true,
+    };
+    const auto pi = detail::LaunchChildProcessWithHandleList(launchSpec);
     pipeWrite.Reset();
+    if (!pi) {
+        return std::unexpected(pi.error());
+    }
 
-    detail::ScopedWinHandle proc(pi.hProcess);
-    detail::ScopedWinHandle thrd(pi.hThread);
+    detail::ScopedWinHandle proc(pi->process);
+    detail::ScopedWinHandle thrd(pi->thread);
     thrd.Reset();
 
-    const DWORD wr = ::WaitForSingleObject(
-        proc.Get(), static_cast<DWORD>(std::max<std::int64_t>(100, timeout.count())));
-    if (wr == WAIT_TIMEOUT) {
+    std::string output;
+    if (!DrainStdoutAndWaitExit(proc.Get(), pipeRead.Get(), timeout, output)) {
         ::TerminateProcess(proc.Get(), 1);
         return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
                                                        motrix::core::ErrorCode::Timeout,
                                                        "Version probe timed out"));
-    }
-
-    std::string output;
-    std::array<char, 1024> buf{};
-    DWORD n = 0;
-    while (::ReadFile(pipeRead.Get(), buf.data(), static_cast<DWORD>(buf.size()), &n, nullptr)
-           && n > 0) {
-        output.append(buf.data(), n);
     }
     return ParseCliVersionBanner(output);
 }

@@ -8,12 +8,14 @@ import std;
 import motrix.domain;
 import motrix.app;
 import :views_internal;
+import :el_widgets;
 import :theme;
-import :anim;
 import :icons;
+import :anim;
 import :scope_guard;
 
 namespace motrix::ui {
+
 namespace {
 
 struct DrawerBox {
@@ -21,132 +23,47 @@ struct DrawerBox {
     float y = 0.0f;
     float w = 0.0f;
     float h = 0.0f;
-    float padX = 0.0f;
+    float padX = 24.0f;
 };
 
 struct DrawerFooterSpec {
     const motrix::domain::DownloadTaskView& task;
     bool showFileButtons = false;
     float drawerW = 0.0f;
+    float padX = 24.0f;
 };
 
-struct DrawerFileBtnSpec {
-    const motrix::domain::DownloadTaskView& task;
-    ImVec2 footerOrigin{};
-    float drawerW = 0.0f;
-};
-
-void RenderDrawerFileButtons(UiFrameContext& ctx, DrawerUiState& ds, const DrawerFileBtnSpec& spec) {
-    const auto& task = spec.task;
-    const float s = ctx.dpiScale;
-    const float h = 58.0f * s;
-    const float padX = 24.0f * s;
-    const float btnW = 78.0f * s;
-    const float btnH = 30.0f * s;
-    ImGui::SetCursorScreenPos(ImVec2(spec.footerOrigin.x + spec.drawerW - padX - btnW * 2.0f - 10.0f * s,
-                                     spec.footerOrigin.y + (h - btnH) * 0.5f));
-    {
-        StyleColorGuard bg(ImGuiCol_Button, ctx.palette.subnavBg);
-        StyleColorGuard fg(ImGuiCol_Text, ctx.palette.panelTitle);
-        FontGuard fnt(ctx.fonts, FontRole::Regular, 13.0f);
-        if (ImGui::Button(ctx.tr.Tr("prefs.reset").data(), ImVec2(btnW, btnH))) {
-            ds.dirty = false;
-            ds.loadedGid.clear();
-        }
-    }
-    ImGui::SameLine(0.0f, 10.0f * s);
-
-    std::vector<int> indices;
-    for (std::size_t i = 0; i < task.files.size() && i < ds.draftSelected.size(); ++i) {
-        if (ds.draftSelected[i]) {
-            indices.push_back(task.files[i].index);
-        }
-    }
-    const bool canSave = !indices.empty();
-    StyleColorGuard bg(ImGuiCol_Button,
-                       canSave ? ctx.palette.primary : ctx.palette.headerActionDisabled);
-    StyleColorGuard fg(ImGuiCol_Text, HexColor(0xFFFFFF));
-    FontGuard fnt(ctx.fonts, FontRole::Medium, 13.0f);
-    if (ImGui::Button("Save", ImVec2(btnW, btnH)) && canSave) {
-        ds.dirty = false;
-        ctx.sink.Dispatch(motrix::app::ApplyTaskFileSelectionCmd{task.gid, std::move(indices)});
-    }
-}
-
-void RenderDrawerFooter(UiFrameContext& ctx, DrawerUiState& ds, const DrawerFooterSpec& spec) {
-    const float s = ctx.dpiScale;
-    const float h = 58.0f * s;
-    const float padX = 24.0f * s;
-    const ImVec2 min = ImGui::GetCursorScreenPos();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddLine(ImVec2(min.x + padX, min.y),
-                ImVec2(min.x + spec.drawerW - padX, min.y),
-                ToAbgrU32(ctx.palette.borderSubtle),
-                1.0f);
-
-    ImGui::SetCursorScreenPos(ImVec2(min.x + padX, min.y + (h - 32.0f * s) * 0.5f));
-    const auto pillAct = [&](const char* id, MotrixIcon icon, const std::function<void()>& fn) {
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float sz = 30.0f * s;
-        if (ImGui::InvisibleButton(id, ImVec2(sz, sz))) {
-            fn();
-        }
-        const bool hov = ImGui::IsItemHovered();
-        dl->AddCircleFilled(ImVec2(p.x + sz * 0.5f, p.y + sz * 0.5f),
-                            sz * 0.5f,
-                            ToAbgrU32(hov ? ctx.palette.subnavActiveBg : ctx.palette.pillBg));
-        dl->AddCircle(
-            ImVec2(p.x + sz * 0.5f, p.y + sz * 0.5f), sz * 0.5f, ToAbgrU32(ctx.palette.pillBorder));
-        const float ico = 14.0f * s;
-        DrawMotrixIcon(IconSpec{
-            icon,
-            p.x + (sz - ico) * 0.5f,
-            p.y + (sz - ico) * 0.5f,
-            ico,
-            ico,
-            ctx.palette.pillIcon,
-            s,
-        });
-        ImGui::SameLine(0.0f, 8.0f * s);
+struct DrawerActionSpec {
+    enum class Kind {
+        Pause,
+        Resume,
+        StopSeeding,
+        Restart,
+        Delete,
+        Folder,
+        Link,
     };
+    Kind kind;
+    MotrixIcon icon;
+    std::string_view tipKey;
+};
 
-    const auto& task = spec.task;
-    const bool isActive = (task.status == motrix::domain::TaskStatus::Active);
-    const bool isStopped = (task.status == motrix::domain::TaskStatus::Complete
-                            || task.status == motrix::domain::TaskStatus::Error
-                            || task.status == motrix::domain::TaskStatus::Removed);
-    if (isActive) {
-        pillAct("##drw_pause", MotrixIcon::TaskPauseLine, [&]() {
-            ctx.sink.Dispatch(motrix::app::PauseTaskCmd{task.gid});
-        });
-    } else if (!isStopped) {
-        pillAct("##drw_resume", MotrixIcon::TaskStartLine, [&]() {
-            ctx.sink.Dispatch(motrix::app::ResumeTaskCmd{task.gid});
-        });
-    }
-    pillAct("##drw_del", MotrixIcon::Trash, [&]() {
-        ctx.sink.Dispatch(motrix::app::RemoveTaskCmd{task.gid, false});
-    });
-    pillAct("##drw_dir", MotrixIcon::Folder, [&]() {
-        ctx.sink.Dispatch(motrix::app::ShowInFolderCmd{task.gid});
-    });
-    pillAct("##drw_link", MotrixIcon::Link, [&]() {
-        ctx.sink.Dispatch(motrix::app::CopyTaskLinkCmd{task.gid});
-    });
-
-    if (spec.showFileButtons && ds.dirty) {
-        RenderDrawerFileButtons(ctx, ds, DrawerFileBtnSpec{task, min, spec.drawerW});
-    }
-}
+struct DetailTabItem {
+    int index = 0;
+    MotrixIcon icon = MotrixIcon::DetailInfo;
+    std::string_view tipKey;
+};
 
 [[nodiscard]] const motrix::domain::DownloadTaskView*
 FindDetailedTask(const motrix::app::AppStateSnapshot& st) noexcept {
-    if (st.detailedTask && st.detailedTask->gid == st.detailedTaskGid) {
+    if (st.detailedTask.has_value()) {
         return &(*st.detailedTask);
     }
-    const auto search = [&](std::span<const motrix::domain::DownloadTaskView> list)
-        -> const motrix::domain::DownloadTaskView* {
-        for (const auto& t : list) {
+    if (st.detailedTaskGid.empty()) {
+        return nullptr;
+    }
+    const auto search = [&](const auto& vec) -> const motrix::domain::DownloadTaskView* {
+        for (const auto& t : vec) {
             if (t.gid == st.detailedTaskGid) {
                 return &t;
             }
@@ -162,135 +79,342 @@ FindDetailedTask(const motrix::app::AppStateSnapshot& st) noexcept {
     return search(st.stoppedTasks);
 }
 
-struct DrawerTabSpec {
-    int id = 0;
-    std::string_view key{};
-};
-
-int RenderDrawerTabStrip(UiFrameContext& ctx,
-                         const DrawerBox& box,
-                         std::span<const DrawerTabSpec> tabs,
-                         float tabsY) {
-    const float s = ctx.dpiScale;
-    int activeTab = ctx.state.activeDetailTab;
-    const bool validTab =
-        std::any_of(tabs.begin(), tabs.end(), [&](const DrawerTabSpec& t) { return t.id == activeTab; });
-    if (!validTab) {
-        activeTab = 0;
+[[nodiscard]] std::vector<DrawerActionSpec>
+ActionsForDrawer(const motrix::domain::DownloadTaskView& task) {
+    using motrix::domain::TaskStatus;
+    std::vector<DrawerActionSpec> out;
+    if (task.status == TaskStatus::Active) {
+        if (task.isSeeding) {
+            out.push_back(
+                {DrawerActionSpec::Kind::StopSeeding, MotrixIcon::TaskStopLine, "task.stop_seeding"});
+        } else {
+            out.push_back({DrawerActionSpec::Kind::Pause, MotrixIcon::TaskPauseLine, "task.pause"});
+        }
+        out.push_back({DrawerActionSpec::Kind::Delete, MotrixIcon::Delete, "task.delete"});
+    } else if (task.status == TaskStatus::Waiting || task.status == TaskStatus::Paused) {
+        out.push_back({DrawerActionSpec::Kind::Resume, MotrixIcon::TaskStartLine, "task.resume"});
+        out.push_back({DrawerActionSpec::Kind::Delete, MotrixIcon::Delete, "task.delete"});
+    } else {
+        out.push_back({DrawerActionSpec::Kind::Restart, MotrixIcon::TaskRestart, "task.restart"});
+        out.push_back({DrawerActionSpec::Kind::Delete, MotrixIcon::Trash, "task.remove_record"});
     }
+    out.push_back({DrawerActionSpec::Kind::Folder, MotrixIcon::Folder, "task.show_in_folder"});
+    out.push_back({DrawerActionSpec::Kind::Link, MotrixIcon::Link, "task.copy_link"});
+    return out;
+}
+
+void DispatchDrawerAction(UiFrameContext& ctx,
+                          const motrix::domain::DownloadTaskView& task,
+                          DrawerActionSpec::Kind kind) {
+    switch (kind) {
+        case DrawerActionSpec::Kind::Pause:
+        case DrawerActionSpec::Kind::StopSeeding:
+            ctx.sink.Dispatch(motrix::app::PauseTaskCmd{task.gid});
+            break;
+        case DrawerActionSpec::Kind::Resume:
+            ctx.sink.Dispatch(motrix::app::ResumeTaskCmd{task.gid});
+            break;
+        case DrawerActionSpec::Kind::Restart:
+            ctx.sink.Dispatch(motrix::app::RestartTaskCmd{task.gid});
+            break;
+        case DrawerActionSpec::Kind::Delete: RequestTaskRemoval(ctx, task.gid, task.name); break;
+        case DrawerActionSpec::Kind::Folder:
+            ctx.sink.Dispatch(motrix::app::ShowInFolderCmd{task.gid});
+            break;
+        case DrawerActionSpec::Kind::Link:
+            ctx.sink.Dispatch(motrix::app::CopyTaskLinkCmd{task.gid});
+            break;
+    }
+}
+
+void ResetDrawerFilesDraft(DrawerUiState& ds, const motrix::domain::DownloadTaskView& task) {
+    ds.draftSelected.clear();
+    ds.draftFileIndices.clear();
+    ds.draftSelected.reserve(task.files.size());
+    ds.draftFileIndices.reserve(task.files.size());
+    for (std::size_t i = 0; i < task.files.size(); ++i) {
+        const auto& f = task.files[i];
+        ds.draftSelected.push_back(f.selected);
+        ds.draftFileIndices.push_back(f.index > 0 ? f.index : static_cast<int>(i + 1));
+    }
+    ds.dirty = false;
+    ds.pendingApply = false;
+    ds.pendingExpected.clear();
+    ds.fileFilter = 0;
+}
+
+void ApplyDrawerFilesDraft(UiFrameContext& ctx,
+                           DrawerUiState& ds,
+                           const motrix::domain::DownloadTaskView& task) {
+    std::vector<int> indices;
+    const std::size_t n = std::min(ds.draftSelected.size(), task.files.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        if (ds.draftSelected[i]) {
+            indices.push_back(task.files[i].index > 0 ? task.files[i].index : static_cast<int>(i + 1));
+        }
+    }
+    if (!indices.empty()) {
+        ctx.sink.Dispatch(motrix::app::ApplyTaskFileSelectionCmd{task.gid, std::move(indices)});
+        ds.pendingApply = true;
+        ds.pendingExpected = ds.draftSelected;
+        ds.pendingUntil = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        ds.dirty = false;
+    }
+}
+
+void RenderDrawerPill(UiFrameContext& ctx,
+                      const motrix::domain::DownloadTaskView& task,
+                      ImVec2 pillMin,
+                      float pillH) {
+    const float s = ctx.dpiScale;
+    const auto actions = ActionsForDrawer(task);
+    const float padX = 12.0f * s;
+    const float slotW = 36.0f * s;
+    const float iconSz = 14.0f * s;
+    const float pillW = padX * 2.0f + static_cast<float>(actions.size()) * slotW;
+    const ImVec2 pillMax(pillMin.x + pillW, pillMin.y + pillH);
+    const bool pillHovered = ImGui::IsMouseHoveringRect(pillMin, pillMax);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    float curTabX = box.x + box.padX;
-    for (const auto& t : tabs) {
-        const std::string_view lbl = ctx.tr.Tr(t.key);
-        FontGuard tf(ctx.fonts, activeTab == t.id ? FontRole::Medium : FontRole::Regular, 14.0f);
-        const ImVec2 sz = ImGui::CalcTextSize(lbl.data(), lbl.data() + lbl.size());
-        const float tw = sz.x + 16.0f * s;
-        const float th = 32.0f * s;
-        ImGui::SetCursorScreenPos(ImVec2(curTabX, tabsY));
-        IdGuard tid(t.id);
-        if (ImGui::InvisibleButton("##drw_tab", ImVec2(tw, th))) {
-            ctx.sink.Dispatch(motrix::app::SetDetailTabCmd{t.id});
-            activeTab = t.id;
-        }
-        const bool selected = (activeTab == t.id);
-        const RgbaColor txtCol = selected ? ctx.palette.primary : ctx.palette.subnavItemText;
-        dl->AddText(ImVec2(curTabX + 8.0f * s, tabsY + (th - sz.y) * 0.5f),
-                    ToAbgrU32(txtCol),
-                    lbl.data(),
-                    lbl.data() + lbl.size());
-        if (selected) {
-            dl->AddRectFilled(ImVec2(curTabX + 6.0f * s, tabsY + th - 2.0f * s),
-                              ImVec2(curTabX + tw - 6.0f * s, tabsY + th),
-                              ToAbgrU32(ctx.palette.primary));
-        }
-        curTabX += tw + 8.0f * s;
-    }
-    dl->AddLine(ImVec2(box.x + box.padX, tabsY + 32.0f * s),
-                ImVec2(box.x + box.w - box.padX, tabsY + 32.0f * s),
-                ToAbgrU32(ctx.palette.borderSubtle),
+    dl->AddRectFilled(pillMin,
+                      pillMax,
+                      ToAbgrU32(pillHovered ? ctx.palette.pillHoverBg : ctx.palette.pillBg),
+                      pillH * 0.5f);
+    dl->AddRect(pillMin,
+                pillMax,
+                ToAbgrU32(pillHovered ? ctx.palette.pillHoverBorder : ctx.palette.pillBorder),
+                pillH * 0.5f,
+                0,
                 1.0f);
-    return activeTab;
+
+    for (std::size_t i = 0; i < actions.size(); ++i) {
+        IdGuard id(static_cast<int>(i));
+        const float sx = pillMin.x + padX + static_cast<float>(i) * slotW;
+        ImGui::SetCursorScreenPos(ImVec2(sx, pillMin.y));
+        if (ImGui::InvisibleButton("##drw_act", ImVec2(slotW, pillH))) {
+            DispatchDrawerAction(ctx, task, actions[i].kind);
+        }
+        const bool hovered = ImGui::IsItemHovered();
+        if (hovered) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            ElDrawTooltip({ctx.palette, ctx.fonts, s, &ctx.anim},
+                          {ctx.tr.Tr(actions[i].tipKey), ElTooltipPlacement::Top});
+        }
+        const float t =
+            AnimStep(&ctx.anim, {ImGui::GetItemID() ^ 0xD201u, hovered ? 1.0f : 0.0f, 20.0f, 0.0f});
+        const RgbaColor baseIcon = pillHovered ? ctx.palette.pillHoverIcon : ctx.palette.pillIcon;
+        const RgbaColor fg = LerpColor(baseIcon, ctx.palette.primary, t);
+        DrawMotrixIcon(IconSpec{
+            actions[i].icon,
+            sx + (slotW - iconSz) * 0.5f,
+            pillMin.y + (pillH - iconSz) * 0.5f,
+            iconSz,
+            iconSz,
+            fg,
+            s,
+        });
+    }
+}
+
+void RenderDrawerFooter(UiFrameContext& ctx, DrawerUiState& ds, const DrawerFooterSpec& spec) {
+    const float s = ctx.dpiScale;
+    const ImVec2 footOrigin = ImGui::GetCursorScreenPos();
+    const float footerH = 56.0f * s;
+    const auto actions = ActionsForDrawer(spec.task);
+    const float pillH = 30.0f * s;
+    const float pillW = 24.0f * s + static_cast<float>(actions.size()) * 36.0f * s;
+    const float pillX = footOrigin.x + (spec.drawerW - pillW) * 0.5f;
+    const float pillY = footOrigin.y + (footerH - pillH) * 0.5f;
+    RenderDrawerPill(ctx, spec.task, ImVec2(pillX, pillY), pillH);
+
+    if (!spec.showFileButtons || !ds.dirty) {
+        return;
+    }
+
+    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
+    const std::string_view resetLbl = ctx.tr.Tr("detail.reset");
+    const std::string_view saveLbl = ctx.tr.Tr("common.save");
+    const float btnH = 30.0f * s;
+    const float btnY = footOrigin.y + (footerH - btnH) * 0.5f;
+
+    FontGuard bf(ctx.fonts, FontRole::Regular, 13.0f);
+    const ImVec2 resetSz = ImGui::CalcTextSize(resetLbl.data(), resetLbl.data() + resetLbl.size());
+    const ImVec2 saveSz = ImGui::CalcTextSize(saveLbl.data(), saveLbl.data() + saveLbl.size());
+    const float resetW = std::max(64.0f * s, resetSz.x + 26.0f * s);
+    const float saveW = std::max(64.0f * s, saveSz.x + 26.0f * s);
+
+    ImGui::SetCursorScreenPos(ImVec2(footOrigin.x + spec.padX, btnY));
+    if (ElSecondaryButton(elSt, ElButtonSpec{"##drw_reset", resetLbl, resetW, btnH})) {
+        ResetDrawerFilesDraft(ds, spec.task);
+    }
+
+    const bool anySelected = std::ranges::any_of(ds.draftSelected, [](bool v) { return v; });
+    ImGui::SetCursorScreenPos(ImVec2(footOrigin.x + spec.drawerW - spec.padX - saveW, btnY));
+    if (ElPrimaryButton(elSt, ElButtonSpec{"##drw_save", saveLbl, saveW, btnH, !anySelected})) {
+        ApplyDrawerFilesDraft(ctx, ds, spec.task);
+    }
+}
+
+[[nodiscard]] std::vector<DetailTabItem> TabsForTask(const motrix::domain::DownloadTaskView& task) {
+    if (task.taskType == motrix::domain::TaskType::BitTorrent) {
+        return {
+            {0, MotrixIcon::DetailInfo, "detail.general"},
+            {1, MotrixIcon::DetailGrid, "detail.activity"},
+            {2, MotrixIcon::DetailCompass, "detail.trackers"},
+            {3, MotrixIcon::DetailUser, "detail.peers"},
+            {4, MotrixIcon::DetailFiles, "detail.files"},
+        };
+    }
+    return {
+        {0, MotrixIcon::DetailInfo, "detail.general"},
+        {1, MotrixIcon::DetailGrid, "detail.activity"},
+        {4, MotrixIcon::DetailFiles, "detail.files"},
+    };
 }
 
 int RenderDrawerHeaderAndTabs(UiFrameContext& ctx,
                               const motrix::domain::DownloadTaskView& task,
                               const DrawerBox& box) {
     const float s = ctx.dpiScale;
-    const float headerY = box.y + 36.0f * s;
+    const float headerY = box.y + 38.0f * s;
+    const float contentL = box.x + box.padX;
+    const float contentR = box.x + box.w - box.padX;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
     {
-        FontGuard tf(ctx.fonts, FontRole::Semibold, 16.0f);
-        StyleColorGuard tc(ImGuiCol_Text, ctx.palette.panelTitle);
-        ImGui::SetCursorScreenPos(ImVec2(box.x + box.padX, headerY));
-        ImGui::TextUnformatted(task.name.c_str());
+        FontGuard titleFnt(ctx.fonts, FontRole::Regular, 18.0f);
+        const std::string_view title = ctx.tr.Tr("detail.title");
+        dl->AddText(ImVec2(contentL, headerY),
+                    ToAbgrU32(ctx.palette.panelTitle),
+                    title.data(),
+                    title.data() + title.size());
     }
 
     const float closeSz = 26.0f * s;
-    const ImVec2 closePos(box.x + box.w - box.padX - closeSz, headerY - 2.0f * s);
+    const ImVec2 closePos(contentR - closeSz, headerY - 2.0f * s);
     ImGui::SetCursorScreenPos(closePos);
-    if (ImGui::InvisibleButton("##drawer_close", ImVec2(closeSz, closeSz))) {
+    if (ImGui::InvisibleButton("##drw_close", ImVec2(closeSz, closeSz))) {
         ctx.sink.Dispatch(motrix::app::SelectTaskCmd{ctx.state.detailedTaskGid, true});
     }
+    const bool closeHov = ImGui::IsItemHovered();
+    if (closeHov) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
+    const float closeIco = 12.0f * s;
     DrawMotrixIcon(IconSpec{
         MotrixIcon::WinClose,
-        closePos.x + (closeSz - 12.0f * s) * 0.5f,
-        closePos.y + (closeSz - 12.0f * s) * 0.5f,
-        12.0f * s,
-        12.0f * s,
-        ctx.palette.headerAction,
+        closePos.x + (closeSz - closeIco) * 0.5f,
+        closePos.y + (closeSz - closeIco) * 0.5f,
+        closeIco,
+        closeIco,
+        closeHov ? ctx.palette.panelTitle : ctx.palette.subLabelText,
         s,
     });
 
-    static constexpr std::array<DrawerTabSpec, 5> kBtTabs{{
-        {0, "detail.general"},
-        {1, "detail.activity"},
-        {2, "detail.trackers"},
-        {3, "detail.peers"},
-        {4, "detail.files"},
-    }};
-    static constexpr std::array<DrawerTabSpec, 3> kPlainTabs{{
-        {0, "detail.general"},
-        {1, "detail.activity"},
-        {4, "detail.files"},
-    }};
-    const std::span<const DrawerTabSpec> tabs = (task.taskType == motrix::domain::TaskType::BitTorrent)
-                                                    ? std::span<const DrawerTabSpec>(kBtTabs)
-                                                    : std::span<const DrawerTabSpec>(kPlainTabs);
-    return RenderDrawerTabStrip(ctx, box, tabs, headerY + 32.0f * s);
+    const auto tabs = TabsForTask(task);
+    int activeTab = ctx.state.activeDetailTab;
+    const bool tabValid =
+        std::ranges::any_of(tabs, [activeTab](const DetailTabItem& t) { return t.index == activeTab; });
+    if (!tabValid) {
+        activeTab = tabs.front().index;
+    }
+
+    const float tabsY = box.y + 74.0f * s;
+    const float tabH = 34.0f * s;
+    const float slotW = 38.0f * s;
+    const float slotPitch = 76.0f * s;
+    const float iconSz = 15.0f * s;
+
+    dl->AddLine(ImVec2(contentL, tabsY + tabH),
+                ImVec2(contentR, tabsY + tabH),
+                ToAbgrU32(ctx.palette.borderSubtle),
+                1.0f);
+
+    for (std::size_t i = 0; i < tabs.size(); ++i) {
+        IdGuard tid(tabs[i].index);
+        const float tx = contentL + static_cast<float>(i) * slotPitch;
+        ImGui::SetCursorScreenPos(ImVec2(tx, tabsY));
+        if (ImGui::InvisibleButton("##drw_tab", ImVec2(slotW, tabH))) {
+            ctx.sink.Dispatch(motrix::app::SetDetailTabCmd{tabs[i].index});
+        }
+        const bool hovered = ImGui::IsItemHovered();
+        const bool isActive = (tabs[i].index == activeTab);
+        if (hovered) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            ElDrawTooltip({ctx.palette, ctx.fonts, s, &ctx.anim},
+                          {ctx.tr.Tr(tabs[i].tipKey), ElTooltipPlacement::Bottom});
+        }
+        const float hovT =
+            AnimStep(&ctx.anim, {ImGui::GetItemID() ^ 0xD301u, hovered ? 1.0f : 0.0f, 20.0f, 0.0f});
+        const RgbaColor col = isActive ? ctx.palette.primary
+                                       : LerpColor(ctx.palette.panelTitle, ctx.palette.primary, hovT);
+        DrawMotrixIcon(IconSpec{
+            tabs[i].icon,
+            tx + (slotW - iconSz) * 0.5f,
+            tabsY + (tabH - iconSz) * 0.5f - 1.0f * s,
+            iconSz,
+            iconSz,
+            col,
+            s,
+            false,
+            ctx.palette.modalBg,
+        });
+        if (isActive) {
+            dl->AddRectFilled(ImVec2(tx, tabsY + tabH - 2.0f * s),
+                              ImVec2(tx + slotW, tabsY + tabH),
+                              ToAbgrU32(ctx.palette.primary));
+        }
+    }
+    return activeTab;
 }
 
 void RenderDrawerTabBody(UiFrameContext& ctx,
                          DrawerUiState& ds,
                          const motrix::domain::DownloadTaskView& task,
                          int activeTab) {
-    if (activeTab == 0) {
-        RenderGeneralTab(ctx, task);
-    } else if (activeTab == 1) {
-        RenderActivityTab(ctx, task);
-    } else if (activeTab == 2) {
-        RenderTrackersTab(ctx, ctx.state.detailedTrackers);
-    } else if (activeTab == 3) {
-        RenderPeersTab(ctx, ctx.state.detailedPeers);
-    } else if (activeTab == 4) {
-        RenderFilesTab(ctx, ds, task);
+    switch (activeTab) {
+        case 0: RenderGeneralTab(ctx, task); break;
+        case 1: RenderActivityTab(ctx, task); break;
+        case 2: RenderTrackersTab(ctx, ctx.state.detailedTrackers); break;
+        case 3: RenderPeersTab(ctx, ctx.state.detailedPeers); break;
+        case 4: RenderFilesTab(ctx, ds, task); break;
+        default: RenderGeneralTab(ctx, task); break;
     }
 }
 
 }  // namespace
 
 void RenderTaskDetailDrawer(UiFrameContext& ctx, DrawerUiState& ds) {
-    const bool wantOpen = !ctx.state.detailedTaskGid.empty();
+    const auto* liveTask = FindDetailedTask(ctx.state);
+    if (liveTask != nullptr) {
+        ds.cachedTask = *liveTask;
+    }
+    const bool wantOpen = liveTask != nullptr;
     const float targetSlide = wantOpen ? 1.0f : 0.0f;
-    ds.slideProgress = ctx.anim.Float(HashId("drawer.slide"), targetSlide, 18.0f, targetSlide);
-    if (!wantOpen && ds.slideProgress < 0.01f) {
+    const float initialSlide = (wantOpen && ctx.anim.FrameCount() <= 2) ? 1.0f : 0.0f;
+    ds.slideProgress = ctx.anim.Float(HashId("drawer.slide"), targetSlide, 20.0f, initialSlide);
+    if ((!wantOpen && ds.slideProgress < 0.01f) || !ds.cachedTask.has_value()) {
+        if (!wantOpen && ds.slideProgress < 0.01f) {
+            ds.cachedTask.reset();
+            ds.dirty = false;
+            ds.pendingApply = false;
+            ds.pendingExpected.clear();
+            ds.draftFileIndices.clear();
+            ds.loadedGid.clear();
+            ds.fileFilter = 0;
+            ds.prevTab = -1;
+        }
         return;
     }
 
-    const auto* taskPtr = FindDetailedTask(ctx.state);
-    if (taskPtr == nullptr) {
-        return;
+    const bool deleteConfirmOpen = (ctx.deleteConfirm != nullptr && ctx.deleteConfirm->open);
+    if (wantOpen && ctx.state.activeModal == motrix::app::ActiveModal::None && !deleteConfirmOpen
+        && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)
+        && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        ctx.sink.Dispatch(motrix::app::SelectTaskCmd{ctx.state.detailedTaskGid, true});
     }
 
+    const auto* taskPtr = &(*ds.cachedTask);
     const float s = ctx.dpiScale;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float drawerW = std::min(vp->Size.x, std::max(478.0f * s, vp->Size.x * 0.618f));
@@ -310,7 +434,7 @@ void RenderTaskDetailDrawer(UiFrameContext& ctx, DrawerUiState& ds) {
     }
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float dimAlpha = (ctx.palette.isDark ? 0.45f : 0.25f) * ds.slideProgress;
+    const float dimAlpha = 0.50f * ds.slideProgress;
     dl->AddRectFilled(vp->Pos,
                       ImVec2(box.x, vp->Pos.y + vp->Size.y),
                       ToAbgrU32(RgbaColor{0.0f, 0.0f, 0.0f, dimAlpha}));
@@ -329,8 +453,15 @@ void RenderTaskDetailDrawer(UiFrameContext& ctx, DrawerUiState& ds) {
         ImVec2(box.x, box.y), ImVec2(box.x, box.y + box.h), ToAbgrU32(ctx.palette.borderSubtle), 1.0f);
 
     const int activeTab = RenderDrawerHeaderAndTabs(ctx, *taskPtr, box);
-    const float bodyY = box.y + 114.0f * s;
-    const float footerH = 58.0f * s;
+    if (ds.prevTab == 4 && activeTab != 4) {
+        ds.dirty = false;
+        ds.loadedGid.clear();
+        ds.fileFilter = 0;
+    }
+    ds.prevTab = activeTab;
+
+    const float bodyY = box.y + 124.0f * s;
+    const float footerH = 56.0f * s;
     const float bodyH = std::max(100.0f * s, (box.y + box.h) - bodyY - footerH);
 
     ImGui::SetCursorScreenPos(ImVec2(box.x + box.padX, bodyY));
@@ -344,7 +475,7 @@ void RenderTaskDetailDrawer(UiFrameContext& ctx, DrawerUiState& ds) {
     }
 
     ImGui::SetCursorScreenPos(ImVec2(box.x, box.y + box.h - footerH));
-    RenderDrawerFooter(ctx, ds, {*taskPtr, activeTab == 4, box.w});
+    RenderDrawerFooter(ctx, ds, {*taskPtr, activeTab == 4, box.w, box.padX});
 }
 
 }  // namespace motrix::ui

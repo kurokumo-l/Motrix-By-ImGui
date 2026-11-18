@@ -48,10 +48,13 @@ export struct WindowHostConfig {
     std::optional<WindowBounds> initialBounds;
     std::string screenshotPath;
     int screenshotFrames = 8;
+    std::optional<std::pair<float, float>> screenshotHover;
     std::function<void(std::vector<std::string>)> onFilesDropped;
     std::function<void(TrayMenuAction)> onTrayAction;
+    std::function<void(bool)> onSessionEnding;
     std::function<void()> onQuitRequested;
     std::function<void(const WindowBounds&)> onBoundsChanged;
+    std::function<void()> onBeforeNewFrame;
 };
 
 export struct TitlebarRect {
@@ -76,6 +79,7 @@ public:
     [[nodiscard]] virtual float DpiScale() const noexcept = 0;
     [[nodiscard]] virtual bool IsMaximized() const noexcept = 0;
     [[nodiscard]] virtual bool IsHiddenToTray() const noexcept = 0;
+    [[nodiscard]] virtual bool IsSystemDarkMode() const noexcept = 0;
     [[nodiscard]] virtual HostMetricsSnapshot Metrics() const noexcept = 0;
     [[nodiscard]] virtual WindowBounds CurrentWindowBounds() const = 0;
 
@@ -91,7 +95,8 @@ public:
     virtual void SetBindCloseToHide(bool enabled) noexcept = 0;
     virtual void SetAutoHideOnBlur(bool enabled) noexcept = 0;
     virtual void SetTrayEnabled(bool enabled) = 0;
-    virtual void UpdateTrayStatus(bool hasActiveDownloads, bool isZhCn) = 0;
+    virtual void
+    UpdateTrayStatus(bool hasActiveDownloads, bool isZhCn, std::string_view tooltipText = {}) = 0;
     virtual void
     UpdateTaskbarProgress(TaskbarProgressMode mode, std::uint64_t completed, std::uint64_t total) = 0;
     virtual void ShowToastNotification(std::string_view title,
@@ -102,11 +107,18 @@ public:
     virtual void RequestFrame() = 0;
     virtual void NotifyAnimationActive() = 0;
     virtual void SetTitlebarHeight(float heightPx) = 0;
+    virtual void SetTitlebarBlocked(bool blocked) = 0;
     virtual void RegisterTitlebarInteractiveRect(TitlebarRect rect) = 0;
     virtual void CopyTextToClipboard(std::string_view utf8) = 0;
     virtual void OpenPathInExplorer(std::string_view utf8Path) = 0;
     [[nodiscard]] virtual std::optional<std::string> PickTorrentFile() = 0;
     [[nodiscard]] virtual std::optional<std::string> PickFolder(std::string_view initialDir = {}) = 0;
+    [[nodiscard]] virtual std::uint64_t UploadRgbaTexture(std::uint64_t /*existingId*/,
+                                                          int /*width*/,
+                                                          int /*height*/,
+                                                          std::span<const std::uint8_t> /*rgba*/) {
+        return 0;
+    }
 };
 
 }  // namespace motrix::platform

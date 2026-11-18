@@ -5,263 +5,179 @@ module;
 module motrix.ui;
 
 import std;
+import motrix.platform;
+import :anim;
+import :icons;
+import :svg_internal;
 import :theme;
 
 namespace motrix::ui {
 
 namespace {
 
-[[nodiscard]] ImVec2 RotPt(float cx, float cy, float px, float py, float rad) noexcept {
-    const float dx = px - cx;
-    const float dy = py - cy;
-    const float c = std::cos(rad);
-    const float s = std::sin(rad);
-    return ImVec2(cx + dx * c - dy * s, cy + dx * s + dy * c);
-}
+[[nodiscard]] std::vector<std::uint8_t> BuildUfoTexturePixels(int pxW, int pxH, bool dark) {
+    SvgCanvas cv{pxW, pxH, static_cast<float>(pxW) / 504.0f, static_cast<float>(pxH) / 309.0f, {}};
+    const UfoRgba clearBg =
+        dark ? UfoRgba{0.141f, 0.141f, 0.141f, 0.0f} : UfoRgba{1.0f, 1.0f, 1.0f, 0.0f};
+    cv.pixels.assign(static_cast<std::size_t>(pxW * pxH), clearBg);
 
-struct UfoCanvas {
-    ImDrawList* dl = nullptr;
-    float x0 = 0.0f;
-    float y0 = 0.0f;
-    float sx = 1.0f;
-    float sy = 1.0f;
+    const SvgMat hillMat{-1.0f, 0.0f, 0.0f, 1.0f, 523.0f, -26.0f};
+    const SvgMat flipX{-1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+    const SvgMat ufoMat = MulMat(flipX, MakeRotateAt(-9.0f, -170.11f, 1540.559f));
+    const SvgMat beamMat = MulMat(flipX, MakeRotateAt(17.0f, -176.317f, -766.798f));
 
-    [[nodiscard]] ImVec2 Pt(float vx, float vy) const noexcept {
-        return ImVec2(x0 + vx * sx, y0 + vy * sy);
-    }
-};
+    const SvgGrad gradA{
+        0.50f, 0.33114f, 0.50f, 0.0f, HexStop(0x2D2D2D, 0.0f), HexStop(0xFFFFFF, 0.216f)};
+    RenderSvgPoly(
+        cv,
+        ParseSvgPath(
+            "M405.205 457C474.128 457 530 416.258 530 366s-55.872-91-124.795-91c-47.428 0-88.853 "
+            "33.5-131.783 45-42.929 11.5 6.989 30.327 6.989 46 0 50.258 55.872 91 124.794 91Z"),
+        hillMat,
+        {true, {}, gradA});
+    const SvgGrad gradB{
+        0.54257f, 0.27941f, 0.54257f, 0.0f, HexStop(0x6D6D6D, 0.0f), HexStop(0xFFFFFF, 0.216f)};
+    RenderSvgPoly(
+        cv,
+        ParseSvgPath("M187.397 506c103.496 0 187.396-61.113 187.396-136.5 0-26.12 63.465-69.5 "
+                     "0-81.5s-119.76-55-187.396-55C83.9 233 0 294.113 0 369.5S83.9 506 187.397 506Z"),
+        hillMat,
+        {true, {}, gradB});
 
-struct QuadGradSpec {
-    ImVec2 topL{};
-    ImVec2 topR{};
-    ImVec2 botR{};
-    ImVec2 botL{};
-    RgbaColor topCol{};
-    RgbaColor botCol{};
-    int slices = 24;
-};
+    RenderSvgPoly(cv,
+                  ParseSvgPath("M54.668 52.983c16.709 8.885 33.389 10.19 37.256 2.918 "
+                               "3.867-7.274-4.188-24.564-20.896-33.448-16.709-8.884-35.744-5.998-39.611 "
+                               "1.275C27.55 31.001 37.96 44.1 54.668 52.983Z"),
+                  ufoMat,
+                  {false, HexStop(0x4C4C4C)});
+    RenderSvgPoly(cv,
+                  ParseSvgPath("M50.232 59.072C77.574 73.61 103.094 79.084 107.233 "
+                               "71.3c4.139-7.784-12.393-29.774-39.735-44.312C40.157 12.451 12.36 10.87 "
+                               "8.221 18.654c-4.14 7.784 14.67 25.88 42.011 40.418Z"),
+                  ufoMat,
+                  {false, HexStop(0x6C6971), {}, 1.0f, 1.5f, HexStop(0x1B1B1B)});
+    RenderSvgPoly(cv,
+                  BuildEllipsePoly(57.554f, 45.301f, 56.069f, 15.595f),
+                  MulMat(ufoMat, MakeRotateAt(28.0f, 57.554f, 45.301f)),
+                  {false, HexStop(0x3E3E3E), {}, 1.0f, 1.5f, HexStop(0x1B1B1B)});
+    RenderSvgPoly(cv,
+                  ParseSvgPath("M50.058 60.044c15.801 8.401 30.235 12.158 32.239 8.39 "
+                               "2.003-3.768-8.508-14.957-24.31-23.36-15.801-8.4-30.91-10.834-32.913-7."
+                               "066-2.003 3.768 9.182 13.634 24.984 22.036Z"),
+                  ufoMat,
+                  {false, HexStop(0x1C1C1C)});
+    RenderSvgPoly(
+        cv,
+        ParseSvgPath(
+            "M25.1 51.905c3.02 3.566 15.726 11.347 22.227 14.803 10.348 5.502 23.194 11.02 27.68 "
+            "9.412v-5.57c-1.487-5.946-7.004-12.235-19.644-18.955-12.64-6.72-24.685-8.786-26.904-4.612-."
+            "078.121-1.724 2.402-3.36 4.922Z"),
+        ufoMat,
+        {false, HexStop(0x5B5AEA), {}, 0.2f});
 
-struct RotEllipseSpec {
-    float cx = 0.0f;
-    float cy = 0.0f;
-    float rx = 1.0f;
-    float ry = 1.0f;
-    float angleRad = 0.0f;
-    ImU32 fillCol = 0;
-    ImU32 strokeCol = 0;
-    float strokeW = 0.0f;
-};
+    const SvgGrad gradC{0.6764f, -0.01183f, 0.6764f, 0.87046f, HexStop(0xBBBBBB), HexStop(0x1B1B1B)};
+    RenderSvgPoly(
+        cv,
+        ParseSvgPath("M.438 122.756C6.93 103.82 23.403 19.87 28.723 7.44 31.215 1.85 46.146.443 "
+                     "57.129.606c10.983.164 20.506 1.666 22.646 9.54 2.824 10.395 20.857 115.671 20.857 "
+                     "115.671s-15.168 9.99-49.377 10.392C17.047 136.61.438 122.756.438 122.756"),
+        beamMat,
+        {true, {}, gradC, 0.2f});
+    const SvgGrad gradD{
+        0.72034f, 0.00549f, 0.62937f, 0.70566f, HexStop(0x5B5AEA), HexStop(0xE7D1AF, 0.0f)};
+    RenderSvgPoly(
+        cv,
+        ParseSvgPath("M16.982 126.328C21.493 108.529 34.185 14.868 37.859 3.32 40.685.698 48.114.374 "
+                     "55.898.698 63.68 1.023 70.92 2.52 71.11 3.62 72.937 14.2 85.19 130.47 85.19 "
+                     "130.47s-14.028 3.94-33.335 3.956c-19.307.017-34.873-8.099-34.873-8.099"),
+        beamMat,
+        {true, {}, gradD, 0.5f});
 
-struct PineTreeSpec {
-    float baseX = 0.0f;
-    float baseY = 0.0f;
-    float w = 1.0f;
-    float h = 1.0f;
-    ImU32 col = 0;
-};
+    const SvgMat id{};
+    RenderSvgPoly(
+        cv, ParseSvgPath("m365.733 181.133-13.422 28.495 22.47 1.966z"), id, {false, HexStop(0x646464)});
+    RenderSvgPoly(
+        cv, ParseSvgPath("m367.38 165.55-13.674 28.472 22.99 2.011z"), id, {false, HexStop(0x646464)});
+    RenderSvgPoly(cv,
+                  ParseSvgPath("m113.133 234.567 6.712 14.246-11.236.983z"),
+                  id,
+                  {false, HexStop(0x5D5D5D), {}, 0.7f});
+    RenderSvgPoly(cv,
+                  ParseSvgPath("m112.31 226.775 6.837 14.236-11.495 1.006z"),
+                  id,
+                  {false, HexStop(0x5D5D5D), {}, 0.7f});
+    RenderSvgPoly(cv,
+                  ParseSvgPath("m334.934 185.378-4.672 22.32 12.067-.633z"),
+                  id,
+                  {false, HexStop(0x6B6B6B), {}, 0.4f});
+    RenderSvgPoly(
+        cv, ParseSvgPath("m138.43 214.34 5.3 37.069-14.964-.784z"), id, {false, HexStop(0x686868)});
 
-struct BellHillSpec {
-    float startX = 0.0f;
-    float endX = 0.0f;
-    float peakHeight = 0.0f;
-    float baseY = 0.0f;
-    RgbaColor topCol{};
-    RgbaColor botCol{};
-};
-
-void DrawGradientQuadStrip(ImDrawList* dl, const QuadGradSpec& q) {
-    const auto lerpPt = [](ImVec2 a, ImVec2 b, float t) {
-        return ImVec2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+    std::vector<std::uint8_t> rgba(cv.pixels.size() * 4u);
+    const auto toByte = [](float v) noexcept -> std::uint8_t {
+        return static_cast<std::uint8_t>(std::clamp(std::lround(v * 255.0f), 0L, 255L));
     };
-    const auto lerpCol = [](RgbaColor a, RgbaColor b, float t) {
-        return ToAbgrU32(RgbaColor{
-            a.r + (b.r - a.r) * t,
-            a.g + (b.g - a.g) * t,
-            a.b + (b.b - a.b) * t,
-            a.a + (b.a - a.a) * t,
-        });
-    };
-    for (int i = 0; i < q.slices; ++i) {
-        const float t0 = static_cast<float>(i) / static_cast<float>(q.slices);
-        const float t1 = static_cast<float>(i + 1) / static_cast<float>(q.slices);
-        const ImVec2 p0 = lerpPt(q.topL, q.botL, t0);
-        const ImVec2 p1 = lerpPt(q.topR, q.botR, t0);
-        const ImVec2 p2 = lerpPt(q.topR, q.botR, t1);
-        const ImVec2 p3 = lerpPt(q.topL, q.botL, t1);
-        const ImU32 cTop = lerpCol(q.topCol, q.botCol, t0);
-        const ImU32 cBot = lerpCol(q.topCol, q.botCol, t1);
-
-        dl->PrimReserve(6, 4);
-        const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
-        const ImDrawIdx idx = static_cast<ImDrawIdx>(dl->_VtxCurrentIdx);
-        dl->PrimWriteVtx(p0, uv, cTop);
-        dl->PrimWriteVtx(p1, uv, cTop);
-        dl->PrimWriteVtx(p2, uv, cBot);
-        dl->PrimWriteVtx(p3, uv, cBot);
-        dl->PrimWriteIdx(idx);
-        dl->PrimWriteIdx(idx + 1);
-        dl->PrimWriteIdx(idx + 2);
-        dl->PrimWriteIdx(idx);
-        dl->PrimWriteIdx(idx + 2);
-        dl->PrimWriteIdx(idx + 3);
+    for (std::size_t i = 0; i < cv.pixels.size(); ++i) {
+        rgba[i * 4u + 0u] = toByte(cv.pixels[i].r);
+        rgba[i * 4u + 1u] = toByte(cv.pixels[i].g);
+        rgba[i * 4u + 2u] = toByte(cv.pixels[i].b);
+        rgba[i * 4u + 3u] = toByte(cv.pixels[i].a);
     }
+    return rgba;
 }
 
-void DrawEllipseFilledRot(ImDrawList* dl, const RotEllipseSpec& e) {
-    constexpr int kSegs = 40;
-    std::array<ImVec2, kSegs> pts{};
-    for (int i = 0; i < kSegs; ++i) {
-        const float a = (6.2831853f * static_cast<float>(i)) / static_cast<float>(kSegs);
-        const float lx = e.cx + std::cos(a) * e.rx;
-        const float ly = e.cy + std::sin(a) * e.ry;
-        pts[static_cast<std::size_t>(i)] = RotPt(e.cx, e.cy, lx, ly, e.angleRad);
-    }
-    dl->AddConvexPolyFilled(pts.data(), kSegs, e.fillCol);
-    if ((e.strokeCol >> 24) > 0 && e.strokeW > 0.0f) {
-        dl->AddPolyline(pts.data(), kSegs, e.strokeCol, ImDrawFlags_Closed, e.strokeW);
-    }
-}
-
-void DrawPineTree(ImDrawList* dl, const PineTreeSpec& t) {
-    // Two-tier stylized Motrix conifer matching no-task.svg
-    const float lowerTopY = t.baseY - t.h * 0.64f;
-    const float upperTopY = t.baseY - t.h;
-    const float upperBotY = t.baseY - t.h * 0.34f;
-    dl->AddTriangleFilled(ImVec2(t.baseX + t.w * 0.03f, lowerTopY),
-                          ImVec2(t.baseX - t.w * 0.50f, t.baseY),
-                          ImVec2(t.baseX + t.w * 0.50f, t.baseY),
-                          t.col);
-    dl->AddTriangleFilled(ImVec2(t.baseX, upperTopY),
-                          ImVec2(t.baseX - t.w * 0.44f, upperBotY),
-                          ImVec2(t.baseX + t.w * 0.44f, upperBotY),
-                          t.col);
-}
-
-void DrawSoftBellHill(const UfoCanvas& uc, const BellHillSpec& h) {
-    constexpr float kPi = 3.14159265f;
-    constexpr int kSegs = 32;
-    for (int i = 0; i < kSegs; ++i) {
-        const float t0 = static_cast<float>(i) / static_cast<float>(kSegs);
-        const float t1 = static_cast<float>(i + 1) / static_cast<float>(kSegs);
-        const float s0 = std::sin(t0 * kPi);
-        const float s1 = std::sin(t1 * kPi);
-        const float w0 = s0 * s0;
-        const float w1 = s1 * s1;
-        const float xA = h.startX + (h.endX - h.startX) * t0;
-        const float xB = h.startX + (h.endX - h.startX) * t1;
-        const float yA = h.baseY - h.peakHeight * w0;
-        const float yB = h.baseY - h.peakHeight * w1;
-        const RgbaColor topA{h.topCol.r, h.topCol.g, h.topCol.b, h.topCol.a * w0};
-        const RgbaColor topB{h.topCol.r, h.topCol.g, h.topCol.b, h.topCol.a * w1};
-        const RgbaColor midTop{
-            (topA.r + topB.r) * 0.5f,
-            (topA.g + topB.g) * 0.5f,
-            (topA.b + topB.b) * 0.5f,
-            (topA.a + topB.a) * 0.5f,
-        };
-        DrawGradientQuadStrip(
-            uc.dl,
-            {uc.Pt(xA, yA), uc.Pt(xB, yB), uc.Pt(xB, h.baseY), uc.Pt(xA, h.baseY), midTop, h.botCol, 6});
-    }
-}
-
-void DrawUfoLandscape(const UfoCanvas& uc, bool dark) {
-    const RgbaColor hillLeftTop = dark ? HexColor(0xFFFFFF, 0.13f) : HexColor(0xD4DAE2, 0.42f);
-    const RgbaColor hillRightTop = dark ? HexColor(0xFFFFFF, 0.18f) : HexColor(0xC9D0DA, 0.52f);
-    const RgbaColor hillBot = dark ? HexColor(0x343434, 0.0f) : HexColor(0xFFFFFF, 0.0f);
-    DrawSoftBellHill(uc, {48.0f, 326.0f, 52.0f, 296.0f, hillLeftTop, hillBot});
-    DrawSoftBellHill(uc, {165.0f, 474.0f, 78.0f, 294.0f, hillRightTop, hillBot});
-
-    const ImU32 treeDark = ToAbgrU32(dark ? HexColor(0x7B7B7B, 0.92f) : HexColor(0x5E5E5E, 0.94f));
-    const ImU32 treeSoft = ToAbgrU32(dark ? HexColor(0x6C6C6C, 0.48f) : HexColor(0xB4B4B4, 0.55f));
-    uc.dl->AddTriangleFilled(
-        uc.Pt(130.0f, 232.0f), uc.Pt(124.5f, 255.0f), uc.Pt(135.5f, 255.0f), treeSoft);
-    DrawPineTree(
-        uc.dl, {uc.x0 + 148.0f * uc.sx, uc.y0 + 252.0f * uc.sy, 18.0f * uc.sx, 38.0f * uc.sy, treeDark});
-    uc.dl->AddTriangleFilled(
-        uc.Pt(337.0f, 209.0f), uc.Pt(331.0f, 234.0f), uc.Pt(343.0f, 234.0f), treeSoft);
-    DrawPineTree(
-        uc.dl, {uc.x0 + 364.0f * uc.sx, uc.y0 + 236.0f * uc.sy, 23.0f * uc.sx, 49.0f * uc.sy, treeDark});
-}
-
-void DrawUfoBeamAndSaucer(const UfoCanvas& uc, bool dark) {
-    const RgbaColor outerTop = dark ? HexColor(0xBBBBBB, 0.20f) : HexColor(0x707070, 0.25f);
-    const RgbaColor outerBot = dark ? HexColor(0x404040, 0.03f) : HexColor(0x9A9A9A, 0.06f);
-    DrawGradientQuadStrip(uc.dl,
-                          {uc.Pt(191.0f, 67.0f),
-                           uc.Pt(243.0f, 51.0f),
-                           uc.Pt(318.0f, 188.0f),
-                           uc.Pt(210.0f, 224.0f),
-                           outerTop,
-                           outerBot,
-                           24});
-    const RgbaColor innerTop = HexColor(0x5B5AEA, 0.56f);
-    const RgbaColor innerBot = dark ? HexColor(0x5B5AEA, 0.0f) : HexColor(0xE7D1AF, 0.0f);
-    DrawGradientQuadStrip(uc.dl,
-                          {uc.Pt(199.0f, 65.0f),
-                           uc.Pt(235.0f, 54.0f),
-                           uc.Pt(296.0f, 182.0f),
-                           uc.Pt(222.0f, 206.0f),
-                           innerTop,
-                           innerBot,
-                           24});
-
-    const float ufoCx = uc.x0 + 216.0f * uc.sx;
-    const float ufoCy = uc.y0 + 51.0f * uc.sy;
-    constexpr float kTilt = -0.34f;
-    DrawEllipseFilledRot(uc.dl,
-                         {ufoCx - 3.5f * uc.sx,
-                          ufoCy - 11.5f * uc.sy,
-                          25.0f * uc.sx,
-                          13.5f * uc.sy,
-                          kTilt,
-                          ToAbgrU32(HexColor(0x4C4C4C)),
-                          ToAbgrU32(HexColor(0x1B1B1B)),
-                          1.4f * uc.sx});
-    DrawEllipseFilledRot(uc.dl,
-                         {ufoCx,
-                          ufoCy,
-                          55.5f * uc.sx,
-                          16.0f * uc.sy,
-                          kTilt,
-                          ToAbgrU32(HexColor(0x3E3E3E)),
-                          ToAbgrU32(HexColor(0x1B1B1B)),
-                          1.5f * uc.sx});
-    DrawEllipseFilledRot(uc.dl,
-                         {ufoCx - 0.5f * uc.sx,
-                          ufoCy - 2.0f * uc.sy,
-                          51.0f * uc.sx,
-                          12.5f * uc.sy,
-                          kTilt,
-                          ToAbgrU32(HexColor(0x6C6971, 0.45f))});
-    DrawEllipseFilledRot(uc.dl,
-                         {ufoCx + 2.0f * uc.sx,
-                          ufoCy + 6.0f * uc.sy,
-                          29.0f * uc.sx,
-                          7.2f * uc.sy,
-                          kTilt,
-                          ToAbgrU32(HexColor(0x1C1C1C))});
-    DrawEllipseFilledRot(uc.dl,
-                         {ufoCx + 3.0f * uc.sx,
-                          ufoCy + 7.5f * uc.sy,
-                          21.0f * uc.sx,
-                          5.0f * uc.sy,
-                          kTilt,
-                          ToAbgrU32(HexColor(0x5B5AEA, 0.72f))});
+void DrawEmptyUfoFallback(const UfoIllustrationSpec& spec) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float ox = spec.centerX - spec.width * 0.5f;
+    const float sx = spec.width / 504.0f;
+    const float sy = spec.height / 309.0f;
+    const float cx = ox + 179.0f * sx;
+    const float cy = spec.topY + 28.0f * sy;
+    dl->AddEllipseFilled(
+        ImVec2(cx, cy), ImVec2(56.0f * sx, 16.0f * sy), ToAbgrU32(HexColor(0x3E3E3E)), -0.33f, 64);
+    dl->AddEllipse(
+        ImVec2(cx, cy), ImVec2(56.0f * sx, 16.0f * sy), ToAbgrU32(HexColor(0x1B1B1B)), -0.33f, 64, 1.5f);
 }
 
 }  // namespace
 
 void DrawEmptyUfoIllustration(const UfoIllustrationSpec& spec) {
-    const UfoCanvas uc{
-        ImGui::GetWindowDrawList(),
-        spec.centerX - spec.width * 0.5f,
-        spec.topY,
-        spec.width / 504.0f,
-        spec.height / 309.0f,
-    };
-    DrawUfoLandscape(uc, spec.dark);
-    DrawUfoBeamAndSaucer(uc, spec.dark);
+    if (spec.width <= 1.0f || spec.height <= 1.0f) {
+        return;
+    }
+    if (spec.host != nullptr && spec.cache != nullptr) {
+        CachedTextureSlot& cache = *spec.cache;
+        const int rawW = static_cast<int>(std::lround(spec.width * 2.0f));
+        const int targetW = std::clamp(((rawW + 63) / 64) * 64, 768, 1280);
+        const int targetH = std::max(
+            128, static_cast<int>(std::lround(static_cast<float>(targetW) * (309.0f / 504.0f))));
+        if (cache.owner != spec.host) {
+            cache.texId = 0;
+            cache.owner = spec.host;
+        }
+        if (cache.texId == 0 || cache.texW != targetW || cache.texH != targetH
+            || cache.dark != spec.dark) {
+            const auto pixels = BuildUfoTexturePixels(targetW, targetH, spec.dark);
+            const std::uint64_t uploaded =
+                spec.host->UploadRgbaTexture(cache.texId, targetW, targetH, pixels);
+            if (uploaded != 0) {
+                cache.texId = uploaded;
+                cache.texW = targetW;
+                cache.texH = targetH;
+                cache.dark = spec.dark;
+            }
+        }
+        if (cache.texId != 0) {
+            const float x0 = std::floor(spec.centerX - spec.width * 0.5f);
+            const float y0 = std::floor(spec.topY);
+            const float x1 = x0 + std::round(spec.width);
+            const float y1 = y0 + std::round(spec.height);
+            ImGui::GetWindowDrawList()->AddImage(
+                ImTextureRef(static_cast<ImTextureID>(cache.texId)), ImVec2(x0, y0), ImVec2(x1, y1));
+            return;
+        }
+    }
+    DrawEmptyUfoFallback(spec);
 }
 
 }  // namespace motrix::ui

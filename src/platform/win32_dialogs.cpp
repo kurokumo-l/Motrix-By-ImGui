@@ -16,14 +16,6 @@ import :win32_internal;
 namespace motrix::platform {
 namespace {
 
-struct CoTaskMemDeleter {
-    void operator()(wchar_t* ptr) const noexcept {
-        if (ptr) {
-            ::CoTaskMemFree(ptr);
-        }
-    }
-};
-
 std::optional<std::string>
 RunOpenItemDialog(void* ownerHwnd, bool folderMode, std::string_view initialDir) {
     ScopedComInit com;
@@ -85,7 +77,7 @@ RunOpenItemDialog(void* ownerHwnd, bool folderMode, std::string_view initialDir)
     if (FAILED(resultItem->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) || !rawPath) {
         return std::nullopt;
     }
-    const std::unique_ptr<wchar_t, CoTaskMemDeleter> pathGuard(rawPath);
+    const UniqueCoTaskPtr<wchar_t> pathGuard(rawPath);
     return motrix::core::WideToUtf8(pathGuard.get());
 }
 
@@ -126,7 +118,9 @@ void Win32CopyTextToClipboard(void* hwnd, std::string_view utf8) {
         if (void* ptr = ::GlobalLock(mem)) {
             std::memcpy(ptr, wide.c_str(), bytes);
             ::GlobalUnlock(mem);
-            ::SetClipboardData(CF_UNICODETEXT, mem);
+            if (!::SetClipboardData(CF_UNICODETEXT, mem)) {
+                ::GlobalFree(mem);
+            }
         } else {
             ::GlobalFree(mem);
         }
@@ -138,7 +132,20 @@ void Win32OpenPathInExplorer(std::string_view utf8Path) {
     if (utf8Path.empty()) {
         return;
     }
-    const std::wstring wide = motrix::core::Utf8ToWide(utf8Path);
+    if (utf8Path.starts_with("http://") || utf8Path.starts_with("https://")) {
+        const std::wstring wide = motrix::core::Utf8ToWide(utf8Path);
+        ::ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return;
+    }
+    const std::filesystem::path p = motrix::core::PathFromUtf8(utf8Path);
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(p, ec)) {
+        const std::wstring arg = L"/select,\"" + p.wstring() + L"\"";
+        ::ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(), nullptr, SW_SHOWNORMAL);
+        return;
+    }
+    const std::filesystem::path target = std::filesystem::exists(p, ec) ? p : p.parent_path();
+    const std::wstring wide = target.empty() ? motrix::core::Utf8ToWide(utf8Path) : target.wstring();
     ::ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 

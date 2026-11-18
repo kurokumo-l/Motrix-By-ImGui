@@ -5,4 +5,5 @@ export import :anim;
 export import :fonts;
 export import :scope_guard;
 export import :icons;
+export import :prefs_model;
 export import :shell;

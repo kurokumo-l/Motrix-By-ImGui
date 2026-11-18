@@ -18,15 +18,6 @@ namespace {
     return 1.0f - std::exp(-speed * std::min(dt, 0.1f));
 }
 
-[[nodiscard]] RgbaColor LerpRgba(RgbaColor a, RgbaColor b, float t) noexcept {
-    return RgbaColor{
-        .r = a.r + (b.r - a.r) * t,
-        .g = a.g + (b.g - a.g) * t,
-        .b = a.b + (b.b - a.b) * t,
-        .a = a.a + (b.a - a.a) * t,
-    };
-}
-
 [[nodiscard]] bool ColorNearlyEqual(RgbaColor a, RgbaColor b) noexcept {
     constexpr float kEps = 0.002f;
     return std::fabs(a.r - b.r) < kEps && std::fabs(a.g - b.g) < kEps && std::fabs(a.b - b.b) < kEps
@@ -204,54 +195,54 @@ bool ThemeController::Update(float dt) {
         return false;
     }
     const float t = ExpFactor(16.0f, dt);
-    current_.asideBg = LerpRgba(current_.asideBg, target_.asideBg, t);
-    current_.subnavBg = LerpRgba(current_.subnavBg, target_.subnavBg, t);
-    current_.subnavTitle = LerpRgba(current_.subnavTitle, target_.subnavTitle, t);
-    current_.subnavItemText = LerpRgba(current_.subnavItemText, target_.subnavItemText, t);
-    current_.subnavActiveBg = LerpRgba(current_.subnavActiveBg, target_.subnavActiveBg, t);
-    current_.subnavActiveText = LerpRgba(current_.subnavActiveText, target_.subnavActiveText, t);
-    current_.mainBg = LerpRgba(current_.mainBg, target_.mainBg, t);
-    current_.panelTitle = LerpRgba(current_.panelTitle, target_.panelTitle, t);
-    current_.panelBorder = LerpRgba(current_.panelBorder, target_.panelBorder, t);
-    current_.headerAction = LerpRgba(current_.headerAction, target_.headerAction, t);
+    current_.asideBg = LerpColor(current_.asideBg, target_.asideBg, t);
+    current_.subnavBg = LerpColor(current_.subnavBg, target_.subnavBg, t);
+    current_.subnavTitle = LerpColor(current_.subnavTitle, target_.subnavTitle, t);
+    current_.subnavItemText = LerpColor(current_.subnavItemText, target_.subnavItemText, t);
+    current_.subnavActiveBg = LerpColor(current_.subnavActiveBg, target_.subnavActiveBg, t);
+    current_.subnavActiveText = LerpColor(current_.subnavActiveText, target_.subnavActiveText, t);
+    current_.mainBg = LerpColor(current_.mainBg, target_.mainBg, t);
+    current_.panelTitle = LerpColor(current_.panelTitle, target_.panelTitle, t);
+    current_.panelBorder = LerpColor(current_.panelBorder, target_.panelBorder, t);
+    current_.headerAction = LerpColor(current_.headerAction, target_.headerAction, t);
     current_.headerActionDisabled =
-        LerpRgba(current_.headerActionDisabled, target_.headerActionDisabled, t);
-    current_.taskCardBg = LerpRgba(current_.taskCardBg, target_.taskCardBg, t);
-    current_.taskCardBorder = LerpRgba(current_.taskCardBorder, target_.taskCardBorder, t);
-    current_.taskNameText = LerpRgba(current_.taskNameText, target_.taskNameText, t);
-    current_.pillBg = LerpRgba(current_.pillBg, target_.pillBg, t);
-    current_.pillBorder = LerpRgba(current_.pillBorder, target_.pillBorder, t);
-    current_.pillIcon = LerpRgba(current_.pillIcon, target_.pillIcon, t);
-    current_.progressTrack = LerpRgba(current_.progressTrack, target_.progressTrack, t);
-    current_.emptyText = LerpRgba(current_.emptyText, target_.emptyText, t);
-    current_.speedometerBg = LerpRgba(current_.speedometerBg, target_.speedometerBg, t);
-    current_.speedometerBorder = LerpRgba(current_.speedometerBorder, target_.speedometerBorder, t);
-    current_.titlebarActionFg = LerpRgba(current_.titlebarActionFg, target_.titlebarActionFg, t);
+        LerpColor(current_.headerActionDisabled, target_.headerActionDisabled, t);
+    current_.taskCardBg = LerpColor(current_.taskCardBg, target_.taskCardBg, t);
+    current_.taskCardBorder = LerpColor(current_.taskCardBorder, target_.taskCardBorder, t);
+    current_.taskNameText = LerpColor(current_.taskNameText, target_.taskNameText, t);
+    current_.pillBg = LerpColor(current_.pillBg, target_.pillBg, t);
+    current_.pillBorder = LerpColor(current_.pillBorder, target_.pillBorder, t);
+    current_.pillIcon = LerpColor(current_.pillIcon, target_.pillIcon, t);
+    current_.progressTrack = LerpColor(current_.progressTrack, target_.progressTrack, t);
+    current_.emptyText = LerpColor(current_.emptyText, target_.emptyText, t);
+    current_.speedometerBg = LerpColor(current_.speedometerBg, target_.speedometerBg, t);
+    current_.speedometerBorder = LerpColor(current_.speedometerBorder, target_.speedometerBorder, t);
+    current_.titlebarActionFg = LerpColor(current_.titlebarActionFg, target_.titlebarActionFg, t);
     current_.titlebarActionHoverBg =
-        LerpRgba(current_.titlebarActionHoverBg, target_.titlebarActionHoverBg, t);
-    current_.modalBg = LerpRgba(current_.modalBg, target_.modalBg, t);
-    current_.modalFooterBg = LerpRgba(current_.modalFooterBg, target_.modalFooterBg, t);
-    current_.inputBg = LerpRgba(current_.inputBg, target_.inputBg, t);
-    current_.inputBorder = LerpRgba(current_.inputBorder, target_.inputBorder, t);
-    current_.inputBorderHover = LerpRgba(current_.inputBorderHover, target_.inputBorderHover, t);
-    current_.inputAddonBg = LerpRgba(current_.inputAddonBg, target_.inputAddonBg, t);
-    current_.inputPlaceholder = LerpRgba(current_.inputPlaceholder, target_.inputPlaceholder, t);
-    current_.switchOffBg = LerpRgba(current_.switchOffBg, target_.switchOffBg, t);
-    current_.subLabelText = LerpRgba(current_.subLabelText, target_.subLabelText, t);
-    current_.tagBg = LerpRgba(current_.tagBg, target_.tagBg, t);
-    current_.borderSubtle = LerpRgba(current_.borderSubtle, target_.borderSubtle, t);
-    current_.graphicBoxBg = LerpRgba(current_.graphicBoxBg, target_.graphicBoxBg, t);
-    current_.graphicAtomOutline = LerpRgba(current_.graphicAtomOutline, target_.graphicAtomOutline, t);
-    current_.graphicS0 = LerpRgba(current_.graphicS0, target_.graphicS0, t);
-    current_.graphicS1 = LerpRgba(current_.graphicS1, target_.graphicS1, t);
-    current_.graphicS2 = LerpRgba(current_.graphicS2, target_.graphicS2, t);
-    current_.graphicS3 = LerpRgba(current_.graphicS3, target_.graphicS3, t);
-    current_.graphicS4 = LerpRgba(current_.graphicS4, target_.graphicS4, t);
-    current_.tableHeaderBg = LerpRgba(current_.tableHeaderBg, target_.tableHeaderBg, t);
-    current_.tableRowBg = LerpRgba(current_.tableRowBg, target_.tableRowBg, t);
-    current_.tableRowAltBg = LerpRgba(current_.tableRowAltBg, target_.tableRowAltBg, t);
-    current_.tableHoverBg = LerpRgba(current_.tableHoverBg, target_.tableHoverBg, t);
-    current_.tableText = LerpRgba(current_.tableText, target_.tableText, t);
+        LerpColor(current_.titlebarActionHoverBg, target_.titlebarActionHoverBg, t);
+    current_.modalBg = LerpColor(current_.modalBg, target_.modalBg, t);
+    current_.modalFooterBg = LerpColor(current_.modalFooterBg, target_.modalFooterBg, t);
+    current_.inputBg = LerpColor(current_.inputBg, target_.inputBg, t);
+    current_.inputBorder = LerpColor(current_.inputBorder, target_.inputBorder, t);
+    current_.inputBorderHover = LerpColor(current_.inputBorderHover, target_.inputBorderHover, t);
+    current_.inputAddonBg = LerpColor(current_.inputAddonBg, target_.inputAddonBg, t);
+    current_.inputPlaceholder = LerpColor(current_.inputPlaceholder, target_.inputPlaceholder, t);
+    current_.switchOffBg = LerpColor(current_.switchOffBg, target_.switchOffBg, t);
+    current_.subLabelText = LerpColor(current_.subLabelText, target_.subLabelText, t);
+    current_.tagBg = LerpColor(current_.tagBg, target_.tagBg, t);
+    current_.borderSubtle = LerpColor(current_.borderSubtle, target_.borderSubtle, t);
+    current_.graphicBoxBg = LerpColor(current_.graphicBoxBg, target_.graphicBoxBg, t);
+    current_.graphicAtomOutline = LerpColor(current_.graphicAtomOutline, target_.graphicAtomOutline, t);
+    current_.graphicS0 = LerpColor(current_.graphicS0, target_.graphicS0, t);
+    current_.graphicS1 = LerpColor(current_.graphicS1, target_.graphicS1, t);
+    current_.graphicS2 = LerpColor(current_.graphicS2, target_.graphicS2, t);
+    current_.graphicS3 = LerpColor(current_.graphicS3, target_.graphicS3, t);
+    current_.graphicS4 = LerpColor(current_.graphicS4, target_.graphicS4, t);
+    current_.tableHeaderBg = LerpColor(current_.tableHeaderBg, target_.tableHeaderBg, t);
+    current_.tableRowBg = LerpColor(current_.tableRowBg, target_.tableRowBg, t);
+    current_.tableRowAltBg = LerpColor(current_.tableRowAltBg, target_.tableRowAltBg, t);
+    current_.tableHoverBg = LerpColor(current_.tableHoverBg, target_.tableHoverBg, t);
+    current_.tableText = LerpColor(current_.tableText, target_.tableText, t);
     return true;
 }
 

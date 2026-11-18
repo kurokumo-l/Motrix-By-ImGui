@@ -5,6 +5,7 @@ import motrix.domain;
 import :theme;
 import :fonts;
 import :icons;
+import :anim;
 
 namespace motrix::ui {
 
@@ -12,12 +13,15 @@ export struct ElStyle {
     const MotrixPalette& palette;
     const FontRegistry& fonts;
     float dpiScale = 1.0f;
+    AnimState* anim = nullptr;
 };
 
 export struct ElCompositeResult {
     bool textChanged = false;
     bool leftClicked = false;
     bool rightClicked = false;
+    bool active = false;
+    bool deactivated = false;
 };
 
 export struct ElLinkSpec {
@@ -47,6 +51,7 @@ export struct ElCompositeSpec {
     std::string_view placeholder{};
     bool readOnly = false;
     bool password = false;
+    bool mutedReadOnly = true;
 };
 
 export struct ElIntSpec {
@@ -87,11 +92,27 @@ export struct ElButtonSpec {
     std::string_view label{};
     float width = 80.0f;
     float height = 30.0f;
+    bool disabled = false;
 };
 
 export [[nodiscard]] RgbaColor
 ResolveElBorderColor(const MotrixPalette& p, bool focused, bool hovered) noexcept;
+export [[nodiscard]] RgbaColor
+AnimateElBorderColor(const ElStyle& st, const char* id, bool focused, bool hovered);
 
+export enum class ElTooltipPlacement {
+    Top = 0,
+    Bottom,
+    Left,
+    Right,
+};
+
+export struct ElTooltipSpec {
+    std::string_view text;
+    ElTooltipPlacement placement = ElTooltipPlacement::Top;
+};
+
+export void ElDrawTooltip(const ElStyle& st, const ElTooltipSpec& spec);
 export void ElDrawLinkText(const ElStyle& st, const ElLinkSpec& spec);
 export bool ElCheckbox(const ElStyle& st, const char* id, std::string_view label, bool* value);
 export bool ElSwitch(const ElStyle& st, const char* id, std::string_view label, bool* value);

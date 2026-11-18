@@ -93,3 +93,45 @@ TEST_CASE("motrix.core i18n lookup and async logger", "[core][i18n][logger]") {
     CHECK(logged->find("filtered out") == std::string::npos);
     std::filesystem::remove_all(logPath.parent_path(), ec);
 }
+
+TEST_CASE("motrix.core ParseLogLevel maps known strings case-insensitively", "[core][logger]") {
+    using namespace motrix::core;
+    CHECK(ParseLogLevel("debug") == LogLevel::Debug);
+    CHECK(ParseLogLevel("DEBUG") == LogLevel::Debug);
+    CHECK(ParseLogLevel("info") == LogLevel::Info);
+    CHECK(ParseLogLevel("warn") == LogLevel::Warn);
+    CHECK(ParseLogLevel("NOTICE") == LogLevel::Warn);
+    CHECK(ParseLogLevel("error") == LogLevel::Error);
+    CHECK(ParseLogLevel("Error") == LogLevel::Error);
+    CHECK(ParseLogLevel("") == LogLevel::Info);
+    CHECK(ParseLogLevel("unknown") == LogLevel::Info);
+}
+
+TEST_CASE("motrix.core ParseStrictInt validates integer strings strictly", "[core][encoding]") {
+    using namespace motrix::core;
+    CHECK(ParseStrictInt("16800") == 16800);
+    CHECK(ParseStrictInt("  42 \t") == 42);
+    CHECK(ParseStrictInt("0") == 0);
+    CHECK(ParseStrictInt("-7") == -7);
+    CHECK_FALSE(ParseStrictInt("").has_value());
+    CHECK_FALSE(ParseStrictInt("   ").has_value());
+    CHECK_FALSE(ParseStrictInt("abc").has_value());
+    CHECK_FALSE(ParseStrictInt("123abc").has_value());
+    CHECK_FALSE(ParseStrictInt("999999999999999").has_value());
+}
+
+TEST_CASE("motrix.core shared ASCII and OS path/handle helpers behave consistently", "[core][os]") {
+    using namespace motrix::core;
+    CHECK(StartsWithAsciiInsensitive("MOTRIX://task-list", "motrix://"));
+    CHECK_FALSE(StartsWithAsciiInsensitive("http://a", "https://"));
+    CHECK(EndsWithAsciiInsensitive("Ubuntu.TORRENT", ".torrent"));
+    CHECK_FALSE(EndsWithAsciiInsensitive("a.iso", ".torrent"));
+    CHECK(TrimQuotedArg("  \"'C:\\Downloads\\a.torrent'\"  ") == "C:\\Downloads\\a.torrent");
+
+    const auto selfExe = CurrentExecutablePath();
+    REQUIRE_FALSE(selfExe.empty());
+    CHECK(std::filesystem::exists(selfExe));
+
+    UniqueHandle invalid;
+    CHECK_FALSE(invalid.IsValid());
+}

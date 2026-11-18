@@ -36,14 +36,19 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
     $vsCmakeDir = Join-Path $vsPath "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
     foreach ($d in @($vsCmakeDir, $vsNinjaDir)) {
         if ((Test-Path $d) -and ($env:Path -notlike "*$d*")) {
-            $env:Path = "$d;$env:Path"
+            $env:Path = "$env:Path;$d"
         }
     }
 }
 
 Write-Host "Configuring CMake ($Config, Ninja)..." -ForegroundColor Cyan
-& cmake -S $Root -B $BuildDir -G Ninja "-DCMAKE_BUILD_TYPE=$Config"
+& cmake -S $Root -B $BuildDir -G Ninja "-DCMAKE_BUILD_TYPE=$Config" "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$CompileDb = Join-Path $BuildDir "compile_commands.json"
+if (Test-Path $CompileDb) {
+    Copy-Item -Path $CompileDb -Destination (Join-Path $Root "compile_commands.json") -Force
+}
 
 Write-Host "Building Motrix Native ($Config)..." -ForegroundColor Cyan
 & cmake --build $BuildDir --parallel

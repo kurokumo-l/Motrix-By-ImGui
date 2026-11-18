@@ -7,15 +7,6 @@ namespace motrix::engine {
 
 namespace {
 
-[[nodiscard]] bool ContainsIgnoreCase(std::string_view haystack, std::string_view needle) noexcept {
-    if (needle.empty() || haystack.size() < needle.size()) {
-        return false;
-    }
-    const std::string h = motrix::core::AsciiLower(haystack);
-    const std::string n = motrix::core::AsciiLower(needle);
-    return h.find(n) != std::string::npos;
-}
-
 [[nodiscard]] std::string NormalizeOptionKey(std::string_view key) {
     std::string out = motrix::core::AsciiLower(motrix::core::TrimAscii(key));
     if (out.starts_with("--")) {
@@ -37,11 +28,6 @@ namespace {
         "event-poll",
         "bt-detach-seed-only",
         "bt-enable-hook-after-hash-check",
-        "save-session",
-        "save-session-interval",
-        "input-file",
-        "force-save",
-        "save-not-found",
         "optimize-concurrent-downloads",
         "deferred-input",
         "enable-http-pipelining",
@@ -50,7 +36,6 @@ namespace {
         "ftp-type",
         "ftp-pasv",
         "ftp-reuse-connection",
-        "follow-metalink",
         "metalink-base-uri",
         "metalink-enable-unique-protocol",
         "metalink-language",
@@ -58,13 +43,10 @@ namespace {
         "metalink-os",
         "metalink-version",
         "metalink-preferred-protocol",
+        "bt-min-crypto-level",
+        "bt-save-metadata",
     };
-    for (const auto item : kRetired) {
-        if (key == item) {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::find(kRetired, key) != std::end(kRetired);
 }
 
 [[nodiscard]] bool IsAria2NextOnlyOption(std::string_view key) noexcept {
@@ -73,13 +55,17 @@ namespace {
         "state-save-interval",
         "stop-with-process",
         "bt-port-mapping",
+        "bt-encryption",
+        "bt-transport",
+        "bt-anonymous-mode",
+        "bt-max-connections",
+        "bt-first-last-piece-first",
+        "detach-share-only",
+        "media",
+        "media-format",
+        "rpc-save-upload-metadata",
     };
-    for (const auto item : kNextOnly) {
-        if (key == item) {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::find(kNextOnly, key) != std::end(kNextOnly);
 }
 
 [[nodiscard]] bool IsOctet(std::string_view s) noexcept {
@@ -162,6 +148,13 @@ void AppendUniqueToken(std::vector<std::string>& dest, std::string value) {
     return std::any_of(opts.begin(), opts.end(), [&](const auto& o) { return o.key == key; });
 }
 
+[[nodiscard]] std::string ClampClassicMaxConnPerServer(std::string_view value) {
+    if (const auto parsed = motrix::core::ParseStrictInt(motrix::core::TrimAscii(value))) {
+        return std::to_string(std::clamp(*parsed, 1, 16));
+    }
+    return std::string(value);
+}
+
 void AppendCommonLaunchFlags(std::vector<std::string>& args,
                              const EngineLaunchOptions& launch,
                              std::span<const EngineOptionPair> filtered) {
@@ -174,7 +167,11 @@ void AppendCommonLaunchFlags(std::vector<std::string>& args,
         args.push_back("--rpc-allow-origin-all=true");
     }
     if (!HasOptionKey(filtered, "console-log-level")) {
-        args.push_back("--console-log-level=warn");
+        const std::string lvl = launch.logLevel.empty() ? "warn" : launch.logLevel;
+        args.push_back(std::format("--console-log-level={}", lvl));
+    }
+    if (!HasOptionKey(filtered, "log-level") && !launch.logLevel.empty()) {
+        args.push_back(std::format("--log-level={}", launch.logLevel));
     }
     if (!HasOptionKey(filtered, "summary-interval")) {
         args.push_back("--summary-interval=0");
@@ -192,15 +189,38 @@ public:
     std::vector<EngineOptionPair>
     FilterGlobalOptions(std::span<const EngineOptionPair> options) const override {
         std::vector<EngineOptionPair> out;
-        out.reserve(options.size() + 1);
+        out.reserve(options.size() + 2);
         bool hasAsyncDns = false;
         for (const auto& opt : options) {
             std::string key = NormalizeOptionKey(opt.key);
-            if (key.empty() || IsAria2NextOnlyOption(key)) {
+            if (key.empty()) {
+                continue;
+            }
+            if (key == "bt-encryption") {
+                const bool req = (opt.value == "required");
+                out.push_back({"bt-require-crypto", req ? "true" : "false"});
+                if (opt.value != "disabled") {
+                    out.push_back({"bt-min-crypto-level", req ? "arc4" : "plain"});
+                }
+                continue;
+            }
+            if (key == "detach-share-only") {
+                out.push_back({"bt-detach-seed-only", opt.value});
+                continue;
+            }
+            if (key == "rpc-save-upload-metadata") {
+                out.push_back({"bt-save-metadata", opt.value});
+                continue;
+            }
+            if (IsAria2NextOnlyOption(key)) {
                 continue;
             }
             if (key == "async-dns") {
                 hasAsyncDns = true;
+            }
+            if (key == "max-connection-per-server") {
+                out.push_back({std::move(key), ClampClassicMaxConnPerServer(opt.value)});
+                continue;
             }
             out.push_back({std::move(key), opt.value});
         }
@@ -219,7 +239,10 @@ public:
             if (key.empty() || IsAria2NextOnlyOption(key)) {
                 continue;
             }
-            out.push_back({std::move(key), opt.value});
+            std::string val = (key == "max-connection-per-server")
+                                  ? ClampClassicMaxConnPerServer(opt.value)
+                                  : opt.value;
+            out.push_back({std::move(key), std::move(val)});
         }
         return out;
     }
@@ -292,7 +315,13 @@ public:
             if (IsRetiredInAria2Next(key)) {
                 continue;
             }
-            std::string val = (key == "no-proxy") ? NormalizeNoProxy(opt.value) : opt.value;
+            std::string val = opt.value;
+            if (key == "bt-require-crypto") {
+                key = "bt-encryption";
+                val = (opt.value == "true") ? "required" : "preferred";
+            } else if (key == "no-proxy") {
+                val = NormalizeNoProxy(opt.value);
+            }
             out.push_back({std::move(key), std::move(val)});
         }
         return out;
@@ -327,6 +356,14 @@ public:
             args.push_back(
                 std::format("--state-dir={}", motrix::core::PathToUtf8(launch.stateOrSessionPath)));
             args.push_back(std::format("--state-save-interval={}", launch.saveIntervalSeconds));
+        }
+        if (!launch.sessionFilePath.empty()) {
+            const std::string sessPath = motrix::core::PathToUtf8(launch.sessionFilePath);
+            args.push_back(std::format("--save-session={}", sessPath));
+            args.push_back(std::format("--save-session-interval={}", launch.saveIntervalSeconds));
+            if (launch.sessionFileExists) {
+                args.push_back(std::format("--input-file={}", sessPath));
+            }
         }
         if (launch.hostPid != 0) {
             args.push_back(std::format("--stop-with-process={}", launch.hostPid));
@@ -364,6 +401,26 @@ public:
     }
 };
 
+}  // namespace
+
+std::unique_ptr<IEngineDialect> CreateDialect(EngineKind kind) {
+    if (kind == EngineKind::Aria2Next) {
+        return std::make_unique<Aria2NextDialect>();
+    }
+    return std::make_unique<ClassicAria2Dialect>();
+}
+
+namespace {
+
+[[nodiscard]] bool ContainsIgnoreCase(std::string_view haystack, std::string_view needle) noexcept {
+    if (needle.empty() || haystack.size() < needle.size()) {
+        return false;
+    }
+    const std::string h = motrix::core::AsciiLower(haystack);
+    const std::string n = motrix::core::AsciiLower(needle);
+    return h.find(n) != std::string::npos;
+}
+
 void AppendCsvFeatures(std::string_view rest, std::vector<std::string>& out) {
     std::size_t fp = 0;
     while (fp <= rest.size()) {
@@ -384,12 +441,11 @@ void AppendCsvFeatures(std::string_view rest, std::vector<std::string>& out) {
 void ParseCliHeaderLine(std::string_view line, EngineVersionInfo& info) {
     constexpr std::string_view kNextPrefix = "aria2-next version ";
     constexpr std::string_view kClassicPrefix = "aria2 version ";
-    const std::string lower = motrix::core::AsciiLower(line);
-    if (lower.starts_with(kNextPrefix)) {
+    if (motrix::core::StartsWithAsciiInsensitive(line, kNextPrefix)) {
         info.product = "aria2-next";
         info.version = std::string(motrix::core::TrimAscii(line.substr(kNextPrefix.size())));
         info.kind = EngineKind::Aria2Next;
-    } else if (lower.starts_with(kClassicPrefix)) {
+    } else if (motrix::core::StartsWithAsciiInsensitive(line, kClassicPrefix)) {
         info.product = "aria2";
         info.version = std::string(motrix::core::TrimAscii(line.substr(kClassicPrefix.size())));
         info.kind = EngineKind::ClassicAria2;
@@ -397,6 +453,17 @@ void ParseCliHeaderLine(std::string_view line, EngineVersionInfo& info) {
         info.version = std::string(line);
         info.kind = DetectEngineKind("", line);
     }
+}
+
+[[nodiscard]] std::string SanitizeConfValue(std::string_view raw) {
+    std::string out;
+    out.reserve(raw.size());
+    for (const char ch : raw) {
+        if (ch != '\r' && ch != '\n') {
+            out.push_back(ch);
+        }
+    }
+    return out;
 }
 
 }  // namespace
@@ -436,11 +503,16 @@ EngineVersionInfo ParseCliVersionBanner(std::string_view stdoutText) {
     return info;
 }
 
-std::unique_ptr<IEngineDialect> CreateDialect(EngineKind kind) {
-    if (kind == EngineKind::Aria2Next) {
-        return std::make_unique<Aria2NextDialect>();
+std::string FormatAria2Conf(std::span<const EngineOptionPair> options) {
+    std::string out = "# Auto-generated and synchronized by Motrix Native for aria2-next.\n"
+                      "# Modify settings from Preferences inside Motrix Native.\n\n";
+    for (const auto& opt : options) {
+        if (opt.key.empty()) {
+            continue;
+        }
+        out += std::format("{}={}\n", opt.key, SanitizeConfValue(opt.value));
     }
-    return std::make_unique<ClassicAria2Dialect>();
+    return out;
 }
 
 }  // namespace motrix::engine

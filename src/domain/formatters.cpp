@@ -26,6 +26,29 @@ std::string FormatBytes(std::uint64_t bytes) {
     return std::format("{:.1f} {}", value, kSizeUnits[unitIndex]);
 }
 
+std::string FormatBytesFixed(std::uint64_t bytes, int precision, bool zeroAsKb) {
+    if (bytes == 0) {
+        return zeroAsKb ? "0 KB" : "0 B";
+    }
+    double value = static_cast<double>(bytes);
+    std::size_t unitIndex = 0;
+    while (value >= 1024.0 && unitIndex + 1 < std::size(kSizeUnits)) {
+        value /= 1024.0;
+        ++unitIndex;
+    }
+    if (unitIndex == 0) {
+        return std::format("{} {}", bytes, kSizeUnits[0]);
+    }
+    const int p = std::clamp(precision, 0, 4);
+    if (p == 2) {
+        return std::format("{:.2f} {}", value, kSizeUnits[unitIndex]);
+    }
+    if (p == 0) {
+        return std::format("{:.0f} {}", value, kSizeUnits[unitIndex]);
+    }
+    return std::format("{:.1f} {}", value, kSizeUnits[unitIndex]);
+}
+
 std::string FormatSpeed(std::uint64_t bytesPerSec) {
     if (bytesPerSec == 0) {
         return "0 KB/s";

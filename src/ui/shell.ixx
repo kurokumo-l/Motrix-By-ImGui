@@ -14,7 +14,11 @@ public:
     MotrixUiShell(const MotrixUiShell&) = delete;
     MotrixUiShell& operator=(const MotrixUiShell&) = delete;
 
-    void InitializeImGui(motrix::platform::IWindowHost& host, bool initialDark);
+    void InitializeImGui(motrix::platform::IWindowHost& host,
+                         bool initialDark,
+                         std::string_view fontFamily = "Microsoft YaHei UI",
+                         std::string_view monoFontFamily = {});
+    void PrepareFrame();
     void PrefillAddTaskUri(std::string_view uri);
     void SetPreferencesTab(int tab);
     void RenderFrame(const motrix::app::AppStateSnapshot& state,

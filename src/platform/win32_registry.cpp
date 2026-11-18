@@ -2,6 +2,7 @@ module;
 
 // clang-format off
 #include <windows.h>
+#include <shlobj.h>
 // clang-format on
 
 module motrix.platform;
@@ -9,6 +10,7 @@ module motrix.platform;
 import std;
 import motrix.core;
 import :win32;
+import :win32_internal;
 
 namespace motrix::platform {
 
@@ -179,23 +181,7 @@ ReadRegString(HKEY root, const wchar_t* subkey, const wchar_t* valueName) {
 }  // namespace
 
 std::filesystem::path CurrentExecutablePath() {
-    std::size_t capacity = 512;
-    while (capacity <= 32768) {
-        std::wstring buf(capacity, L'\0');
-        const DWORD len = ::GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
-        if (len == 0) {
-            return {};
-        }
-        if (static_cast<std::size_t>(len) < buf.size()) {
-            buf.resize(len);
-            return std::filesystem::path(std::move(buf));
-        }
-        if (::GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
-            return {};
-        }
-        capacity *= 2;
-    }
-    return {};
+    return motrix::core::CurrentExecutablePath();
 }
 
 motrix::core::Result<void> SetOpenAtLoginEnabled(bool enabled, const std::filesystem::path& exePath) {
@@ -251,7 +237,12 @@ motrix::core::Result<void> ApplyProtocolAssociations(const std::filesystem::path
     if (auto res = SetOrCleanScheme(L"magnet", L"URL:Magnet Protocol", targetExe, enableMagnet); !res) {
         return res;
     }
-    return SetOrCleanScheme(L"thunder", L"URL:Thunder Protocol", targetExe, enableThunder);
+    if (auto res = SetOrCleanScheme(L"thunder", L"URL:Thunder Protocol", targetExe, enableThunder);
+        !res) {
+        return res;
+    }
+    ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return {};
 }
 
 bool IsProtocolRegisteredForSelf(std::string_view scheme, const std::filesystem::path& exePath) {
@@ -274,6 +265,46 @@ bool IsProtocolRegisteredForSelf(std::string_view scheme, const std::filesystem:
         return false;
     }
     return ContainsInsensitive(*cmd, targetExe.wstring());
+}
+
+namespace {
+
+bool QueryPersonalizeDarkFlag(const wchar_t* valueName, bool fallbackWhenMissing) noexcept {
+    constexpr wchar_t kPersonalizeSubkey[] =
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+    DWORD lightTheme = 1;
+    DWORD size = sizeof(lightTheme);
+    const LSTATUS st = ::RegGetValueW(
+        HKEY_CURRENT_USER, kPersonalizeSubkey, valueName, RRF_RT_REG_DWORD, nullptr, &lightTheme, &size);
+    if (st != ERROR_SUCCESS) {
+        return fallbackWhenMissing;
+    }
+    return lightTheme == 0;
+}
+
+}  // namespace
+
+bool QuerySystemDarkMode() noexcept {
+    return QueryPersonalizeDarkFlag(L"AppsUseLightTheme", false);
+}
+
+bool QueryTaskbarDarkMode() noexcept {
+    return QueryPersonalizeDarkFlag(L"SystemUsesLightTheme", true);
+}
+
+motrix::core::Locale QuerySystemPreferredLocale() noexcept {
+    wchar_t buf[LOCALE_NAME_MAX_LENGTH]{};
+    if (::GetUserDefaultLocaleName(buf, LOCALE_NAME_MAX_LENGTH) > 0) {
+        const std::wstring_view name(buf);
+        if (name.starts_with(L"zh-") || name == L"zh") {
+            return motrix::core::Locale::ZhCN;
+        }
+    }
+    const LANGID langId = ::GetUserDefaultUILanguage();
+    if ((langId & 0x3FFu) == LANG_CHINESE) {
+        return motrix::core::Locale::ZhCN;
+    }
+    return motrix::core::Locale::EnUS;
 }
 
 }  // namespace motrix::platform

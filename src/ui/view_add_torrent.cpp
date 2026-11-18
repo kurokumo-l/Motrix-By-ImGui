@@ -9,12 +9,15 @@ import motrix.core;
 import motrix.domain;
 import motrix.app;
 import :views_internal;
+import :el_widgets;
 import :theme;
 import :icons;
 import :scope_guard;
 
 namespace motrix::ui {
 namespace {
+
+constexpr const char* kAddProxyTipsUrl = "https://motrix.app/release";
 
 struct DashedRectSpec {
     ImVec2 min{};
@@ -109,23 +112,32 @@ bool RenderTorrentHeaderBar(UiFrameContext& ctx,
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(
         barMin, ImVec2(barMin.x + fieldW, barMin.y + barH), ToAbgrU32(ctx.palette.subnavBg), 4.0f * s);
+    const float clrSz = 26.0f * s;
+    const ImVec2 clrPos(barMin.x + fieldW - clrSz - 4.0f * s, barMin.y + 4.0f * s);
     {
         FontGuard tf(ctx.fonts, FontRole::Medium, 13.5f);
         StyleColorGuard tc(ImGuiCol_Text, ctx.palette.panelTitle);
+        ClipRectGuard clip(
+            ImGui::GetWindowDrawList(),
+            {barMin.x + 10.0f * s, barMin.y, clrPos.x - 6.0f * s, barMin.y + 36.0f * s, true});
         ImGui::SetCursorScreenPos(ImVec2(barMin.x + 10.0f * s, barMin.y + 7.0f * s));
         const std::string hdr =
             std::format("{}  ({})", meta.name, motrix::domain::FormatBytes(meta.totalLength));
         ImGui::TextUnformatted(hdr.c_str());
     }
 
-    const float clrSz = 26.0f * s;
-    const ImVec2 clrPos(barMin.x + fieldW - clrSz - 4.0f * s, barMin.y + 4.0f * s);
     ImGui::SetCursorScreenPos(clrPos);
     if (ImGui::InvisibleButton("##torrent_clear", ImVec2(clrSz, clrSz))) {
         form.torrentMeta.reset();
         form.torrentBase64.clear();
         form.torrentFileSelected.clear();
         form.torrentPath.clear();
+        form.torrentError.clear();
+        if (!form.autoFilledTorrentName.empty()
+            && std::string_view(form.nameBuffer.data()) == form.autoFilledTorrentName) {
+            form.nameBuffer.fill('\0');
+        }
+        form.autoFilledTorrentName.clear();
         return false;
     }
     const bool clrHov = ImGui::IsItemHovered();
@@ -231,6 +243,61 @@ void RenderTorrentFilesTable(UiFrameContext& ctx,
     }
 }
 
+struct CaptionPos {
+    float x = 0.0f;
+    float y = 0.0f;
+    float h = 0.0f;
+};
+
+void DrawAlignedFieldCaption(const UiFrameContext& ctx, const CaptionPos& pos, std::string_view text) {
+    FontGuard fnt(ctx.fonts, FontRole::Regular, 13.5f);
+    const ImVec2 sz = ImGui::CalcTextSize(text.data(), text.data() + text.size());
+    ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x, pos.y + (pos.h - sz.y) * 0.5f),
+                                        ToAbgrU32(ctx.palette.subLabelText),
+                                        text.data(),
+                                        text.data() + text.size());
+}
+
+void RenderAddTaskExtraAdvancedRows(UiFrameContext& ctx, AddTaskFormState& form, ModalFlowPos& flow) {
+    const float s = ctx.dpiScale;
+    const float rowH = 30.0f * s;
+    const float gapY = 12.0f * s;
+    const float lblW = 92.0f * s;
+    const float fieldW = flow.bodyW - lblW;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
+
+    DrawAlignedFieldCaption(ctx, {flow.x0, flow.curY, rowH}, ctx.tr.Tr("task.cookie_label"));
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElInputText(elSt,
+                {"##add_cookie",
+                 form.cookieBuffer.data(),
+                 form.cookieBuffer.size(),
+                 fieldW,
+                 ctx.tr.Tr("task.cookie_placeholder")});
+    flow.curY += rowH + gapY;
+
+    DrawAlignedFieldCaption(ctx, {flow.x0, flow.curY, rowH}, ctx.tr.Tr("task.proxy_label"));
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElInputText(elSt,
+                {"##add_proxy",
+                 form.proxyBuffer.data(),
+                 form.proxyBuffer.size(),
+                 fieldW,
+                 "[http://][USER:PASSWORD@]HOST[:PORT]"});
+    flow.curY += rowH + 4.0f * s;
+
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElDrawLinkText(elSt, {ctx.tr.Tr("task.proxy_tips"), [&ctx]() {
+                              ctx.host.OpenPathInExplorer(kAddProxyTipsUrl);
+                          }});
+    flow.curY += 20.0f * s;
+
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElCheckbox(
+        elSt, "##add_nav_dl", ctx.tr.Tr("task.navigate_to_downloading"), &form.navigateToDownloading);
+    flow.curY += 22.0f * s;
+}
+
 }  // namespace
 
 void LoadTorrentFileIntoForm(AddTaskFormState& form, std::string_view utf8Path) {
@@ -255,8 +322,18 @@ void LoadTorrentFileIntoForm(AddTaskFormState& form, std::string_view utf8Path) 
 
     form.torrentBase64 = motrix::domain::Base64Encode(*bytes);
     form.torrentFileSelected.assign(meta->files.size(), true);
-    if (form.nameBuffer[0] == '\0' && !meta->name.empty()) {
-        CopyUtf8ToBuffer(meta->name, form.nameBuffer.data(), form.nameBuffer.size());
+    const bool canAutoFillName =
+        (form.nameBuffer[0] == '\0')
+        || (!form.autoFilledTorrentName.empty()
+            && std::string_view(form.nameBuffer.data()) == form.autoFilledTorrentName);
+    if (canAutoFillName) {
+        if (!meta->name.empty()) {
+            CopyUtf8ToBuffer(meta->name, form.nameBuffer.data(), form.nameBuffer.size());
+            form.autoFilledTorrentName = form.nameBuffer.data();
+        } else {
+            form.nameBuffer.fill('\0');
+            form.autoFilledTorrentName.clear();
+        }
     }
     form.torrentMeta = std::move(*meta);
 }
@@ -274,6 +351,50 @@ void RenderAddTorrentTab(UiFrameContext& ctx, AddTaskFormState& form) {
     RenderTorrentFilterPills(ctx, form, meta);
     ImGui::Dummy(ImVec2(0.0f, 4.0f * ctx.dpiScale));
     RenderTorrentFilesTable(ctx, form, meta, fieldW);
+}
+
+void RenderAddTaskAdvancedFields(UiFrameContext& ctx, AddTaskFormState& form, ModalFlowPos& flow) {
+    const float s = ctx.dpiScale;
+    const float rowH = 30.0f * s;
+    const float gapY = 12.0f * s;
+    const float lblW = 92.0f * s;
+    const float fieldW = flow.bodyW - lblW;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
+
+    DrawAlignedFieldCaption(ctx, {flow.x0, flow.curY, rowH}, ctx.tr.Tr("task.ua_label"));
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElInputText(elSt,
+                {"##add_ua",
+                 form.userAgentBuffer.data(),
+                 form.userAgentBuffer.size(),
+                 fieldW,
+                 ctx.tr.Tr("task.ua_placeholder")});
+    flow.curY += rowH + gapY;
+
+    const float halfGap = 14.0f * s;
+    const float halfColW = (flow.bodyW - halfGap) * 0.5f;
+    DrawAlignedFieldCaption(ctx, {flow.x0, flow.curY, rowH}, ctx.tr.Tr("task.auth_label"));
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElInputText(elSt,
+                {"##add_auth",
+                 form.authBuffer.data(),
+                 form.authBuffer.size(),
+                 halfColW - lblW,
+                 ctx.tr.Tr("task.auth_placeholder")});
+
+    const float rightX = flow.x0 + halfColW + halfGap;
+    const float refLblW = 66.0f * s;
+    DrawAlignedFieldCaption(ctx, {rightX, flow.curY, rowH}, ctx.tr.Tr("task.referer_label"));
+    ImGui::SetCursorScreenPos(ImVec2(rightX + refLblW, flow.curY));
+    ElInputText(elSt,
+                {"##add_referer",
+                 form.refererBuffer.data(),
+                 form.refererBuffer.size(),
+                 halfColW - refLblW,
+                 ctx.tr.Tr("task.referer_placeholder")});
+    flow.curY += rowH + gapY;
+
+    RenderAddTaskExtraAdvancedRows(ctx, form, flow);
 }
 
 }  // namespace motrix::ui

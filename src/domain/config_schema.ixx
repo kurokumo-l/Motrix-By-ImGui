@@ -17,27 +17,33 @@ export enum class RunMode {
     HideTray = 3,
 };
 
+export inline constexpr std::string_view kDefaultAria2NextUpdateUrl =
+    "https://api.github.com/repos/AnInsomniacy/aria2-next/releases/latest";
+
 export struct UserPreferences {
-    ThemePreference theme = ThemePreference::Light;
+    ThemePreference theme = ThemePreference::Auto;
     motrix::core::Locale locale = motrix::core::Locale::EnUS;
     RunMode runMode = RunMode::Standard;
-    bool hideAppMenu = true;
     bool keepWindowState = false;
     bool autoHideWindow = false;
     bool openAtLogin = false;
     bool resumeAllWhenAppLaunched = false;
     bool newTaskShowDownloading = true;
     bool noConfirmBeforeDeleteTask = false;
+    bool deleteFilesWhenDeleteTask = false;
     bool showProgressBar = true;
     bool taskNotification = true;
-    bool traySpeedometer = false;
+    bool traySpeedometer = true;
+    bool showTooltips = true;
     bool enableUpnp = true;
     bool autoSyncTracker = true;
     bool useProxy = false;
     bool keepSeeding = false;
-    bool autoCheckUpdate = false;
-    std::int64_t lastCheckUpdateTime = 0;
     std::string engineBinPath;
+    std::string aria2NextUpdateUrl = std::string(kDefaultAria2NextUpdateUrl);
+    std::string aria2NextMirrorPrefix;
+    std::string fontFamily = "Microsoft YaHei UI";
+    std::string monoFontFamily;
     std::string logLevel = "warn";
     std::vector<std::string> favoriteDirectories;
     std::vector<std::string> historyDirectories;
@@ -58,8 +64,8 @@ export struct SystemConfig {
     std::string rpcSecret;
     std::string dir;
     int maxConcurrentDownloads = 5;
-    int maxConnectionPerServer = 64;
-    int split = 64;
+    int maxConnectionPerServer = 16;
+    int split = 16;
     int listenPort = 21301;
     int dhtListenPort = 26701;
     double seedRatio = 1.0;
@@ -69,7 +75,26 @@ export struct SystemConfig {
     bool continueDownloads = true;
     bool followTorrent = true;
     bool btSaveMetadata = true;
+    bool rpcSaveUploadMetadata = true;
     bool btForceEncryption = false;
+    std::string btEncryption = "preferred";
+    std::string btTransport = "both";
+    std::string fileAllocation = "none";
+    bool autoFileRenaming = true;
+    bool allowOverwrite = false;
+    bool checkIntegrity = false;
+    bool enableDht = true;
+    bool enablePeerExchange = true;
+    bool btEnableLpd = true;
+    bool btAnonymousMode = false;
+    int btMaxPeers = 64;
+    bool checkCertificate = true;
+    bool disableIpv6 = false;
+    bool remoteTime = false;
+    std::string mediaMode = "auto";
+    std::string mediaFormat = "mp4";
+    bool btFirstLastPieceFirst = false;
+    bool detachShareOnly = false;
     bool pauseMetadata = false;
     std::string btTracker;
     std::string allProxy;
@@ -79,6 +104,9 @@ export struct SystemConfig {
 
 export [[nodiscard]] UserPreferences DefaultUserPreferences();
 export [[nodiscard]] SystemConfig DefaultSystemConfig();
+export [[nodiscard]] SystemConfig BuildEffectiveSystemConfig(const SystemConfig& cfg,
+                                                             const UserPreferences& prefs,
+                                                             bool suspendSpeedLimit = false);
 export [[nodiscard]] std::vector<std::pair<std::string, std::string>>
 SystemConfigToOptionPairs(const SystemConfig& cfg);
 export [[nodiscard]] std::string SerializeUserPreferencesJson(const UserPreferences& prefs);

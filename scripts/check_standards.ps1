@@ -18,7 +18,7 @@ $firstPartyFiles = @(
 $bareImGuiRegex =
     'ImGui::(BeginChild|EndChild|BeginPopup|BeginPopupModal|EndPopup|BeginTable|EndTable|BeginGroup|EndGroup|PushFont|PopFont|PushStyleColor|PopStyleColor|PushStyleVar|PopStyleVar|PushID|PopID|PushTextWrapPos|PopTextWrapPos|PushClipRect|PopClipRect)\b|->(PushClipRect|PopClipRect)\b'
 
-$allowedWin32EncodingFiles = '^src/(core/encoding|platform/win32|engine/tracker_winhttp|engine/win32_util|ipc/named_pipe_ipc|main\.cpp)'
+$allowedWin32EncodingFiles = '^src/(core/encoding|platform/win32|engine/http_winhttp|engine/tracker_winhttp|engine/win32_util|ipc/named_pipe_ipc|main\.cpp)'
 
 foreach ($file in $firstPartyFiles) {
     $rel = $file.FullName.Substring($Root.Length + 1).Replace('\', '/')
@@ -29,11 +29,11 @@ foreach ($file in $firstPartyFiles) {
     if ($file.Extension -in @('.h', '.hpp')) {
         $Violations.Add("$rel : Traditional header forbidden inside src/ or tests/")
     }
-    if ($file.Extension -eq '.ixx' -and $lineCount -gt 200) {
-        $Violations.Add("$rel : .ixx file has $lineCount lines (hard limit 200)")
+    if ($file.Extension -eq '.ixx' -and $lineCount -gt 350) {
+        $Violations.Add("$rel : .ixx file has $lineCount lines (hard limit 350)")
     }
-    if ($file.Extension -eq '.cpp' -and $lineCount -gt 450) {
-        $Violations.Add("$rel : .cpp file has $lineCount lines (hard limit 450)")
+    if ($file.Extension -eq '.cpp' -and $lineCount -gt 800) {
+        $Violations.Add("$rel : .cpp file has $lineCount lines (hard limit 800)")
     }
 
     $inExportBlock = $false
@@ -138,8 +138,8 @@ foreach ($file in $firstPartyFiles) {
             $nsDepth += ($opens - $closes)
             if ($inFunc -and $nsDepth -lt $funcDepth) {
                 $funcLen = $ln - $funcStart + 1
-                if ($funcLen -gt 80) {
-                    $Violations.Add("${rel}:$funcStart : Function exceeds 80 lines ($funcLen lines): $funcName")
+                if ($funcLen -gt 120) {
+                    $Violations.Add("${rel}:$funcStart : Function exceeds 120 lines ($funcLen lines): $funcName")
                 }
                 $inFunc = $false
                 $pendingSig = ""

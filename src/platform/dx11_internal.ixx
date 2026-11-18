@@ -15,6 +15,8 @@ public:
 
     [[nodiscard]] motrix::core::Result<void> Initialize(void* hwnd);
     void Shutdown();
+    void Trim() noexcept;
+    [[nodiscard]] bool IsInitialized() const noexcept;
 
     void Resize(std::uint32_t width, std::uint32_t height);
     void BeginRenderPass(float r, float g, float b, float a);
@@ -24,6 +26,10 @@ public:
 
     [[nodiscard]] void* DeviceRaw() const noexcept;
     [[nodiscard]] void* ContextRaw() const noexcept;
+    [[nodiscard]] std::uint64_t UploadRgbaTexture(std::uint64_t existingId,
+                                                  int width,
+                                                  int height,
+                                                  std::span<const std::uint8_t> rgba);
 
 private:
     struct Impl;

@@ -4,6 +4,7 @@ import std;
 import motrix.core;
 import motrix.domain;
 import motrix.engine;
+import :command;
 import :snapshot;
 
 namespace motrix::app {
@@ -23,6 +24,8 @@ export struct EngineWorkCommand {
         PauseAll,
         ResumeAll,
         PurgeStopped,
+        UpdateUpnp,
+        ResetSession,
     };
     Kind kind = Kind::Sync;
     std::string gid;
@@ -32,13 +35,18 @@ export struct EngineWorkCommand {
     std::size_t totalFiles = 0;
     std::string outName;
     std::string dir;
-    int split = 64;
+    int split = 16;
     std::string userAgent;
     std::string authorization;
     std::string referer;
     std::string cookie;
     std::string allProxy;
     bool taskInStopped = false;
+    bool deleteFiles = false;
+    bool enableUpnp = true;
+    int btPort = 0;
+    int dhtPort = 0;
+    std::vector<std::string> filesToDelete;
     std::vector<std::pair<std::string, std::string>> options;
 };
 
@@ -46,6 +54,7 @@ export struct EngineRuntimeConfig {
     std::filesystem::path appDataDir;
     std::string enginePathOverride;
     motrix::domain::SystemConfig sysConfig;
+    std::string logLevel = "warn";
     bool enableUpnp = true;
     bool resumeAllWhenLaunched = false;
 };
@@ -68,6 +77,8 @@ public:
     void SetDetailCallback(DetailCallback cb);
     void SetDetailGid(std::string gid);
     void UpdateUpnpPreference(bool enabled, int btPort, int dhtPort);
+    void Reconfigure(EngineRuntimeConfig cfg, bool restartEngine);
+    void SetShutdownSuspended(bool suspended) noexcept;
 
 private:
     struct PreparedLaunch {
@@ -78,6 +89,9 @@ private:
     void RunLoop(std::stop_token st);
     void RunConnectedSession(std::stop_token st);
     void ShutdownEngineGracefully();
+    [[nodiscard]] bool IsShutdownBlocked() const noexcept;
+    [[nodiscard]] bool WaitWhileShutdownSuspended(std::stop_token st);
+    void WaitReconnectBackoff(std::stop_token st, std::chrono::milliseconds delay);
     [[nodiscard]] bool TryStartAndConnect(std::stop_token st);
     [[nodiscard]] PreparedLaunch PrepareLaunchSpec(const std::filesystem::path& binPath,
                                                    motrix::engine::EngineKind kind) const;
@@ -86,6 +100,8 @@ private:
     void ProcessCommand(const EngineWorkCommand& cmd, bool& needSync, std::string& lastErr);
     void HandleTaskControlCommand(const EngineWorkCommand& cmd, bool& needSync, std::string& lastErr);
     void HandleApplyGlobalOptionsCmd(const EngineWorkCommand& cmd, std::string& lastErr);
+    void ExecuteRemoveCommand(const EngineWorkCommand& cmd);
+    void ExecuteResetSessionCommand();
     void ApplySyncSnapshot(const motrix::engine::EngineSyncSnapshot& snap, std::string_view err);
     void FetchAndPublishDetail(std::string_view gid);
     void StartOrRefreshUpnpAsync(bool enabled, int btPort, int dhtPort);
@@ -107,12 +123,19 @@ private:
     std::mutex queueMutex_;
     std::condition_variable_any queueCv_;
     std::deque<EngineWorkCommand> queue_;
+    std::optional<EngineRuntimeConfig> pendingConfig_;
     std::atomic<bool> wakeSync_{false};
     std::atomic<bool> disconnectedFlag_{false};
+    std::atomic<bool> restartRequested_{false};
+    std::atomic<bool> shutdownSuspended_{false};
+    bool resetSessionRequested_ = false;
     bool hasActiveTasks_ = false;
     bool didLaunchResume_ = false;
     std::jthread upnpWorker_;
     std::jthread worker_;
 };
+
+export [[nodiscard]] std::vector<EngineWorkCommand>
+BuildLiveTaskWorks(AppStateSnapshot& state, const Command& cmd, bool& clearDetail);
 
 }  // namespace motrix::app

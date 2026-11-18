@@ -28,10 +28,12 @@ export struct EngineLaunchOptions {
     std::uint16_t rpcPort = 16800;
     std::string rpcSecret;
     std::filesystem::path stateOrSessionPath;
+    std::filesystem::path sessionFilePath;
     bool sessionFileExists = false;
     std::filesystem::path confPath;
     std::uint32_t hostPid = 0;
     int saveIntervalSeconds = 10;
+    std::string logLevel = "warn";
 };
 
 export class IEngineDialect {
@@ -58,5 +60,6 @@ export [[nodiscard]] EngineKind DetectEngineKind(std::string_view product,
                                                  std::string_view versionString) noexcept;
 export [[nodiscard]] EngineVersionInfo ParseCliVersionBanner(std::string_view stdoutText);
 export [[nodiscard]] std::unique_ptr<IEngineDialect> CreateDialect(EngineKind kind);
+export [[nodiscard]] std::string FormatAria2Conf(std::span<const EngineOptionPair> options);
 
 }  // namespace motrix::engine

@@ -52,8 +52,7 @@ bool SubnavItemButton(UiFrameContext& ctx, const SubnavBtnSpec& spec) {
         dl->AddRectFilled(min, max, ToAbgrU32(bg), 3.0f * s);
     }
 
-    const RgbaColor fg =
-        (spec.active || hovered) ? ctx.palette.subnavActiveText : ctx.palette.subnavItemText;
+    const RgbaColor fg = LerpColor(ctx.palette.subnavItemText, ctx.palette.subnavActiveText, hlT);
     float textX = spec.x + 10.0f * s;
     if (spec.icon.has_value()) {
         const float iconSz = 15.0f * s;

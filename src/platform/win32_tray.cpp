@@ -10,105 +10,57 @@ module motrix.platform;
 import std;
 import motrix.core;
 import :window_host;
+import :win32;
 import :win32_internal;
 
 namespace motrix::platform {
 
 namespace {
 
-class UniqueScreenDc {
+inline HDC AcquireScreenDc() noexcept {
+    return ::GetDC(nullptr);
+}
+inline void ReleaseScreenDc(HDC hdc) noexcept {
+    ::ReleaseDC(nullptr, hdc);
+}
+inline HBITMAP NullBitmap() noexcept {
+    return nullptr;
+}
+inline void FreeBitmap(HBITMAP bmp) noexcept {
+    ::DeleteObject(bmp);
+}
+inline HMENU AcquirePopupMenu() noexcept {
+    return ::CreatePopupMenu();
+}
+inline void FreePopupMenu(HMENU menu) noexcept {
+    ::DestroyMenu(menu);
+}
+
+template <typename H, auto InitFn, auto FreeFn> class UniqueTrayRes {
 public:
-    UniqueScreenDc() noexcept : hdc_(::GetDC(nullptr)) {}
-    ~UniqueScreenDc() {
-        if (hdc_) {
-            ::ReleaseDC(nullptr, hdc_);
-        }
+    UniqueTrayRes() noexcept : h_(InitFn()) {}
+    explicit UniqueTrayRes(H h) noexcept : h_(h) {}
+    ~UniqueTrayRes() {
+        if (h_)
+            FreeFn(h_);
     }
-    UniqueScreenDc(const UniqueScreenDc&) = delete;
-    UniqueScreenDc& operator=(const UniqueScreenDc&) = delete;
-    [[nodiscard]] HDC Get() const noexcept { return hdc_; }
+    UniqueTrayRes(const UniqueTrayRes&) = delete;
+    UniqueTrayRes& operator=(const UniqueTrayRes&) = delete;
+    [[nodiscard]] H Get() const noexcept { return h_; }
 
 private:
-    HDC hdc_ = nullptr;
+    H h_ = nullptr;
 };
 
-class UniqueGdiBitmap {
-public:
-    UniqueGdiBitmap() noexcept = default;
-    explicit UniqueGdiBitmap(HBITMAP bmp) noexcept : bmp_(bmp) {}
-    ~UniqueGdiBitmap() {
-        if (bmp_) {
-            ::DeleteObject(bmp_);
-        }
-    }
-    UniqueGdiBitmap(const UniqueGdiBitmap&) = delete;
-    UniqueGdiBitmap& operator=(const UniqueGdiBitmap&) = delete;
-    [[nodiscard]] HBITMAP Get() const noexcept { return bmp_; }
-
-private:
-    HBITMAP bmp_ = nullptr;
-};
-
-class UniqueMenu {
-public:
-    UniqueMenu() noexcept : menu_(::CreatePopupMenu()) {}
-    ~UniqueMenu() {
-        if (menu_) {
-            ::DestroyMenu(menu_);
-        }
-    }
-    UniqueMenu(const UniqueMenu&) = delete;
-    UniqueMenu& operator=(const UniqueMenu&) = delete;
-    [[nodiscard]] HMENU Get() const noexcept { return menu_; }
-
-private:
-    HMENU menu_ = nullptr;
-};
+using UniqueScreenDc = UniqueTrayRes<HDC, AcquireScreenDc, ReleaseScreenDc>;
+using UniqueGdiBitmap = UniqueTrayRes<HBITMAP, NullBitmap, FreeBitmap>;
+using UniqueMenu = UniqueTrayRes<HMENU, AcquirePopupMenu, FreePopupMenu>;
 
 [[nodiscard]] float
 SdRoundedBox(float px, float py, float cx, float cy, float hx, float hy, float r) noexcept {
     const float dx = std::abs(px - cx) - (hx - r);
     const float dy = std::abs(py - cy) - (hy - r);
     return std::hypot(std::max(dx, 0.0f), std::max(dy, 0.0f)) + std::min(std::max(dx, dy), 0.0f) - r;
-}
-
-[[nodiscard]] float
-SdTriangle(float px, float py, float x0, float y0, float x1, float y1, float x2, float y2) noexcept {
-    const auto dot2 = [](float ax, float ay) noexcept { return ax * ax + ay * ay; };
-    const auto cross2 = [](float ax, float ay, float bx, float by) noexcept {
-        return ax * by - ay * bx;
-    };
-
-    const float e0x = x1 - x0;
-    const float e0y = y1 - y0;
-    const float e1x = x2 - x1;
-    const float e1y = y2 - y1;
-    const float e2x = x0 - x2;
-    const float e2y = y0 - y2;
-
-    const float v0x = px - x0;
-    const float v0y = py - y0;
-    const float v1x = px - x1;
-    const float v1y = py - y1;
-    const float v2x = px - x2;
-    const float v2y = py - y2;
-
-    const float t0 = std::clamp((v0x * e0x + v0y * e0y) / dot2(e0x, e0y), 0.0f, 1.0f);
-    const float t1 = std::clamp((v1x * e1x + v1y * e1y) / dot2(e1x, e1y), 0.0f, 1.0f);
-    const float t2 = std::clamp((v2x * e2x + v2y * e2y) / dot2(e2x, e2y), 0.0f, 1.0f);
-
-    const float d0 = dot2(v0x - e0x * t0, v0y - e0y * t0);
-    const float d1 = dot2(v1x - e1x * t1, v1y - e1y * t1);
-    const float d2 = dot2(v2x - e2x * t2, v2y - e2y * t2);
-
-    const float s = (cross2(e0x, e0y, e2x, e2y) >= 0.0f) ? 1.0f : -1.0f;
-    const float c0 = s * cross2(v0x, v0y, e0x, e0y);
-    const float c1 = s * cross2(v1x, v1y, e1x, e1y);
-    const float c2 = s * cross2(v2x, v2y, e2x, e2y);
-
-    const float minD = std::min({d0, d1, d2});
-    const float minC = std::min({c0, c1, c2});
-    return (minC >= 0.0f ? -1.0f : 1.0f) * std::sqrt(minD);
 }
 
 [[nodiscard]] float CovFromDist(float dist, float aa) noexcept {
@@ -144,99 +96,121 @@ void BlendOver(FloatRgba& dst, const FloatRgba& src, float cov) noexcept {
     return (ca << 24u) | (cr << 16u) | (cg << 8u) | cb;
 }
 
-void FillMotrixIconPixels(std::uint32_t* pixels, int sizePx, bool activeDot) noexcept {
-    const float invSize = 1.0f / static_cast<float>(sizePx);
-    const float aa = 1.15f * invSize;
+struct IconSample {
+    float px = 0.0f;
+    float py = 0.0f;
+    float aa = 0.03f;
+    bool darkTaskbar = true;
+};
 
-    // Brand indigo #5B5CFD and active emerald #22C55E
-    constexpr FloatRgba kBrand{91.0f / 255.0f, 92.0f / 255.0f, 253.0f / 255.0f, 1.0f};
-    constexpr FloatRgba kWhite{1.0f, 1.0f, 1.0f, 1.0f};
-    constexpr FloatRgba kDot{34.0f / 255.0f, 197.0f / 255.0f, 94.0f / 255.0f, 1.0f};
-
-    for (int y = 0; y < sizePx; ++y) {
-        for (int x = 0; x < sizePx; ++x) {
-            const float px = (static_cast<float>(x) + 0.5f) * invSize;
-            const float py = (static_cast<float>(y) + 0.5f) * invSize;
-
-            const float bgDist = SdRoundedBox(px, py, 0.50f, 0.50f, 0.44f, 0.44f, 0.16f);
-            const float bgCov = CovFromDist(bgDist, aa);
-
-            const float shaftDist = SdRoundedBox(px, py, 0.50f, 0.36f, 0.075f, 0.16f, 0.03f);
-            const float triDist = SdTriangle(px, py, 0.27f, 0.45f, 0.73f, 0.45f, 0.50f, 0.67f) - 0.012f;
-            const float barDist = SdRoundedBox(px, py, 0.50f, 0.76f, 0.23f, 0.045f, 0.025f);
-            const float arrowCov = CovFromDist(std::min({shaftDist, triDist, barDist}), aa) * bgCov;
-
-            FloatRgba out{};
-            BlendOver(out, kBrand, bgCov);
-            BlendOver(out, kWhite, arrowCov);
-
-            if (activeDot) {
-                const float dDot = std::hypot(px - 0.76f, py - 0.76f);
-                BlendOver(out, kWhite, CovFromDist(dDot - 0.22f, aa));
-                BlendOver(out, kDot, CovFromDist(dDot - 0.16f, aa));
-            }
-
-            const std::size_t idx = static_cast<std::size_t>(y) * static_cast<std::size_t>(sizePx)
-                                    + static_cast<std::size_t>(x);
-            pixels[idx] = PackPremulBgra(out);
-        }
+[[nodiscard]] HICON TryLoadMotrixNativeIcon(int sizePx, MotrixIconKind kind) noexcept {
+    const NativeIconResource spec = ResolveMotrixIconResource(kind);
+    const auto load = [&](HINSTANCE mod, LPCWSTR name, UINT flags) noexcept {
+        return static_cast<HICON>(::LoadImageW(mod, name, IMAGE_ICON, sizePx, sizePx, flags));
+    };
+    if (HICON res =
+            load(::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(spec.resourceId), LR_DEFAULTCOLOR)) {
+        return res;
     }
+    const auto exePath = motrix::core::CurrentExecutablePath();
+    if (exePath.empty()) {
+        return nullptr;
+    }
+    const auto p = exePath.parent_path() / L"assets" / L"icons" / spec.fileName;
+    return std::filesystem::exists(p) ? load(nullptr, p.c_str(), LR_LOADFROMFILE | LR_DEFAULTCOLOR)
+                                      : nullptr;
 }
 
-[[nodiscard]] HICON CreateMotrixHicon(int sizePx, bool activeDot) noexcept {
+[[nodiscard]] FloatRgba EvaluateMotrixIconPixel(const IconSample& s, MotrixIconKind kind) noexcept {
+    const auto covBox = [&](float cx, float cy, float hx, float hy, float r) noexcept {
+        return CovFromDist(SdRoundedBox(s.px, s.py, cx, cy, hx, hy, r), s.aa);
+    };
+    const float bodyCov = covBox(0.50f, 0.50f, 0.405f, 0.405f, 0.145f);
+    const float t = std::clamp((s.py - 0.10f) / 0.80f, 0.0f, 1.0f);
+    const float rim = s.darkTaskbar ? 1.0f : 0.94f;
+    FloatRgba out{};
+    BlendOver(out,
+              {(0.54f - 0.18f * t) * rim, (0.43f - 0.09f * t) * rim, (0.91f - 0.07f * t) * rim, 1.0f},
+              bodyCov);
+    BlendOver(
+        out, {0.85f, 0.86f, 0.94f, 1.0f}, covBox(0.50f, 0.135f, 0.29f, 0.035f, 0.02f) * bodyCov * 0.75f);
+    BlendOver(out, {0.94f, 0.95f, 0.98f, 1.0f}, covBox(0.50f, 0.44f, 0.215f, 0.165f, 0.055f) * bodyCov);
+    const float visorCov = covBox(0.50f, 0.315f, 0.195f, 0.055f, 0.025f) * bodyCov;
+    BlendOver(out, {0.14f, 0.14f, 0.16f, 1.0f}, visorCov);
+    const float eyes = std::max(covBox(0.385f, 0.315f, 0.036f, 0.020f, 0.01f),
+                                covBox(0.615f, 0.315f, 0.036f, 0.020f, 0.01f));
+    BlendOver(out, {0.96f, 0.78f, 0.28f, 1.0f}, eyes * visorCov);
+    BlendOver(out, {0.90f, 0.91f, 0.96f, 1.0f}, covBox(0.50f, 0.68f, 0.135f, 0.022f, 0.01f) * bodyCov);
+    if (kind == MotrixIconKind::TrayActive) {
+        const float dDot = std::hypot(s.px - 0.8125f, s.py - 0.156f);
+        BlendOver(out, {0.24f, 0.86f, 0.36f, 1.0f}, CovFromDist(dDot - 0.125f, s.aa));
+    }
+    return out;
+}
+
+[[nodiscard]] HICON CreateMotrixHicon(int sizePx, MotrixIconKind kind, bool darkTaskbar) noexcept {
     if (sizePx <= 0) {
         return nullptr;
     }
-
-    UniqueScreenDc screenDc;
-    if (!screenDc.Get()) {
-        return nullptr;
+    if (HICON nativeIcon = TryLoadMotrixNativeIcon(sizePx, kind)) {
+        return nativeIcon;
     }
+    UniqueScreenDc screenDc;
+    if (!screenDc.Get())
+        return nullptr;
 
-    BITMAPV5HEADER bi{};
-    bi.bV5Size = sizeof(BITMAPV5HEADER);
-    bi.bV5Width = sizePx;
-    bi.bV5Height = -sizePx;
-    bi.bV5Planes = 1;
-    bi.bV5BitCount = 32;
-    bi.bV5Compression = BI_BITFIELDS;
-    bi.bV5RedMask = 0x00FF0000u;
-    bi.bV5GreenMask = 0x0000FF00u;
-    bi.bV5BlueMask = 0x000000FFu;
-    bi.bV5AlphaMask = 0xFF000000u;
+    BITMAPV5HEADER bi{.bV5Size = sizeof(BITMAPV5HEADER),
+                      .bV5Width = sizePx,
+                      .bV5Height = -sizePx,
+                      .bV5Planes = 1,
+                      .bV5BitCount = 32,
+                      .bV5Compression = BI_BITFIELDS,
+                      .bV5RedMask = 0x00FF0000u,
+                      .bV5GreenMask = 0x0000FF00u,
+                      .bV5BlueMask = 0x000000FFu,
+                      .bV5AlphaMask = 0xFF000000u};
 
     void* rawBits = nullptr;
     UniqueGdiBitmap colorBmp(::CreateDIBSection(
         screenDc.Get(), reinterpret_cast<const BITMAPINFO*>(&bi), DIB_RGB_COLORS, &rawBits, nullptr, 0));
-    if (!colorBmp.Get() || !rawBits) {
-        return nullptr;
-    }
-
     const int strideBytes = ((sizePx + 15) / 16) * 2;
     std::vector<std::uint8_t> maskBits(
         static_cast<std::size_t>(strideBytes) * static_cast<std::size_t>(sizePx), 0u);
     UniqueGdiBitmap maskBmp(::CreateBitmap(sizePx, sizePx, 1, 1, maskBits.data()));
-    if (!maskBmp.Get()) {
+    if (!colorBmp.Get() || !rawBits || !maskBmp.Get())
         return nullptr;
-    }
 
-    FillMotrixIconPixels(static_cast<std::uint32_t*>(rawBits), sizePx, activeDot);
+    const std::vector<std::uint32_t> bgra = RenderMotrixIconBgra(kind, sizePx, darkTaskbar);
+    std::memcpy(rawBits, bgra.data(), bgra.size() * sizeof(std::uint32_t));
 
-    ICONINFO ii{};
-    ii.fIcon = TRUE;
-    ii.hbmMask = maskBmp.Get();
-    ii.hbmColor = colorBmp.Get();
+    ICONINFO ii{TRUE, 0, 0, maskBmp.Get(), colorBmp.Get()};
     return ::CreateIconIndirect(&ii);
+}
+
+void ReleaseTrayCachedIcons(Win32WindowState& state) noexcept {
+    if (state.trayIdleIcon) {
+        ::DestroyIcon(static_cast<HICON>(state.trayIdleIcon));
+        state.trayIdleIcon = nullptr;
+    }
+    if (state.trayActiveIcon) {
+        ::DestroyIcon(static_cast<HICON>(state.trayActiveIcon));
+        state.trayActiveIcon = nullptr;
+    }
 }
 
 void EnsureTrayIconsCreated(Win32WindowState& state) noexcept {
     const UINT dpi = state.hwnd ? ::GetDpiForWindow(static_cast<HWND>(state.hwnd)) : 96u;
+    if (state.trayDpi != dpi) {
+        ReleaseTrayCachedIcons(state);
+        state.trayDpi = dpi;
+    }
     const int trayPx = std::clamp(::GetSystemMetricsForDpi(SM_CXSMICON, dpi), 16, 64);
     if (!state.trayIdleIcon) {
-        state.trayIdleIcon = CreateMotrixHicon(trayPx, false);
+        state.trayIdleIcon = CreateMotrixHicon(trayPx, MotrixIconKind::TrayIdle, state.trayDarkTaskbar);
     }
     if (!state.trayActiveIcon) {
-        state.trayActiveIcon = CreateMotrixHicon(trayPx, true);
+        state.trayActiveIcon =
+            CreateMotrixHicon(trayPx, MotrixIconKind::TrayActive, state.trayDarkTaskbar);
     }
 }
 
@@ -287,22 +261,30 @@ void Win32SetWindowIcons(Win32WindowState& state) noexcept {
     }
     HWND hwnd = static_cast<HWND>(state.hwnd);
     const UINT dpi = ::GetDpiForWindow(hwnd);
-    const int bigPx = std::clamp(::GetSystemMetricsForDpi(SM_CXICON, dpi), 32, 64);
-    const int smallPx = std::clamp(::GetSystemMetricsForDpi(SM_CXSMICON, dpi), 16, 64);
-
-    if (HICON bigIcon = CreateMotrixHicon(bigPx, false)) {
-        const LRESULT prev =
-            ::SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(bigIcon));
-        if (prev != 0) {
-            ::DestroyIcon(reinterpret_cast<HICON>(prev));
+    const std::array<std::pair<WPARAM, int>, 2> specs{{
+        {ICON_BIG, std::clamp(::GetSystemMetricsForDpi(SM_CXICON, dpi), 32, 64)},
+        {ICON_SMALL, std::clamp(::GetSystemMetricsForDpi(SM_CXSMICON, dpi), 16, 64)},
+    }};
+    for (const auto& [slot, px] : specs) {
+        if (HICON icon = CreateMotrixHicon(px, MotrixIconKind::AppBadge, true)) {
+            if (const LRESULT prev =
+                    ::SendMessageW(hwnd, WM_SETICON, slot, reinterpret_cast<LPARAM>(icon));
+                prev != 0) {
+                ::DestroyIcon(reinterpret_cast<HICON>(prev));
+            }
         }
     }
-    if (HICON smallIcon = CreateMotrixHicon(smallPx, false)) {
-        const LRESULT prev =
-            ::SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(smallIcon));
-        if (prev != 0) {
-            ::DestroyIcon(reinterpret_cast<HICON>(prev));
-        }
+}
+
+void Win32RefreshIconsOnThemeOrDpi(Win32WindowState& state) noexcept {
+    const bool nextTaskbarDark = QueryTaskbarDarkMode();
+    if (nextTaskbarDark != state.trayDarkTaskbar) {
+        state.trayDarkTaskbar = nextTaskbarDark;
+        ReleaseTrayCachedIcons(state);
+    }
+    Win32SetWindowIcons(state);
+    if (state.enableTrayIcon && state.config.screenshotPath.empty()) {
+        Win32InstallOrUpdateTray(state);
     }
 }
 
@@ -323,21 +305,13 @@ void Win32DestroyTrayIcons(Win32WindowState& state) noexcept {
     Win32RemoveTray(state);
     if (state.hwnd && ::IsWindow(static_cast<HWND>(state.hwnd))) {
         HWND hwnd = static_cast<HWND>(state.hwnd);
-        if (const LRESULT prevBig = ::SendMessageW(hwnd, WM_SETICON, ICON_BIG, 0); prevBig != 0) {
-            ::DestroyIcon(reinterpret_cast<HICON>(prevBig));
+        for (WPARAM slot : {ICON_BIG, ICON_SMALL}) {
+            if (const LRESULT prev = ::SendMessageW(hwnd, WM_SETICON, slot, 0); prev != 0) {
+                ::DestroyIcon(reinterpret_cast<HICON>(prev));
+            }
         }
-        if (const LRESULT prevSmall = ::SendMessageW(hwnd, WM_SETICON, ICON_SMALL, 0); prevSmall != 0) {
-            ::DestroyIcon(reinterpret_cast<HICON>(prevSmall));
-        }
     }
-    if (state.trayIdleIcon) {
-        ::DestroyIcon(static_cast<HICON>(state.trayIdleIcon));
-        state.trayIdleIcon = nullptr;
-    }
-    if (state.trayActiveIcon) {
-        ::DestroyIcon(static_cast<HICON>(state.trayActiveIcon));
-        state.trayActiveIcon = nullptr;
-    }
+    ReleaseTrayCachedIcons(state);
 }
 
 void Win32InstallOrUpdateTray(Win32WindowState& state) noexcept {
@@ -358,14 +332,24 @@ void Win32InstallOrUpdateTray(Win32WindowState& state) noexcept {
     nid.uCallbackMessage = kWmTrayCallback;
     nid.hIcon =
         static_cast<HICON>(state.trayActiveDownloads ? state.trayActiveIcon : state.trayIdleIcon);
-    ::wcsncpy_s(nid.szTip, std::size(nid.szTip), L"Motrix", _TRUNCATE);
+    std::wstring tipW;
+    if (!state.trayTooltipUtf8.empty()) {
+        tipW = motrix::core::Utf8ToWide(state.trayTooltipUtf8);
+    }
+    const wchar_t* tip =
+        !tipW.empty()
+            ? tipW.c_str()
+            : (state.trayActiveDownloads
+                   ? (state.trayIsZhCn ? L"Motrix - \x4E0B\x8F7D\x4E2D" : L"Motrix - Downloading")
+                   : L"Motrix");
+    ::wcsncpy_s(nid.szTip, std::size(nid.szTip), tip, _TRUNCATE);
 
-    if (!state.trayInstalled) {
-        if (::Shell_NotifyIconW(NIM_ADD, &nid) != FALSE) {
-            state.trayInstalled = true;
+    if (state.trayInstalled) {
+        if (::Shell_NotifyIconW(NIM_MODIFY, &nid) == FALSE) {
+            state.trayInstalled = (::Shell_NotifyIconW(NIM_ADD, &nid) != FALSE);
         }
-    } else {
-        ::Shell_NotifyIconW(NIM_MODIFY, &nid);
+    } else if (::Shell_NotifyIconW(NIM_ADD, &nid) != FALSE) {
+        state.trayInstalled = true;
     }
 }
 
@@ -377,19 +361,28 @@ void Win32ShowTrayBalloon(Win32WindowState& state,
     if (!state.hwnd || !state.trayInstalled) {
         return;
     }
-
+    EnsureTrayIconsCreated(state);
     const std::wstring wideTitle = motrix::core::Utf8ToWide(title);
     const std::wstring wideBody = motrix::core::Utf8ToWide(body);
-
     NOTIFYICONDATAW nid{};
     nid.cbSize = sizeof(NOTIFYICONDATAW);
     nid.hWnd = static_cast<HWND>(state.hwnd);
     nid.uID = 1;
     nid.uFlags = NIF_INFO;
-    nid.dwInfoFlags = NIIF_INFO;
+    nid.dwInfoFlags = NIIF_NONE;
     ::wcsncpy_s(nid.szInfoTitle, std::size(nid.szInfoTitle), wideTitle.c_str(), _TRUNCATE);
     ::wcsncpy_s(nid.szInfo, std::size(nid.szInfo), wideBody.c_str(), _TRUNCATE);
     ::Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+void ShowWindowFromTrayInteraction(Win32WindowState& state, HWND hwnd) {
+    if (state.config.onTrayAction) {
+        state.config.onTrayAction(TrayMenuAction::ShowWindow);
+    } else {
+        Win32ShowWindow(hwnd, true, true);
+        state.hiddenToTray = false;
+    }
+    state.activeFramesRemaining = std::max(state.activeFramesRemaining, 3);
 }
 
 void Win32HandleTrayCallback(Win32WindowState& state, std::uint64_t lParam) {
@@ -398,16 +391,14 @@ void Win32HandleTrayCallback(Win32WindowState& state, std::uint64_t lParam) {
     }
     HWND hwnd = static_cast<HWND>(state.hwnd);
     const UINT msgId = static_cast<UINT>(LOWORD(static_cast<DWORD_PTR>(lParam)));
-
     switch (msgId) {
         case WM_LBUTTONUP: {
             if (state.hiddenToTray || !::IsWindowVisible(hwnd) || ::IsIconic(hwnd)) {
-                Win32ShowWindow(hwnd, true, true);
-                state.hiddenToTray = false;
-                state.activeFramesRemaining = std::max(state.activeFramesRemaining, 3);
+                ShowWindowFromTrayInteraction(state, hwnd);
             } else {
                 Win32ShowWindow(hwnd, false, false);
                 state.hiddenToTray = true;
+                state.trimRequested = true;
             }
             break;
         }
@@ -420,14 +411,31 @@ void Win32HandleTrayCallback(Win32WindowState& state, std::uint64_t lParam) {
             if (!state.lastToastTargetDir.empty()) {
                 Win32OpenPathInExplorer(state.lastToastTargetDir);
             } else {
-                Win32ShowWindow(hwnd, true, true);
-                state.hiddenToTray = false;
-                state.activeFramesRemaining = std::max(state.activeFramesRemaining, 3);
+                ShowWindowFromTrayInteraction(state, hwnd);
             }
             break;
         }
         default: break;
     }
+}
+
+std::vector<std::uint32_t> RenderMotrixIconBgra(MotrixIconKind kind, int sizePx, bool darkTaskbar) {
+    if (sizePx <= 0) {
+        return {};
+    }
+    std::vector<std::uint32_t> out(static_cast<std::size_t>(sizePx * sizePx), 0u);
+    const float invSize = 1.0f / static_cast<float>(sizePx);
+    const float aa = (kind == MotrixIconKind::AppBadge ? 1.05f : 0.90f) * invSize;
+    std::size_t idx = 0;
+    for (int y = 0; y < sizePx; ++y) {
+        const float py = (static_cast<float>(y) + 0.5f) * invSize;
+        for (int x = 0; x < sizePx; ++x) {
+            const float px = (static_cast<float>(x) + 0.5f) * invSize;
+            out[idx++] =
+                PackPremulBgra(EvaluateMotrixIconPixel(IconSample{px, py, aa, darkTaskbar}, kind));
+        }
+    }
+    return out;
 }
 
 }  // namespace motrix::platform

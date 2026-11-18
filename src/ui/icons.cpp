@@ -79,34 +79,28 @@ void DrawArcWithCaps(const IconCanvas& c, const ArcSpec& arc) {
 }
 
 void DrawLogoMini(const IconCanvas& c) {
-    // SVG viewBox 0 0 28 14: rounded outer top bar + 3 vertical legs
-    const float topR = 2.0f * c.sx;
-    c.dl->AddRectFilled(c.Pt(0.0f, 0.0f), c.Pt(28.0f, 2.5f), c.col, topR, ImDrawFlags_RoundCornersTop);
-    c.dl->AddRectFilled(c.Pt(0.0f, 2.0f), c.Pt(4.0f, 14.0f), c.col, 0.0f);
-    c.dl->AddRectFilled(c.Pt(12.0f, 2.0f), c.Pt(16.0f, 14.0f), c.col, 0.0f);
-    c.dl->AddRectFilled(c.Pt(24.0f, 2.0f), c.Pt(28.0f, 14.0f), c.col, 0.0f);
+    // SVG viewBox 0 0 28 14: clean rounded-top M + three flat-bottom pillars
+    const float r = std::min(2.2f * c.sx, 2.2f * c.sy);
+    c.dl->AddRectFilled(c.Pt(0.0f, 0.0f), c.Pt(28.0f, 3.0f), c.col, r, ImDrawFlags_RoundCornersTop);
+    c.dl->AddRectFilled(
+        c.Pt(0.0f, 1.8f), c.Pt(4.2f, 14.0f), c.col, 0.6f * r, ImDrawFlags_RoundCornersBottom);
+    c.dl->AddRectFilled(
+        c.Pt(11.9f, 1.8f), c.Pt(16.1f, 14.0f), c.col, 0.6f * r, ImDrawFlags_RoundCornersBottom);
+    c.dl->AddRectFilled(
+        c.Pt(23.8f, 1.8f), c.Pt(28.0f, 14.0f), c.col, 0.6f * r, ImDrawFlags_RoundCornersBottom);
 }
 
 void DrawLogoFull(const IconCanvas& c) {
-    // SVG viewBox 0 0 62 14: M glyph + hyphen + hollow rounded square (O)
+    // SVG viewBox 0 0 62 14: M glyph + hyphen + hollow rounded O
     const IconCanvas mPart{c.dl, c.x, c.y, c.sx, c.sy, c.col, c.sw};
     DrawLogoMini(mPart);
-    c.dl->AddRectFilled(c.Pt(32.0f, 6.0f), c.Pt(36.0f, 8.0f), c.col, 0.5f * c.sx);
-    // Right rounded square ring x=[40..62], y=[0..14] -> inner hole x=[44..58], y=[2.5..11.5]
-    const float barT = 2.5f * c.sy;
-    const float sideT = 4.0f * c.sx;
+    const float r = std::min(2.2f * c.sx, 2.2f * c.sy);
+    c.dl->AddRectFilled(c.Pt(31.5f, 5.6f), c.Pt(36.5f, 8.4f), c.col, 1.1f * c.sy);
+    c.dl->AddRectFilled(c.Pt(40.0f, 0.0f), c.Pt(62.0f, 3.0f), c.col, r, ImDrawFlags_RoundCornersTop);
     c.dl->AddRectFilled(
-        c.Pt(40.0f, 0.0f), c.Pt(62.0f, 2.5f), c.col, 2.0f * c.sx, ImDrawFlags_RoundCornersTop);
-    c.dl->AddRectFilled(
-        c.Pt(40.0f, 11.5f), c.Pt(62.0f, 14.0f), c.col, 2.0f * c.sx, ImDrawFlags_RoundCornersBottom);
-    c.dl->AddRectFilled(ImVec2(c.x + 40.0f * c.sx, c.y + barT - 0.5f),
-                        ImVec2(c.x + 40.0f * c.sx + sideT, c.y + 14.0f * c.sy - barT + 0.5f),
-                        c.col,
-                        0.0f);
-    c.dl->AddRectFilled(ImVec2(c.x + 62.0f * c.sx - sideT, c.y + barT - 0.5f),
-                        ImVec2(c.x + 62.0f * c.sx, c.y + 14.0f * c.sy - barT + 0.5f),
-                        c.col,
-                        0.0f);
+        c.Pt(40.0f, 11.0f), c.Pt(62.0f, 14.0f), c.col, r, ImDrawFlags_RoundCornersBottom);
+    c.dl->AddRectFilled(c.Pt(40.0f, 2.2f), c.Pt(44.2f, 11.8f), c.col, 0.0f);
+    c.dl->AddRectFilled(c.Pt(57.8f, 2.2f), c.Pt(62.0f, 11.8f), c.col, 0.0f);
 }
 
 void DrawMenuIcons(MotrixIcon icon, const IconCanvas& c) {
@@ -379,7 +373,10 @@ void DrawMediaAndInboxIcons(MotrixIcon icon, const IconCanvas& c) {
     return icon == MotrixIcon::PreferenceBasic || icon == MotrixIcon::PreferenceAdvanced
            || icon == MotrixIcon::PreferenceLab || icon == MotrixIcon::TaskHistory
            || icon == MotrixIcon::Sync || icon == MotrixIcon::Dice || icon == MotrixIcon::ChevronDown
-           || icon == MotrixIcon::ChevronUp || icon == MotrixIcon::TagClose;
+           || icon == MotrixIcon::ChevronUp || icon == MotrixIcon::TagClose
+           || icon == MotrixIcon::DetailInfo || icon == MotrixIcon::DetailGrid
+           || icon == MotrixIcon::DetailCompass || icon == MotrixIcon::DetailUser
+           || icon == MotrixIcon::DetailFiles;
 }
 
 }  // namespace

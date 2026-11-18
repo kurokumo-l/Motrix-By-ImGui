@@ -78,57 +78,12 @@ namespace {
     return out;
 }
 
-[[nodiscard]] bool StartsWithAsciiInsensitive(std::string_view text, std::string_view prefix) noexcept {
-    if (text.size() < prefix.size()) {
-        return false;
-    }
-    for (std::size_t i = 0; i < prefix.size(); ++i) {
-        char a = text[i];
-        char b = prefix[i];
-        if (a >= 'A' && a <= 'Z') {
-            a = static_cast<char>(a - 'A' + 'a');
-        }
-        if (b >= 'A' && b <= 'Z') {
-            b = static_cast<char>(b - 'A' + 'a');
-        }
-        if (a != b) {
-            return false;
-        }
-    }
-    return true;
-}
-
-[[nodiscard]] bool EndsWithAsciiInsensitive(std::string_view text, std::string_view suffix) noexcept {
-    if (text.size() < suffix.size()) {
-        return false;
-    }
-    return StartsWithAsciiInsensitive(text.substr(text.size() - suffix.size()), suffix);
-}
-
-[[nodiscard]] std::string_view TrimStartupArg(std::string_view text) noexcept {
-    text = motrix::core::TrimAscii(text);
-    while (text.size() >= 2
-           && ((text.front() == '"' && text.back() == '"')
-               || (text.front() == '\'' && text.back() == '\''))) {
-        text.remove_prefix(1);
-        text.remove_suffix(1);
-        text = motrix::core::TrimAscii(text);
-    }
-    while (!text.empty() && text.front() == '"') {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && text.back() == '"') {
-        text.remove_suffix(1);
-    }
-    return motrix::core::TrimAscii(text);
-}
-
 [[nodiscard]] bool IsMotrixDeepLinkScheme(std::string_view text, std::size_t& prefixLen) noexcept {
-    if (StartsWithAsciiInsensitive(text, "motrix://")) {
+    if (motrix::core::StartsWithAsciiInsensitive(text, "motrix://")) {
         prefixLen = 9;
         return true;
     }
-    if (StartsWithAsciiInsensitive(text, "mo://")) {
+    if (motrix::core::StartsWithAsciiInsensitive(text, "mo://")) {
         prefixLen = 5;
         return true;
     }
@@ -136,6 +91,9 @@ namespace {
 }
 
 }  // namespace
+
+using motrix::core::EndsWithAsciiInsensitive;
+using motrix::core::StartsWithAsciiInsensitive;
 
 motrix::core::Result<std::string> DecodeThunderUri(std::string_view uri) {
     const std::string_view trimmed = motrix::core::TrimAscii(uri);
@@ -306,7 +264,7 @@ ParsedDeepLink ParseMotrixDeepLink(std::string_view uri) {
 
 ClassifiedStartupArg ClassifyStartupArg(std::string_view arg) {
     ClassifiedStartupArg out{};
-    const std::string_view cleaned = TrimStartupArg(arg);
+    const std::string_view cleaned = motrix::core::TrimQuotedArg(arg);
     if (cleaned.empty() || cleaned.starts_with('-')) {
         return out;
     }

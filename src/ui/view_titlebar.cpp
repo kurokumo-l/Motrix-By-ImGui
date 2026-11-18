@@ -52,9 +52,9 @@ void RenderTitlebarOverlay(UiFrameContext& ctx) {
             dl->AddRectFilled(bMin, bMax, ToAbgrU32(bg));
         }
 
-        const RgbaColor fg = (isClose && hovT > 0.35f)
-                                 ? ctx.palette.titlebarCloseHoverFg
-                                 : WithAlpha(ctx.palette.titlebarActionFg, groupAlpha);
+        const RgbaColor baseFg = WithAlpha(ctx.palette.titlebarActionFg, groupAlpha);
+        const RgbaColor fg =
+            isClose ? LerpColor(baseFg, ctx.palette.titlebarCloseHoverFg, hovT) : baseFg;
         const float iconSz = 12.0f * s;
         const float ix = bMin.x + (btnW - iconSz) * 0.5f;
         const float iy = bMin.y + (btnH - iconSz) * 0.5f;

@@ -57,6 +57,7 @@ void AppCoordinator::HandleEngineSyncUpdate(const EngineSyncUpdate& update) {
             .numWaiting = update.sync->globalStat.numWaiting,
             .numStopped = update.sync->globalStat.numStopped,
         };
+        PruneSelectionGids(state);
         if (state.detailedTaskGid.empty() || FindTaskByGid(state, state.detailedTaskGid)) {
             return;
         }
@@ -64,6 +65,7 @@ void AppCoordinator::HandleEngineSyncUpdate(const EngineSyncUpdate& update) {
         state.detailedTask.reset();
         state.detailedTrackers.clear();
         state.detailedPeers.clear();
+        std::scoped_lock lk(engineLifecycleMu_);
         if (engineRuntime_) {
             engineRuntime_->SetDetailGid({});
         }
@@ -72,6 +74,8 @@ void AppCoordinator::HandleEngineSyncUpdate(const EngineSyncUpdate& update) {
         const auto snap = Snapshot();
         DetectAndNotifyCompletions(*snap);
         UpdateLivePlatformStatus(*snap);
+    } else if (update.connState != EngineConnectionState::Connected) {
+        UpdateLivePlatformStatus(*Snapshot());
     }
 }
 
@@ -83,7 +87,10 @@ void AppCoordinator::ApplyDesktopIntegration(const AppStateSnapshot& state) {
         host->SetTrayEnabled(showTray);
         host->SetBindCloseToHide(bindClose);
         host->SetAutoHideOnBlur(state.prefs.autoHideWindow && showTray);
-        host->SetDarkFrame(state.prefs.theme == motrix::domain::ThemePreference::Dark);
+        const bool isDark =
+            state.prefs.theme == motrix::domain::ThemePreference::Dark
+            || (state.prefs.theme == motrix::domain::ThemePreference::Auto && host->IsSystemDarkMode());
+        host->SetDarkFrame(isDark);
     }
 
     if (!enableOsIntegration_) {
@@ -106,28 +113,39 @@ void AppCoordinator::ApplyDesktopIntegration(const AppStateSnapshot& state) {
 }
 
 void AppCoordinator::UpdateLivePlatformStatus(const AppStateSnapshot& state) {
+    std::scoped_lock statusLk(platformStatusMu_);
     auto* host = windowHost_.load(std::memory_order_acquire);
     if (!host) {
         return;
     }
 
+    const bool connected = state.engineState == EngineConnectionState::Connected;
     std::uint64_t totalBytes = 0;
     std::uint64_t completedBytes = 0;
     int activeTransferCount = 0;
-    for (const auto& t : state.downloadingTasks) {
-        if (ShouldTreatAsTaskbarActive(t)) {
-            ++activeTransferCount;
-            totalBytes += t.totalLength;
-            completedBytes += t.completedLength;
+    if (connected) {
+        for (const auto& t : state.downloadingTasks) {
+            if (ShouldTreatAsTaskbarActive(t)) {
+                ++activeTransferCount;
+                totalBytes += t.totalLength;
+                completedBytes += t.completedLength;
+            }
         }
     }
 
-    const bool hasActive = activeTransferCount > 0 || !state.downloadingTasks.empty();
-    host->UpdateTrayStatus(hasActive, state.prefs.locale == motrix::core::Locale::ZhCN);
+    const bool hasActive = connected && (activeTransferCount > 0 || !state.downloadingTasks.empty());
+    std::string trayTip;
+    if (connected && state.prefs.traySpeedometer
+        && (hasActive || state.globalStat.downloadSpeed > 0 || state.globalStat.uploadSpeed > 0)) {
+        trayTip = std::format("Motrix  ↓ {}  ↑ {}",
+                              motrix::domain::FormatSpeed(state.globalStat.downloadSpeed),
+                              motrix::domain::FormatSpeed(state.globalStat.uploadSpeed));
+    }
+    host->UpdateTrayStatus(hasActive, state.prefs.locale == motrix::core::Locale::ZhCN, trayTip);
 
-    const bool wantSleepBlock = activeTransferCount > 0;
-    if (wantSleepBlock != sleepBlockerActive_) {
-        sleepBlockerActive_ = wantSleepBlock;
+    const bool wantSleepBlock = connected && activeTransferCount > 0;
+    if (wantSleepBlock != sleepBlockerActive_.load(std::memory_order_acquire)) {
+        sleepBlockerActive_.store(wantSleepBlock, std::memory_order_release);
         host->SetSleepBlockerEnabled(wantSleepBlock);
     }
 
@@ -142,58 +160,22 @@ void AppCoordinator::UpdateLivePlatformStatus(const AppStateSnapshot& state) {
 }
 
 void AppCoordinator::DetectAndNotifyCompletions(const AppStateSnapshot& state) {
-    struct ToastItem {
-        std::string title;
-        std::string body;
-        std::string dir;
-    };
-    std::vector<ToastItem> pendingToasts;
+    const auto notices = UpdateTaskCompletionTracker(completionTracker_, state);
+    if (notices.empty() || !state.prefs.taskNotification) {
+        return;
+    }
+    auto* host = windowHost_.load(std::memory_order_acquire);
+    if (!host) {
+        return;
+    }
     const motrix::core::Translator tr(state.prefs.locale);
-
-    auto collectList = [&](const std::vector<motrix::domain::DownloadTaskView>& list, bool activeGroup) {
-        for (const auto& t : list) {
-            const bool completedOrSeeding =
-                (t.status == motrix::domain::TaskStatus::Complete)
-                || (activeGroup && t.taskType == motrix::domain::TaskType::BitTorrent && t.isSeeding);
-            const motrix::domain::TaskStatus effectiveStatus =
-                completedOrSeeding ? motrix::domain::TaskStatus::Complete : t.status;
-
-            auto it = lastTaskStatuses_.find(t.gid);
-            if (!initialSyncSeen_) {
-                lastTaskStatuses_[t.gid] = effectiveStatus;
-                continue;
-            }
-            const bool newlyDone =
-                completedOrSeeding
-                && (it == lastTaskStatuses_.end() || it->second != motrix::domain::TaskStatus::Complete);
-            lastTaskStatuses_[t.gid] = effectiveStatus;
-
-            if (newlyDone && state.prefs.taskNotification) {
-                if (t.taskType == motrix::domain::TaskType::BitTorrent && t.isSeeding) {
-                    pendingToasts.push_back(ToastItem{
-                        .title = std::string(tr.Tr("notify.bt_complete_title")),
-                        .body = std::format("{}\n{}", t.name, tr.Tr("notify.bt_seeding_tip")),
-                        .dir = t.dir,
-                    });
-                } else {
-                    pendingToasts.push_back(ToastItem{
-                        .title = std::string(tr.Tr("notify.complete_title")),
-                        .body = t.name,
-                        .dir = t.dir,
-                    });
-                }
-            }
-        }
-    };
-
-    collectList(state.downloadingTasks, true);
-    collectList(state.waitingTasks, false);
-    collectList(state.stoppedTasks, false);
-    initialSyncSeen_ = true;
-
-    if (auto* host = windowHost_.load(std::memory_order_acquire)) {
-        for (const auto& toast : pendingToasts) {
-            host->ShowToastNotification(toast.title, toast.body, toast.dir);
+    for (const auto& item : notices) {
+        if (item.btSeeding) {
+            host->ShowToastNotification(tr.Tr("notify.bt_complete_title"),
+                                        std::format("{}\n{}", item.name, tr.Tr("notify.bt_seeding_tip")),
+                                        item.dir);
+        } else {
+            host->ShowToastNotification(tr.Tr("notify.complete_title"), item.name, item.dir);
         }
     }
 }
@@ -223,7 +205,8 @@ void AppCoordinator::StartTrackerSyncAsync(std::vector<std::string> sources, std
             if (st.stop_requested()) {
                 return;
             }
-            auto fetched = motrix::engine::FetchTrackersFromUrls(srcs, proxy);
+            auto fetched =
+                motrix::engine::FetchTrackersFromUrls(srcs, proxy, std::chrono::milliseconds(15000), st);
             if (st.stop_requested()) {
                 return;
             }
@@ -250,18 +233,15 @@ void AppCoordinator::StartTrackerSyncAsync(std::vector<std::string> sources, std
                 s.sysConfig.btTracker = commaTrackers;
                 s.trackerSyncStatus = std::format(
                     "Synced {} sources ({} bytes)", fetched->succeededSources, commaTrackers.size());
-                optsCopy = motrix::domain::SystemConfigToOptionPairs(s.sysConfig);
+                const auto eff =
+                    motrix::domain::BuildEffectiveSystemConfig(s.sysConfig, s.prefs, s.speedLimitPaused);
+                optsCopy = motrix::domain::SystemConfigToOptionPairs(eff);
             });
 
             if (persistConfig_) {
                 PersistConfigs(*Snapshot(), true, true, true);
             }
-            if (engineRuntime_) {
-                engineRuntime_->Enqueue(EngineWorkCommand{
-                    .kind = EngineWorkCommand::Kind::ApplyGlobalOptions,
-                    .options = std::move(optsCopy),
-                });
-            }
+            EnqueueGlobalOptionsWork(std::move(optsCopy));
         });
 }
 
@@ -398,12 +378,14 @@ void AppCoordinator::HandleStartupPayload(const HandleStartupPayloadCmd& cmd) {
             ++s.dropSeq;
             s.activeModal = ActiveModal::AddTask;
             s.activeSection = 0;
-        } else if (!input.joinedUris.empty()) {
+        }
+        if (!input.joinedUris.empty()) {
             s.pendingPrefillUri = input.joinedUris;
             ++s.prefillUriSeq;
             s.activeModal = ActiveModal::AddTask;
             s.activeSection = 0;
-        } else if (input.pendingAction) {
+        }
+        if (input.firstTorrent.empty() && input.joinedUris.empty() && input.pendingAction) {
             ApplyDeepLinkAction(s, *input.pendingAction);
         }
     });
@@ -414,7 +396,11 @@ void AppCoordinator::HandleStartupPayload(const HandleStartupPayloadCmd& cmd) {
         Dispatch(ResumeAllCmd{});
     }
 
-    if (cmd.activateWindow) {
+    const bool silentBulkAction =
+        input.firstTorrent.empty() && input.joinedUris.empty()
+        && (input.pendingAction == motrix::domain::DeepLinkAction::PauseAll
+            || input.pendingAction == motrix::domain::DeepLinkAction::ResumeAll);
+    if (cmd.activateWindow && !silentBulkAction) {
         if (auto* host = windowHost_.load(std::memory_order_acquire)) {
             host->ShowFromTray();
         }

@@ -133,6 +133,7 @@ void AppCoordinator::SeedPreviewTasks(AppStateSnapshot& state) {
         .infoHash = "3b245504cf5f11bbdbe1201cea6a6bf45aee1bc0",
         .creationDate = "2026-11-01 08:30:00",
         .comment = "Arch Linux Official ISO & Release Bundle",
+        .creationTimestamp = 1793521800,
     };
     waitingTask.files = {
         TaskFileView{1,
@@ -178,16 +179,28 @@ void AppCoordinator::HandleTaskAction(AppStateSnapshot& state, const Command& cm
                              TaskTransferSpec{c->gid, motrix::domain::TaskStatus::Active, false});
         return;
     }
-    if (const auto* removeCmd = std::get_if<RemoveTaskCmd>(&cmd)) {
-        std::erase_if(state.downloadingTasks, [&](const auto& t) { return t.gid == removeCmd->gid; });
-        std::erase_if(state.waitingTasks, [&](const auto& t) { return t.gid == removeCmd->gid; });
-        std::erase_if(state.stoppedTasks, [&](const auto& t) { return t.gid == removeCmd->gid; });
-        if (state.detailedTaskGid == removeCmd->gid) {
+    auto eraseMockTask = [&](std::string_view gid) {
+        std::erase_if(state.downloadingTasks, [&](const auto& t) { return t.gid == gid; });
+        std::erase_if(state.waitingTasks, [&](const auto& t) { return t.gid == gid; });
+        std::erase_if(state.stoppedTasks, [&](const auto& t) { return t.gid == gid; });
+        std::erase(state.selectedTaskGids, gid);
+        if (state.detailedTaskGid == gid) {
             state.detailedTaskGid.clear();
             state.detailedTask.reset();
             state.detailedTrackers.clear();
             state.detailedPeers.clear();
         }
+    };
+    if (const auto* removeCmd = std::get_if<RemoveTaskCmd>(&cmd)) {
+        eraseMockTask(removeCmd->gid);
+        PruneSelectionGids(state);
+        return;
+    }
+    if (const auto* batchRemoveCmd = std::get_if<RemoveTasksCmd>(&cmd)) {
+        for (const auto& gid : batchRemoveCmd->gids) {
+            eraseMockTask(gid);
+        }
+        PruneSelectionGids(state);
         return;
     }
     if (const auto* selCmd = std::get_if<ApplyTaskFileSelectionCmd>(&cmd)) {
@@ -252,6 +265,18 @@ void AppCoordinator::RefreshMockDetail(AppStateSnapshot& state) {
 }
 
 void AppCoordinator::HandleBulkAndSubmit(AppStateSnapshot& state, const Command& cmd) {
+    if (std::holds_alternative<ResetSessionCmd>(cmd)) {
+        state.downloadingTasks.clear();
+        state.waitingTasks.clear();
+        state.stoppedTasks.clear();
+        state.selectedTaskGid.clear();
+        state.selectedTaskGids.clear();
+        state.detailedTaskGid.clear();
+        state.detailedTask.reset();
+        state.detailedTrackers.clear();
+        state.detailedPeers.clear();
+        return;
+    }
     if (std::holds_alternative<PurgeStoppedCmd>(cmd)) {
         state.stoppedTasks.clear();
         return;
@@ -344,6 +369,23 @@ void AppCoordinator::PersistConfigs(const AppStateSnapshot& state,
     if (saveSys && (overwrite || !std::filesystem::exists(sysPath, ec))) {
         (void)motrix::core::WriteTextAtomic(sysPath,
                                             motrix::domain::SerializeSystemConfigJson(state.sysConfig));
+    }
+    const auto confPath = appDataDir_ / "aria2.conf";
+    if (saveSys && (overwrite || !std::filesystem::exists(confPath, ec))) {
+        const auto eff = motrix::domain::BuildEffectiveSystemConfig(state.sysConfig, state.prefs);
+        const auto rawPairs = motrix::domain::SystemConfigToOptionPairs(eff);
+        std::vector<motrix::engine::EngineOptionPair> engPairs;
+        engPairs.reserve(rawPairs.size() + 1);
+        for (const auto& [k, v] : rawPairs) {
+            engPairs.push_back({k, v});
+        }
+        engPairs.push_back({"bt-port-mapping", state.prefs.enableUpnp ? "true" : "false"});
+        const auto kind = (state.engineInfo.kind == motrix::engine::EngineKind::Unknown)
+                              ? motrix::engine::EngineKind::Aria2Next
+                              : state.engineInfo.kind;
+        auto dialect = motrix::engine::CreateDialect(kind);
+        const auto filtered = dialect->FilterGlobalOptions(engPairs);
+        (void)motrix::core::WriteTextAtomic(confPath, motrix::engine::FormatAria2Conf(filtered));
     }
 }
 

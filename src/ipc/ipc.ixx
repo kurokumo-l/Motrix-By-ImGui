@@ -6,6 +6,7 @@ import motrix.core;
 namespace motrix::ipc {
 
 export inline constexpr std::string_view kDefaultPipeName = R"(\\.\pipe\MotrixNativeIPC)";
+export [[nodiscard]] std::string DefaultIpcPipeName();
 
 export struct StartupPayload {
     std::vector<std::string> uris;
@@ -30,7 +31,6 @@ export [[nodiscard]] motrix::core::Result<StartupPayload>
 DeserializeStartupPayload(std::string_view jsonText);
 export [[nodiscard]] StartupPayload BuildStartupPayloadFromArgs(std::span<const std::string> args);
 export [[nodiscard]] std::unique_ptr<ISingleInstanceChannel>
-CreateNamedPipeChannel(motrix::core::Logger& logger,
-                       std::string pipeName = std::string(kDefaultPipeName));
+CreateNamedPipeChannel(motrix::core::Logger& logger, std::string pipeName = {});
 
 }  // namespace motrix::ipc

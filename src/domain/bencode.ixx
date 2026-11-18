@@ -47,6 +47,7 @@ export [[nodiscard]] bool IsAudioExtension(std::string_view extOrPath) noexcept;
 export [[nodiscard]] bool IsImageExtension(std::string_view extOrPath) noexcept;
 
 export [[nodiscard]] std::string FormatUnixTimestampUtc(std::int64_t unixSeconds);
+export [[nodiscard]] std::string FormatUnixTimestampLocal(std::int64_t unixSeconds, bool zhCn = false);
 
 export [[nodiscard]] float BitfieldCompletion(std::string_view bitfieldHex,
                                               std::uint32_t numPieces = 0) noexcept;

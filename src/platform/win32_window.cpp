@@ -78,10 +78,7 @@ constexpr int kDwmRoundCorner = 2;
     return kHit[yIdx][xIdx];
 }
 
-WNDPROC gPrevWndProcForDrop = nullptr;
-Win32WindowState* gDropWindowState = nullptr;
-
-void DispatchDroppedFiles(Win32WindowState* state, HDROP hDrop) {
+void DispatchDroppedFiles(Win32WindowState& state, HDROP hDrop) {
     if (!hDrop) {
         return;
     }
@@ -100,21 +97,10 @@ void DispatchDroppedFiles(Win32WindowState* state, HDROP hDrop) {
         }
     }
     ::DragFinish(hDrop);
-    if (state && !paths.empty() && state->config.onFilesDropped) {
-        state->config.onFilesDropped(std::move(paths));
-        state->activeFramesRemaining = std::max(state->activeFramesRemaining, 3);
+    if (!paths.empty() && state.config.onFilesDropped) {
+        state.config.onFilesDropped(std::move(paths));
+        state.activeFramesRemaining = std::max(state.activeFramesRemaining, 3);
     }
-}
-
-LRESULT CALLBACK DropAwareWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (msg == WM_DROPFILES) {
-        DispatchDroppedFiles(gDropWindowState, reinterpret_cast<HDROP>(wParam));
-        return 0;
-    }
-    if (gPrevWndProcForDrop) {
-        return ::CallWindowProcW(gPrevWndProcForDrop, hWnd, msg, wParam, lParam);
-    }
-    return ::DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
 [[nodiscard]] LRESULT HandleNcHitTest(const Win32WindowState& state, HWND hWnd, LPARAM lParam) {
@@ -134,7 +120,9 @@ LRESULT CALLBACK DropAwareWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
 
     const int barH = static_cast<int>(state.titlebarHeightPx * state.dpiScale);
     if (pt.y >= 0 && pt.y < barH) {
-        if (ImGui::GetCurrentContext() && ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
+        const bool popupOpen =
+            ImGui::GetCurrentContext() && ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+        if (state.titlebarBlocked || popupOpen) {
             return HTCLIENT;
         }
         for (const auto& r : state.titlebarRects) {
@@ -183,8 +171,8 @@ void HandleSizeMessage(Win32WindowState& state, const WindowMsg& m) {
 }
 
 void HandleBlurAutoHide(Win32WindowState& state, const WindowMsg& m) {
-    if (LOWORD(m.wParam) != WA_INACTIVE || !state.autoHideOnBlur || !state.config.screenshotPath.empty()
-        || !::IsWindowVisible(m.hWnd) || ::IsIconic(m.hWnd)) {
+    if (LOWORD(m.wParam) != WA_INACTIVE || !state.autoHideOnBlur || state.inPickerDialog
+        || !state.config.screenshotPath.empty() || !::IsWindowVisible(m.hWnd) || ::IsIconic(m.hWnd)) {
         return;
     }
     HWND next = reinterpret_cast<HWND>(m.lParam);
@@ -195,6 +183,7 @@ void HandleBlurAutoHide(Win32WindowState& state, const WindowMsg& m) {
     if (!next || nextPid != ::GetCurrentProcessId()) {
         Win32ShowWindow(m.hWnd, false, false);
         state.hiddenToTray = true;
+        state.trimRequested = true;
     }
 }
 
@@ -225,6 +214,7 @@ LRESULT HandleMessage(Win32WindowState& state, const WindowMsg& m) {
                            s->right - s->left,
                            s->bottom - s->top,
                            SWP_NOZORDER | SWP_NOACTIVATE);
+            Win32RefreshIconsOnThemeOrDpi(state);
             return 0;
         }
         case WM_SIZE: HandleSizeMessage(state, m); return 0;
@@ -234,6 +224,7 @@ LRESULT HandleMessage(Win32WindowState& state, const WindowMsg& m) {
             }
             return 0;
         case WM_ACTIVATE: HandleBlurAutoHide(state, m); break;
+        case WM_SETTINGCHANGE: Win32HandleImmersiveColorChange(state, m.lParam); break;
         case kWmTrayCallback:
             Win32HandleTrayCallback(state, static_cast<std::uint64_t>(m.lParam));
             return 0;
@@ -244,6 +235,7 @@ LRESULT HandleMessage(Win32WindowState& state, const WindowMsg& m) {
             if (state.bindCloseToHide && !state.explicitQuitRequested) {
                 Win32ShowWindow(m.hWnd, false, false);
                 state.hiddenToTray = true;
+                state.trimRequested = true;
                 return 0;
             }
             if (state.config.onQuitRequested) {
@@ -256,7 +248,11 @@ LRESULT HandleMessage(Win32WindowState& state, const WindowMsg& m) {
             }
             break;
         case WM_DESTROY: ::PostQuitMessage(0); return 0;
-        default: break;
+        default:
+            if (LRESULT sr = 0; Win32HandleShellOrEndSession(state, m.msg, m.wParam, sr)) {
+                return sr;
+            }
+            break;
     }
     return ::DefWindowProcW(m.hWnd, m.msg, m.wParam, m.lParam);
 }
@@ -270,6 +266,10 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     }
 
     auto* state = reinterpret_cast<Win32WindowState*>(::GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+    if (msg == WM_DROPFILES && state) {
+        DispatchDroppedFiles(*state, reinterpret_cast<HDROP>(wParam));
+        return 0;
+    }
     if (ImGui::GetCurrentContext() != nullptr
         && ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) {
         if (state) {
@@ -352,13 +352,8 @@ motrix::core::Result<void> Win32CreateWindow(Win32WindowState& state) {
                                                        "Failed to create Win32 window"));
     }
     state.hwnd = created;
-    gDropWindowState = &state;
+    Win32RegisterShellMessages(state);
     ::DragAcceptFiles(created, TRUE);
-    const LONG_PTR prevProc =
-        ::SetWindowLongPtrW(created, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(DropAwareWndProc));
-    if (prevProc && prevProc != reinterpret_cast<LONG_PTR>(DropAwareWndProc)) {
-        gPrevWndProcForDrop = reinterpret_cast<WNDPROC>(prevProc);
-    }
     Win32ApplyDwmChrome(created, state.darkFrame);
     Win32ApplyInitialWindowBounds(created, state.config, state.dpiScale);
     state.dpiScale = Win32GetWindowDpiScale(created);
@@ -369,9 +364,6 @@ motrix::core::Result<void> Win32CreateWindow(Win32WindowState& state) {
 }
 
 void Win32DestroyWindow(Win32WindowState& state) noexcept {
-    if (gDropWindowState == &state) {
-        gDropWindowState = nullptr;
-    }
     Win32DestroyTrayIcons(state);
     if (state.hwnd) {
         ::DestroyWindow(static_cast<HWND>(state.hwnd));
@@ -406,9 +398,8 @@ void Win32ShowWindow(void* hwnd, bool show, bool activate) noexcept {
 }
 
 void Win32MinimizeWindow(void* hwnd) noexcept {
-    if (hwnd) {
+    if (hwnd)
         ::ShowWindow(static_cast<HWND>(hwnd), SW_MINIMIZE);
-    }
 }
 
 void Win32ToggleMaximizeWindow(void* hwnd) noexcept {
@@ -419,9 +410,8 @@ void Win32ToggleMaximizeWindow(void* hwnd) noexcept {
 }
 
 void Win32PostCloseWindow(void* hwnd) noexcept {
-    if (hwnd) {
+    if (hwnd)
         ::PostMessageW(static_cast<HWND>(hwnd), WM_CLOSE, 0, 0);
-    }
 }
 
 void Win32ApplyDwmChrome(void* hwnd, bool dark) noexcept {

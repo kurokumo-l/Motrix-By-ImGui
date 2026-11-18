@@ -16,54 +16,49 @@ export enum class ActiveModal {
 export struct SelectCategoryCmd {
     motrix::domain::TaskCategory category = motrix::domain::TaskCategory::Downloading;
 };
-
 export struct SelectSectionCmd {
     int sectionIndex = 0;  // 0 = Tasks, 1 = Preferences
 };
-
 export struct OpenModalCmd {
     ActiveModal modal = ActiveModal::None;
 };
-
 export struct CloseModalCmd {};
-
 export struct SelectTaskCmd {
     std::string gid;
     bool openDrawer = false;
+    bool toggle = false;
+    bool range = false;
 };
-
+export struct SelectAllTasksCmd {};
 export struct SetDetailTabCmd {
     int tabIndex = 0;
 };
-
 export struct PauseTaskCmd {
     std::string gid;
 };
-
 export struct ResumeTaskCmd {
     std::string gid;
 };
-
 export struct RemoveTaskCmd {
     std::string gid;
     bool deleteFiles = false;
 };
-
+export struct RemoveTasksCmd {
+    std::vector<std::string> gids;
+    bool deleteFiles = false;
+};
 export struct RestartTaskCmd {
     std::string gid;
 };
-
 export struct RefreshTasksCmd {};
 export struct ResumeAllCmd {};
 export struct PauseAllCmd {};
 export struct PurgeStoppedCmd {};
-
+export struct ToggleSpeedLimitCmd {};
 export struct SetThemeCmd {
-    motrix::domain::ThemePreference theme = motrix::domain::ThemePreference::Light;
+    motrix::domain::ThemePreference theme = motrix::domain::ThemePreference::Auto;
 };
-
 export struct ToggleThemeCmd {};
-
 export struct SetLocaleCmd {
     motrix::core::Locale locale = motrix::core::Locale::EnUS;
 };
@@ -72,7 +67,7 @@ export struct SubmitAddUriCmd {
     std::vector<std::string> uris;
     std::string outName;
     std::string dir;
-    int split = 64;
+    int split = 16;
     std::string userAgent;
     std::string authorization;
     std::string referer;
@@ -95,7 +90,7 @@ export struct SubmitAddTorrentCmd {
     std::size_t totalFiles = 0;
     std::string outName;
     std::string dir;
-    int split = 64;
+    int split = 16;
     std::string userAgent;
     std::string authorization;
     std::string referer;
@@ -144,21 +139,27 @@ export struct UpdateWindowBoundsCmd {
 export struct HandleTrayActionCmd {
     motrix::platform::TrayMenuAction action = motrix::platform::TrayMenuAction::ShowWindow;
 };
+export struct StartAria2NextUpdateCmd {
+    bool force = false;
+};
 
 export using Command = std::variant<SelectCategoryCmd,
                                     SelectSectionCmd,
                                     OpenModalCmd,
                                     CloseModalCmd,
                                     SelectTaskCmd,
+                                    SelectAllTasksCmd,
                                     SetDetailTabCmd,
                                     PauseTaskCmd,
                                     ResumeTaskCmd,
                                     RemoveTaskCmd,
+                                    RemoveTasksCmd,
                                     RestartTaskCmd,
                                     RefreshTasksCmd,
                                     ResumeAllCmd,
                                     PauseAllCmd,
                                     PurgeStoppedCmd,
+                                    ToggleSpeedLimitCmd,
                                     SetThemeCmd,
                                     ToggleThemeCmd,
                                     SetLocaleCmd,
@@ -177,7 +178,8 @@ export using Command = std::variant<SelectCategoryCmd,
                                     ShowFromTrayCmd,
                                     QuitAppCmd,
                                     UpdateWindowBoundsCmd,
-                                    HandleTrayActionCmd>;
+                                    HandleTrayActionCmd,
+                                    StartAria2NextUpdateCmd>;
 
 export class ICommandSink {
 public:

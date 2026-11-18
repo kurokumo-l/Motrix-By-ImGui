@@ -15,6 +15,16 @@ export enum class EngineConnectionState {
     PreviewMock,
 };
 
+export enum class EngineUpdateStatus {
+    Idle = 0,
+    Checking,
+    Downloading,
+    Verifying,
+    Restarting,
+    Succeeded,
+    Failed,
+};
+
 export struct EngineSyncUpdate {
     EngineConnectionState connState = EngineConnectionState::Starting;
     const motrix::engine::EngineVersionInfo* version = nullptr;
@@ -37,8 +47,10 @@ export struct AppStateSnapshot {
     int activeSection = 0;
     ActiveModal activeModal = ActiveModal::None;
     std::string selectedTaskGid;
+    std::vector<std::string> selectedTaskGids;
     std::string detailedTaskGid;
     int activeDetailTab = 0;
+    bool speedLimitPaused = false;
     EngineConnectionState engineState = EngineConnectionState::Starting;
     motrix::engine::EngineVersionInfo engineInfo;
     std::string engineError;
@@ -62,6 +74,9 @@ export struct AppStateSnapshot {
     std::uint64_t prefillUriSeq = 0;
     bool isSyncingTrackers = false;
     std::string trackerSyncStatus;
+    EngineUpdateStatus engineUpdateStatus = EngineUpdateStatus::Idle;
+    std::string engineUpdateMessage;
+    std::string engineUpdateVersion;
 };
 
 }  // namespace motrix::app

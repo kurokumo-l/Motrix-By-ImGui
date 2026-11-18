@@ -7,6 +7,7 @@ module motrix.ui;
 import std;
 import motrix.app;
 import :views_internal;
+import :el_widgets;
 import :theme;
 import :anim;
 import :icons;
@@ -54,9 +55,36 @@ bool AsideIconButton(UiFrameContext& ctx, const AsideBtnSpec& spec) {
     });
 
     if (hovered && !spec.tooltip.empty()) {
-        ImGui::SetTooltip("%.*s", static_cast<int>(spec.tooltip.size()), spec.tooltip.data());
+        ElDrawTooltip({ctx.palette, ctx.fonts, s, &ctx.anim}, {spec.tooltip, ElTooltipPlacement::Right});
     }
     return clicked;
+}
+
+void RenderAsideLogo(UiFrameContext& ctx, float cx, float logoBoxY) {
+    const float s = ctx.dpiScale;
+    const float logoW = 28.0f * s;
+    const float logoH = 14.0f * s;
+    ImGui::SetCursorScreenPos(ImVec2(cx - logoW * 0.5f, logoBoxY));
+    if (ImGui::InvisibleButton("##aside_logo", ImVec2(logoW, 28.0f * s))) {
+        ctx.sink.Dispatch(motrix::app::OpenModalCmd{motrix::app::ActiveModal::About});
+    }
+    const float logoHovT =
+        ctx.anim.Float(HashId("##aside_logo"), ImGui::IsItemHovered() ? 1.0f : 0.0f, 18.0f, 0.0f);
+    if (logoHovT > 0.01f) {
+        const RgbaColor halo =
+            WithAlpha(ctx.palette.asideHoverBg, ctx.palette.asideHoverBg.a * 0.6f * logoHovT);
+        ImGui::GetWindowDrawList()->AddCircleFilled(
+            ImVec2(cx, logoBoxY + 14.0f * s), 18.0f * s, ToAbgrU32(halo), 28);
+    }
+    DrawMotrixIcon(IconSpec{
+        MotrixIcon::LogoMini,
+        cx - logoW * 0.5f,
+        logoBoxY + (28.0f * s - logoH) * 0.5f,
+        logoW,
+        logoH,
+        LerpColor(ctx.palette.asideIcon, HexColor(0xFFFFFF), logoHovT * 0.25f),
+        s,
+    });
 }
 
 }  // namespace
@@ -69,22 +97,8 @@ void RenderAsideRail(UiFrameContext& ctx, float x, float y, float h) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), ToAbgrU32(ctx.palette.asideBg));
 
-    const float logoW = 28.0f * s;
-    const float logoH = 14.0f * s;
     const float logoBoxY = y + 40.0f * s;
-    ImGui::SetCursorScreenPos(ImVec2(cx - logoW * 0.5f, logoBoxY));
-    if (ImGui::InvisibleButton("##aside_logo", ImVec2(logoW, 28.0f * s))) {
-        ctx.sink.Dispatch(motrix::app::OpenModalCmd{motrix::app::ActiveModal::About});
-    }
-    DrawMotrixIcon(IconSpec{
-        MotrixIcon::LogoMini,
-        cx - logoW * 0.5f,
-        logoBoxY + (28.0f * s - logoH) * 0.5f,
-        logoW,
-        logoH,
-        ctx.palette.asideIcon,
-        s,
-    });
+    RenderAsideLogo(ctx, cx, logoBoxY);
 
     float curY = logoBoxY + 28.0f * s + 24.0f * s;
     if (AsideIconButton(ctx,

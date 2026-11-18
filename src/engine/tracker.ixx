@@ -14,6 +14,7 @@ export struct TrackerFetchResult {
 export [[nodiscard]] motrix::core::Result<TrackerFetchResult>
 FetchTrackersFromUrls(std::span<const std::string> urls,
                       std::string_view proxyUrl = {},
-                      std::chrono::milliseconds timeout = std::chrono::milliseconds(8000));
+                      std::chrono::milliseconds timeout = std::chrono::milliseconds(8000),
+                      std::stop_token stopToken = {});
 
 }  // namespace motrix::engine

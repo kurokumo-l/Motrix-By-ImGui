@@ -45,8 +45,9 @@ void DrawPrefExtraIcons(const ExtraIconCanvas& c, MotrixIcon icon) {
             const ImVec2 wrench[4] = {
                 c.Pt(4.5f, 20.5f), c.Pt(2.0f, 18.0f), c.Pt(14.5f, 5.5f), c.Pt(17.0f, 8.0f)};
             c.dl->AddConvexPolyFilled(wrench, 4, c.col);
-            c.dl->AddCircleFilled(c.Pt(18.0f, 6.0f), 4.8f * c.sx, c.col, 20);
-            c.dl->AddCircleFilled(c.Pt(19.5f, 4.5f), 2.3f * c.sx, ToAbgrU32(HexColor(0xF4F5F7)), 14);
+            c.dl->PathClear();
+            c.dl->PathArcTo(c.Pt(18.0f, 6.0f), 3.45f * c.sx, -0.15f, 4.86f, 20);
+            c.dl->PathStroke(c.col, ImDrawFlags_None, 2.45f * c.sx);
             c.dl->AddCircleFilled(c.Pt(19.5f, 19.5f), 3.0f * c.sx, c.col, 16);
             break;
         }
@@ -127,6 +128,49 @@ void DrawUtilityExtraIcons(const ExtraIconCanvas& c, MotrixIcon icon, float dpiS
     }
 }
 
+void DrawDetailTabIcons(const ExtraIconCanvas& c, MotrixIcon icon, ImU32 cutoutCol) {
+    switch (icon) {
+        case MotrixIcon::DetailInfo:
+            c.dl->AddCircleFilled(c.Pt(12.0f, 12.0f), 10.0f * c.sx, c.col, 28);
+            c.dl->AddCircleFilled(c.Pt(12.0f, 7.2f), 1.35f * c.sx, cutoutCol, 12);
+            c.dl->AddRectFilled(c.Pt(10.8f, 10.2f), c.Pt(13.2f, 17.5f), cutoutCol, 1.0f * c.sx);
+            break;
+        case MotrixIcon::DetailGrid:
+            for (int r = 0; r < 3; ++r) {
+                for (int col = 0; col < 3; ++col) {
+                    const float x0 = 3.2f + static_cast<float>(col) * 6.8f;
+                    const float y0 = 3.2f + static_cast<float>(r) * 6.8f;
+                    c.dl->AddRectFilled(c.Pt(x0, y0), c.Pt(x0 + 4.0f, y0 + 4.0f), c.col, 0.8f * c.sx);
+                }
+            }
+            break;
+        case MotrixIcon::DetailCompass: {
+            c.dl->AddCircle(c.Pt(12.0f, 12.0f), 9.6f * c.sx, c.col, 28, c.sw);
+            const ImVec2 needle[4] = {
+                c.Pt(16.6f, 7.4f), c.Pt(14.0f, 14.0f), c.Pt(7.4f, 16.6f), c.Pt(10.0f, 10.0f)};
+            c.dl->AddPolyline(needle, 4, c.col, ImDrawFlags_Closed, c.sw * 0.9f);
+            break;
+        }
+        case MotrixIcon::DetailUser: {
+            c.dl->AddCircleFilled(c.Pt(12.0f, 7.8f), 4.2f * c.sx, c.col, 20);
+            c.dl->PathClear();
+            c.dl->PathArcTo(c.Pt(12.0f, 20.6f), 7.6f * c.sx, 3.14159265f, 6.2831853f, 20);
+            c.dl->PathFillConvex(c.col);
+            break;
+        }
+        case MotrixIcon::DetailFiles: {
+            c.dl->AddRect(c.Pt(4.0f, 6.5f), c.Pt(20.0f, 20.0f), c.col, 1.5f * c.sx, 0, c.sw);
+            const ImVec2 top[4] = {
+                c.Pt(6.5f, 6.5f), c.Pt(7.5f, 4.0f), c.Pt(16.5f, 4.0f), c.Pt(17.5f, 6.5f)};
+            c.dl->AddPolyline(top, 4, c.col, 0, c.sw);
+            c.dl->AddLine(c.Pt(8.0f, 11.2f), c.Pt(16.0f, 11.2f), c.col, c.sw * 0.9f);
+            c.dl->AddLine(c.Pt(8.0f, 15.0f), c.Pt(14.0f, 15.0f), c.col, c.sw * 0.9f);
+            break;
+        }
+        default: break;
+    }
+}
+
 }  // namespace
 
 void DrawExtraMotrixIcon(ImDrawList* dl, const IconSpec& spec) {
@@ -134,6 +178,12 @@ void DrawExtraMotrixIcon(ImDrawList* dl, const IconSpec& spec) {
     const float sy = spec.height / 24.0f;
     const float sw = std::max(1.25f * spec.dpiScale, 1.8f * sx);
     const ExtraIconCanvas c{dl, spec.x, spec.y, sx, sy, ToAbgrU32(spec.color), sw};
+    if (spec.icon == MotrixIcon::DetailInfo || spec.icon == MotrixIcon::DetailGrid
+        || spec.icon == MotrixIcon::DetailCompass || spec.icon == MotrixIcon::DetailUser
+        || spec.icon == MotrixIcon::DetailFiles) {
+        DrawDetailTabIcons(c, spec.icon, ToAbgrU32(spec.cutoutColor));
+        return;
+    }
     if (spec.icon == MotrixIcon::PreferenceBasic || spec.icon == MotrixIcon::PreferenceAdvanced
         || spec.icon == MotrixIcon::PreferenceLab) {
         DrawPrefExtraIcons(c, spec.icon);

@@ -8,6 +8,7 @@ import std;
 import motrix.domain;
 import motrix.app;
 import :views_internal;
+import :el_widgets;
 import :theme;
 import :anim;
 import :icons;
@@ -71,9 +72,7 @@ void DispatchPillAction(UiFrameContext& ctx,
         case PillActionSpec::Kind::Restart:
             ctx.sink.Dispatch(motrix::app::RestartTaskCmd{task.gid});
             break;
-        case PillActionSpec::Kind::Delete:
-            ctx.sink.Dispatch(motrix::app::RemoveTaskCmd{task.gid, false});
-            break;
+        case PillActionSpec::Kind::Delete: RequestTaskRemoval(ctx, task.gid, task.name); break;
         case PillActionSpec::Kind::Folder:
             ctx.sink.Dispatch(motrix::app::ShowInFolderCmd{task.gid});
             break;
@@ -104,12 +103,12 @@ void RenderFloatingPillActions(UiFrameContext& ctx,
     const float hovT = ctx.anim.Float(HashId(task.gid) ^ 0x5111u, pillHov ? 1.0f : 0.0f, 18.0f, 0.0f);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const RgbaColor bg = (hovT > 0.5f) ? ctx.palette.pillHoverBg : ctx.palette.pillBg;
-    const RgbaColor border = (hovT > 0.5f) ? ctx.palette.pillHoverBorder : ctx.palette.pillBorder;
+    const RgbaColor bg = LerpColor(ctx.palette.pillBg, ctx.palette.pillHoverBg, hovT);
+    const RgbaColor border = LerpColor(ctx.palette.pillBorder, ctx.palette.pillHoverBorder, hovT);
     dl->AddRectFilled(pMin, pMax, ToAbgrU32(bg), LayoutMetrics::kPillRadius * s);
     dl->AddRect(pMin, pMax, ToAbgrU32(border), LayoutMetrics::kPillRadius * s, 0, 1.0f);
 
-    const RgbaColor iconCol = (hovT > 0.5f) ? ctx.palette.pillHoverIcon : ctx.palette.pillIcon;
+    const RgbaColor iconCol = LerpColor(ctx.palette.pillIcon, ctx.palette.pillHoverIcon, hovT);
     for (std::size_t i = 0; i < actions.size(); ++i) {
         const ImVec2 bMin(pMin.x + padX + static_cast<float>(i) * slotW, pMin.y);
         ImGui::SetCursorScreenPos(bMin);
@@ -118,7 +117,12 @@ void RenderFloatingPillActions(UiFrameContext& ctx,
             DispatchPillAction(ctx, task, actions[i].kind);
         }
         const bool btnHov = ImGui::IsItemHovered();
-        const float drawSz = btnHov ? (iconSz * 1.12f) : iconSz;
+        const float btnHovT =
+            ctx.anim.Float(HashId(task.gid) ^ (0x5200u + static_cast<std::uint32_t>(i)),
+                           btnHov ? 1.0f : 0.0f,
+                           24.0f,
+                           0.0f);
+        const float drawSz = iconSz * (1.0f + 0.12f * btnHovT);
         DrawMotrixIcon(IconSpec{
             actions[i].icon,
             bMin.x + (slotW - drawSz) * 0.5f,
@@ -129,14 +133,16 @@ void RenderFloatingPillActions(UiFrameContext& ctx,
             s,
         });
         if (btnHov) {
-            const std::string_view tip = ctx.tr.Tr(actions[i].tooltipKey);
-            ImGui::SetTooltip("%.*s", static_cast<int>(tip.size()), tip.data());
+            ElDrawTooltip({ctx.palette, ctx.fonts, s, &ctx.anim},
+                          {ctx.tr.Tr(actions[i].tooltipKey), ElTooltipPlacement::Top});
         }
     }
 }
 
-[[nodiscard]] RgbaColor ProgressColorFor(const MotrixPalette& p,
-                                         const motrix::domain::DownloadTaskView& task) noexcept {
+}  // namespace
+
+RgbaColor ProgressColorFor(const MotrixPalette& p,
+                           const motrix::domain::DownloadTaskView& task) noexcept {
     using motrix::domain::TaskStatus;
     switch (task.status) {
         case TaskStatus::Active: return task.isSeeding ? p.progressComplete : p.progressActive;
@@ -148,6 +154,8 @@ void RenderFloatingPillActions(UiFrameContext& ctx,
     }
     return p.progressWaiting;
 }
+
+namespace {
 
 struct TaskCardGeometry {
     ImVec2 cardPos{};
@@ -187,13 +195,109 @@ void RenderTaskCardNameAndBar(UiFrameContext& ctx,
     dl->AddRectFilled(trackMin, trackMax, ToAbgrU32(ctx.palette.progressTrack), progRadius);
 
     const float ratio = motrix::domain::ProgressOf(task);
-    if (ratio > 0.001f) {
-        const float fillW = std::max(g.progH, g.progW * ratio);
+    const float dispRatio = ctx.anim.Float(HashId(task.gid) ^ 0x7001u, ratio, 12.0f, ratio);
+    if (dispRatio > 0.001f) {
+        const float fillW = std::max(g.progH, g.progW * dispRatio);
         dl->AddRectFilled(trackMin,
                           ImVec2(trackMin.x + fillW, trackMax.y),
                           ToAbgrU32(ProgressColorFor(ctx.palette, task)),
                           progRadius);
     }
+}
+
+struct TaskMetaChip {
+    bool hasIcon = false;
+    MotrixIcon icon = MotrixIcon::Node;
+    std::string text;
+    bool optional = false;
+};
+
+[[nodiscard]] float MeasureChipsWidth(std::span<const TaskMetaChip> chips, float s) {
+    const float iconW = 10.0f * s;
+    const float iconGap = 3.0f * s;
+    const float chipGap = 12.0f * s;
+    float total = 0.0f;
+    for (std::size_t i = 0; i < chips.size(); ++i) {
+        if (i > 0) {
+            total += chipGap;
+        }
+        if (chips[i].hasIcon) {
+            total += iconW + iconGap;
+        }
+        total += ImGui::CalcTextSize(chips[i].text.c_str()).x;
+    }
+    return total;
+}
+
+void DrawActiveMetaChips(UiFrameContext& ctx,
+                         const TaskCardGeometry& g,
+                         std::span<const TaskMetaChip> chips) {
+    const float s = ctx.dpiScale;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float iconW = 10.0f * s;
+    const float iconH = 10.0f * s;
+    const float iconGap = 3.0f * s;
+    const float chipGap = 12.0f * s;
+    const float lineH = ImGui::GetTextLineHeight();
+    const float iconY = g.metaY + (lineH - iconH) * 0.5f;
+
+    float curX = g.cardMax.x - g.padX - MeasureChipsWidth(chips, s);
+    for (const auto& chip : chips) {
+        if (chip.hasIcon) {
+            DrawMotrixIcon(IconSpec{chip.icon, curX, iconY, iconW, iconH, ctx.palette.taskMetaText, s});
+            curX += iconW + iconGap;
+        }
+        dl->AddText(ImVec2(curX, g.metaY), ToAbgrU32(ctx.palette.taskMetaText), chip.text.c_str());
+        curX += ImGui::CalcTextSize(chip.text.c_str()).x + chipGap;
+    }
+}
+
+void RenderActiveTaskMeta(UiFrameContext& ctx,
+                          const motrix::domain::DownloadTaskView& task,
+                          const TaskCardGeometry& g,
+                          float minRightX) {
+    const float s = ctx.dpiScale;
+    const bool wide = ctx.viewportW >= LayoutMetrics::kAsideHideThreshold * s;
+    const bool isBt = (task.taskType == motrix::domain::TaskType::BitTorrent);
+    std::vector<TaskMetaChip> chips;
+    if (isBt && (task.uploadSpeed > 0 || task.isSeeding)) {
+        chips.push_back(
+            {true, MotrixIcon::ArrowUp, motrix::domain::FormatSpeed(task.uploadSpeed), false});
+    }
+    if (!task.isSeeding || task.downloadSpeed > 0) {
+        chips.push_back(
+            {true, MotrixIcon::ArrowDown, motrix::domain::FormatSpeed(task.downloadSpeed), false});
+    }
+    if (wide) {
+        const std::string eta = motrix::domain::FormatRemainingEta(
+            motrix::domain::RemainingBytesOf(task), task.downloadSpeed, ctx.tr.Tr("task.remaining"));
+        if (!eta.empty()) {
+            chips.push_back({false, MotrixIcon::Node, eta, true});
+        }
+        if (isBt) {
+            chips.push_back({true,
+                             MotrixIcon::Magnet,
+                             std::format("{} {}", task.numSeeders, ctx.tr.Tr("task.seeders")),
+                             true});
+        }
+    }
+    const std::string connLabel =
+        wide ? std::format("{} {}", task.connections, ctx.tr.Tr("task.connections"))
+             : std::to_string(task.connections);
+    chips.push_back({true, MotrixIcon::Node, connLabel, false});
+
+    while (g.cardMax.x - g.padX - MeasureChipsWidth(chips, s) < minRightX) {
+        auto optIt =
+            std::find_if(chips.begin(), chips.end(), [](const TaskMetaChip& c) { return c.optional; });
+        if (optIt == chips.end()) {
+            break;
+        }
+        chips.erase(optIt);
+    }
+    if (g.cardMax.x - g.padX - MeasureChipsWidth(chips, s) < minRightX && chips.size() > 1) {
+        chips.back().text = std::to_string(task.connections);
+    }
+    DrawActiveMetaChips(ctx, g, chips);
 }
 
 void RenderTaskCardMeta(UiFrameContext& ctx,
@@ -207,30 +311,20 @@ void RenderTaskCardMeta(UiFrameContext& ctx,
                                              motrix::domain::FormatBytes(task.totalLength));
     dl->AddText(
         ImVec2(g.cardPos.x + g.padX, g.metaY), ToAbgrU32(ctx.palette.taskMetaText), sizeText.c_str());
+    const float minRightX = g.cardPos.x + g.padX + ImGui::CalcTextSize(sizeText.c_str()).x + 12.0f * s;
 
     if (task.status == motrix::domain::TaskStatus::Active) {
-        std::string rightMeta;
-        if (task.taskType == motrix::domain::TaskType::BitTorrent && task.uploadSpeed > 0) {
-            rightMeta += motrix::domain::FormatSpeed(task.uploadSpeed) + "   ";
-        }
-        rightMeta += motrix::domain::FormatSpeed(task.downloadSpeed);
-        if (ctx.viewportW >= LayoutMetrics::kAsideHideThreshold * s) {
-            const std::string eta = motrix::domain::FormatRemainingEta(
-                motrix::domain::RemainingBytesOf(task), task.downloadSpeed, ctx.tr.Tr("task.remaining"));
-            if (!eta.empty()) {
-                rightMeta += " " + eta;
-            }
-        }
-        const ImVec2 rSz = ImGui::CalcTextSize(rightMeta.c_str());
-        dl->AddText(ImVec2(g.cardMax.x - g.padX - rSz.x, g.metaY),
-                    ToAbgrU32(ctx.palette.taskMetaText),
-                    rightMeta.c_str());
+        RenderActiveTaskMeta(ctx, task, g, minRightX);
     } else if (task.status == motrix::domain::TaskStatus::Error && !task.errorMessage.empty()) {
-        const ImVec2 rSz = ImGui::CalcTextSize(task.errorMessage.c_str());
-        dl->AddText(
-            ImVec2(std::max(g.cardPos.x + g.padX + 140.0f * s, g.cardMax.x - g.padX - rSz.x), g.metaY),
-            ToAbgrU32(ctx.palette.progressError),
-            task.errorMessage.c_str());
+        const float rightEdge = g.cardMax.x - g.padX;
+        if (rightEdge > minRightX + 8.0f * s) {
+            const ImVec2 rSz = ImGui::CalcTextSize(task.errorMessage.c_str());
+            ClipRectGuard errClip(
+                dl, ClipRectSpec{minRightX, g.metaY - 2.0f * s, rightEdge, g.metaY + 20.0f * s, true});
+            dl->AddText(ImVec2(std::max(minRightX, rightEdge - rSz.x), g.metaY),
+                        ToAbgrU32(ctx.palette.progressError),
+                        task.errorMessage.c_str());
+        }
     }
 }
 
@@ -251,17 +345,22 @@ void RenderTaskCard(UiFrameContext& ctx, const motrix::domain::DownloadTaskView&
     ImGui::SetCursorScreenPos(cardPos);
     ImGui::SetNextItemAllowOverlap();
     if (ImGui::InvisibleButton("##task_card", ImVec2(width, cardH))) {
-        ctx.sink.Dispatch(motrix::app::SelectTaskCmd{task.gid, false});
+        const ImGuiIO& io = ImGui::GetIO();
+        ctx.sink.Dispatch(motrix::app::SelectTaskCmd{task.gid, false, io.KeyCtrl, io.KeyShift});
     }
     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         ctx.sink.Dispatch(motrix::app::SelectTaskCmd{task.gid, true});
     }
 
     const bool hovered = ImGui::IsMouseHoveringRect(cardPos, cardMax, false);
+    const bool inMultiSel =
+        std::ranges::find(ctx.state.selectedTaskGids, task.gid) != ctx.state.selectedTaskGids.end();
     const bool selected =
-        (ctx.state.selectedTaskGid == task.gid || ctx.state.detailedTaskGid == task.gid);
+        (ctx.state.selectedTaskGid == task.gid || ctx.state.detailedTaskGid == task.gid || inMultiSel);
+    const float focusTarget = (hovered || selected) ? 1.0f : 0.0f;
+    const float focusT = ctx.anim.Float(HashId(task.gid) ^ 0x4341u, focusTarget, 20.0f, focusTarget);
     const RgbaColor borderCol =
-        (hovered || selected) ? ctx.palette.taskCardHoverBorder : ctx.palette.taskCardBorder;
+        LerpColor(ctx.palette.taskCardBorder, ctx.palette.taskCardHoverBorder, focusT);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(

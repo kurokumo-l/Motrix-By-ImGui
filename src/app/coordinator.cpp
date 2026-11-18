@@ -23,7 +23,12 @@ void ApplyNavigationAndPrefOverrides(const CoordinatorOptions& options,
     if (state.sysConfig.rpcSecret.empty()) {
         state.sysConfig.rpcSecret = std::string(fallbackSecret);
     }
-    if (options.openAddModal) {
+    state.activeDetailTab = std::clamp(options.initialDetailTab, 0, 4);
+    if (!options.initialUri.empty()) {
+        state.pendingPrefillUri = options.initialUri;
+        ++state.prefillUriSeq;
+        state.activeModal = ActiveModal::AddTask;
+    } else if (options.openAddModal) {
         state.activeModal = ActiveModal::AddTask;
     } else if (options.openAboutModal) {
         state.activeModal = ActiveModal::About;
@@ -47,7 +52,9 @@ AppCoordinator::AppCoordinator(CoordinatorOptions options,
     : logger_(logger), windowHost_(windowHost), appDataDir_(std::move(options.appDataDir)),
       persistConfig_(options.loadPersistedConfig && !appDataDir_.empty()),
       enableOsIntegration_(options.enableOsIntegration),
-      previewMockMode_(options.populatePreviewTasks || !options.enableEngine) {
+      previewMockMode_(options.populatePreviewTasks || !options.enableEngine),
+      enableEngine_(options.enableEngine && !options.populatePreviewTasks),
+      enginePathOverride_(options.enginePathOverride) {
     InitStateFromOptions(options);
     if (persistConfig_) {
         PersistConfigs(mutableState_);
@@ -59,21 +66,49 @@ AppCoordinator::AppCoordinator(CoordinatorOptions options,
 }
 
 AppCoordinator::~AppCoordinator() {
+    BeginShutdown();
+}
+
+void AppCoordinator::BeginShutdown() {
+    stopping_.store(true, std::memory_order_release);
     if (trackerSyncWorker_.joinable()) {
         trackerSyncWorker_.request_stop();
+    }
+    if (engineUpdateWorker_.joinable()) {
+        engineUpdateWorker_.request_stop();
+    }
+    std::unique_ptr<EngineRuntime> oldRt;
+    {
+        std::scoped_lock lock(engineLifecycleMu_);
+        hasLiveRuntime_.store(false, std::memory_order_release);
+        oldRt = std::move(engineRuntime_);
+    }
+    oldRt.reset();
+    if (trackerSyncWorker_.joinable()) {
         trackerSyncWorker_.join();
     }
-    engineRuntime_.reset();
+    if (engineUpdateWorker_.joinable()) {
+        engineUpdateWorker_.join();
+    }
+}
+
+void AppCoordinator::SetSessionEnding(bool ending) {
+    std::scoped_lock lock(engineLifecycleMu_);
+    if (engineRuntime_) {
+        engineRuntime_->SetShutdownSuspended(ending);
+    }
 }
 
 void AppCoordinator::InitStateFromOptions(const CoordinatorOptions& options) {
     mutableState_.revision = 1;
     mutableState_.activeCategory = options.initialCategory;
 
+    bool loadedUserPrefs = false;
     if (persistConfig_) {
         if (auto u = motrix::core::ReadFileUtf8(appDataDir_ / "user.json"); u) {
             if (auto parsed = motrix::domain::ParseUserPreferencesJson(*u); parsed) {
                 mutableState_.prefs = *parsed;
+                loadedUserPrefs = true;
             }
         }
         if (auto s = motrix::core::ReadFileUtf8(appDataDir_ / "system.json"); s) {
@@ -83,10 +118,10 @@ void AppCoordinator::InitStateFromOptions(const CoordinatorOptions& options) {
         }
     }
 
-    if (options.themeOverride || !persistConfig_) {
+    if (options.themeOverride || !loadedUserPrefs || !persistConfig_) {
         mutableState_.prefs.theme = options.initialTheme;
     }
-    if (options.localeOverride || !persistConfig_) {
+    if (options.localeOverride || !loadedUserPrefs || !persistConfig_) {
         mutableState_.prefs.locale = options.initialLocale;
     }
     ApplyNavigationAndPrefOverrides(options, mutableState_, GenerateHexSecret());
@@ -95,6 +130,7 @@ void AppCoordinator::InitStateFromOptions(const CoordinatorOptions& options) {
         SeedPreviewTasks(mutableState_);
         if (options.openDetailDemo) {
             mutableState_.selectedTaskGid = "0001000000000002";
+            mutableState_.selectedTaskGids = {"0001000000000002"};
             mutableState_.detailedTaskGid = "0001000000000002";
             mutableState_.activeCategory = motrix::domain::TaskCategory::Waiting;
             RefreshMockDetail(mutableState_);
@@ -107,19 +143,26 @@ void AppCoordinator::InitStateFromOptions(const CoordinatorOptions& options) {
     const std::filesystem::path effectiveDataDir =
         appDataDir_.empty() ? (std::filesystem::temp_directory_path() / "MotrixNativeEngine")
                             : appDataDir_;
-    mutableState_.engineConfPath = motrix::core::PathToUtf8(effectiveDataDir / "system.json");
+    mutableState_.engineConfPath = motrix::core::PathToUtf8(effectiveDataDir / "aria2.conf");
     mutableState_.sessionFilePath = motrix::core::PathToUtf8(effectiveDataDir / "aria2.session");
-    mutableState_.appLogPath = motrix::core::PathToUtf8(effectiveDataDir / "motrix.log");
+    mutableState_.appLogPath = motrix::core::PathToUtf8(effectiveDataDir / "logs" / "motrix_native.log");
+    logger_.SetMinLevel(motrix::core::ParseLogLevel(mutableState_.prefs.logLevel));
     published_.store(std::make_shared<const AppStateSnapshot>(mutableState_), std::memory_order_release);
 }
 
-void AppCoordinator::StartLiveEngineIfEnabled(const CoordinatorOptions& options) {
-    if (!options.enableEngine || options.populatePreviewTasks) {
-        return;
+void AppCoordinator::CreateAndStartEngineRuntime(const AppStateSnapshot& state,
+                                                 const std::string& binPathOverride) {
+    std::string overrideCopy;
+    {
+        std::scoped_lock lock(engineLifecycleMu_);
+        if (stopping_.load(std::memory_order_acquire)) {
+            return;
+        }
+        overrideCopy = enginePathOverride_;
     }
-    const std::string binOverride = !options.enginePathOverride.empty()
-                                        ? options.enginePathOverride
-                                        : mutableState_.prefs.engineBinPath;
+    const std::string binOverride =
+        !binPathOverride.empty() ? binPathOverride
+                                 : (!overrideCopy.empty() ? overrideCopy : state.prefs.engineBinPath);
     const std::filesystem::path engineDataDir =
         (!persistConfig_ || appDataDir_.empty())
             ? (std::filesystem::temp_directory_path() / "MotrixNativeEngine")
@@ -127,19 +170,48 @@ void AppCoordinator::StartLiveEngineIfEnabled(const CoordinatorOptions& options)
     EngineRuntimeConfig rtCfg{
         .appDataDir = engineDataDir,
         .enginePathOverride = binOverride,
-        .sysConfig = mutableState_.sysConfig,
-        .enableUpnp = mutableState_.prefs.enableUpnp,
-        .resumeAllWhenLaunched = mutableState_.prefs.resumeAllWhenAppLaunched,
+        .sysConfig = motrix::domain::BuildEffectiveSystemConfig(
+            state.sysConfig, state.prefs, state.speedLimitPaused),
+        .logLevel = state.prefs.logLevel,
+        .enableUpnp = state.prefs.enableUpnp,
+        .resumeAllWhenLaunched = state.prefs.resumeAllWhenAppLaunched,
     };
-    engineRuntime_ = std::make_unique<EngineRuntime>(
+    auto runtime = std::make_unique<EngineRuntime>(
         logger_, std::move(rtCfg), [this](const EngineSyncUpdate& update) {
             HandleEngineSyncUpdate(update);
         });
-    engineRuntime_->SetDetailCallback([this](std::optional<motrix::engine::TaskDetailResult> detail,
-                                             std::vector<motrix::domain::TaskPeerView> peers) {
+    runtime->SetDetailCallback([this](std::optional<motrix::engine::TaskDetailResult> detail,
+                                      std::vector<motrix::domain::TaskPeerView> peers) {
         HandleEngineDetailUpdate(std::move(detail), std::move(peers));
     });
-    engineRuntime_->Start();
+    if (!state.detailedTaskGid.empty()) {
+        runtime->SetDetailGid(state.detailedTaskGid);
+    }
+    runtime->Start();
+    std::scoped_lock lock(engineLifecycleMu_);
+    if (stopping_.load(std::memory_order_acquire)) {
+        runtime.reset();
+        return;
+    }
+    hasLiveRuntime_.store(true, std::memory_order_release);
+    engineRuntime_ = std::move(runtime);
+}
+
+void AppCoordinator::EnqueueGlobalOptionsWork(std::vector<std::pair<std::string, std::string>> options) {
+    std::scoped_lock lock(engineLifecycleMu_);
+    if (engineRuntime_) {
+        engineRuntime_->Enqueue(EngineWorkCommand{
+            .kind = EngineWorkCommand::Kind::ApplyGlobalOptions,
+            .options = std::move(options),
+        });
+    }
+}
+
+void AppCoordinator::StartLiveEngineIfEnabled(const CoordinatorOptions& options) {
+    if (!enableEngine_) {
+        return;
+    }
+    CreateAndStartEngineRuntime(mutableState_, options.enginePathOverride);
     const auto nowSec = std::chrono::duration_cast<std::chrono::seconds>(
                             std::chrono::system_clock::now().time_since_epoch())
                             .count();
@@ -163,7 +235,7 @@ void AppCoordinator::PublishMutated(const std::function<void(AppStateSnapshot&)>
         std::scoped_lock lock(writeMutex_);
         mutator(mutableState_);
         ++mutableState_.revision;
-        if (previewMockMode_ || !engineRuntime_) {
+        if (previewMockMode_ || !hasLiveRuntime_.load(std::memory_order_acquire)) {
             RecomputeStats(mutableState_);
         }
         published_.store(std::make_shared<const AppStateSnapshot>(mutableState_),
@@ -172,6 +244,46 @@ void AppCoordinator::PublishMutated(const std::function<void(AppStateSnapshot&)>
     if (auto* host = windowHost_.load(std::memory_order_acquire)) {
         host->RequestFrame();
     }
+}
+
+std::vector<CompletedTaskNotice> UpdateTaskCompletionTracker(TaskCompletionTracker& tracker,
+                                                             const AppStateSnapshot& state) {
+    std::vector<CompletedTaskNotice> notices;
+    std::unordered_map<std::string, motrix::domain::TaskStatus> nextStatuses;
+    nextStatuses.reserve(state.downloadingTasks.size() + state.waitingTasks.size()
+                         + state.stoppedTasks.size());
+
+    auto collectList = [&](const std::vector<motrix::domain::DownloadTaskView>& list, bool activeGroup) {
+        for (const auto& t : list) {
+            const bool completedOrSeeding =
+                (t.status == motrix::domain::TaskStatus::Complete)
+                || (activeGroup && t.taskType == motrix::domain::TaskType::BitTorrent && t.isSeeding);
+            const motrix::domain::TaskStatus effectiveStatus =
+                completedOrSeeding ? motrix::domain::TaskStatus::Complete : t.status;
+
+            const auto it = tracker.lastStatuses.find(t.gid);
+            nextStatuses.insert_or_assign(t.gid, effectiveStatus);
+            if (!tracker.initialSyncSeen || !completedOrSeeding) {
+                continue;
+            }
+            if (it == tracker.lastStatuses.end() || it->second != motrix::domain::TaskStatus::Complete) {
+                const bool btSeeding =
+                    activeGroup && t.taskType == motrix::domain::TaskType::BitTorrent && t.isSeeding;
+                notices.push_back(CompletedTaskNotice{
+                    .name = t.name,
+                    .dir = t.dir,
+                    .btSeeding = btSeeding,
+                });
+            }
+        }
+    };
+
+    collectList(state.downloadingTasks, true);
+    collectList(state.waitingTasks, false);
+    collectList(state.stoppedTasks, false);
+    tracker.lastStatuses = std::move(nextStatuses);
+    tracker.initialSyncSeen = true;
+    return notices;
 }
 
 }  // namespace motrix::app

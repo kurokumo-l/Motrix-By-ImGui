@@ -33,6 +33,8 @@ public:
 };
 
 export [[nodiscard]] std::uint32_t CurrentHostProcessId() noexcept;
+export [[nodiscard]] bool IsOsSessionShuttingDown() noexcept;
+export [[nodiscard]] bool IsSessionTerminationExitCode(std::uint32_t exitCode) noexcept;
 export [[nodiscard]] std::optional<std::filesystem::path>
 DiscoverEngineExecutable(std::string_view configuredPath);
 export [[nodiscard]] motrix::core::Result<EngineVersionInfo>

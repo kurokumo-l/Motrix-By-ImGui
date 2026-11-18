@@ -62,16 +62,115 @@ TEST_CASE("motrix.domain thunder URI decoding and magnet parsing", "[domain][uri
     CHECK_FALSE(IsMagnetUri("https://example.com"));
 }
 
-TEST_CASE("motrix.domain config schema defaults align with Motrix v1.8.19", "[domain][config]") {
+TEST_CASE("motrix.domain config schema defaults align with personal preferences", "[domain][config]") {
     using namespace motrix::domain;
     const auto prefs = DefaultUserPreferences();
-    CHECK(prefs.hideAppMenu);
+    CHECK(prefs.theme == ThemePreference::Auto);
+    CHECK(prefs.fontFamily == "Microsoft YaHei UI");
+    CHECK(prefs.monoFontFamily.empty());
+    CHECK(prefs.traySpeedometer);
+    CHECK(prefs.showTooltips);
+    CHECK(prefs.aria2NextUpdateUrl == kDefaultAria2NextUpdateUrl);
     CHECK(prefs.newTaskShowDownloading);
     CHECK(prefs.enableUpnp);
 
     const auto sys = DefaultSystemConfig();
     CHECK(sys.rpcListenPort == 16800);
     CHECK(sys.maxConcurrentDownloads == 5);
-    CHECK(sys.maxConnectionPerServer == 64);
-    CHECK(sys.split == 64);
+    CHECK(sys.maxConnectionPerServer == 16);
+    CHECK(sys.split == 16);
+    CHECK(sys.fileAllocation == "none");
+    CHECK(sys.btEnableLpd);
+    CHECK(sys.btMaxPeers == 64);
+}
+
+TEST_CASE("motrix.domain aria2-next config roundtrip, effective options, and legacy migration",
+          "[domain][config]") {
+    using namespace motrix::domain;
+    UserPreferences prefs = DefaultUserPreferences();
+    prefs.theme = ThemePreference::Auto;
+    prefs.traySpeedometer = false;
+    prefs.showTooltips = false;
+    prefs.aria2NextUpdateUrl = "https://example.com/releases/latest";
+    prefs.aria2NextMirrorPrefix = "https://ghproxy.net/";
+    prefs.deleteFilesWhenDeleteTask = true;
+    prefs.logLevel = "debug";
+    prefs.keepSeeding = true;
+    prefs.useProxy = false;
+    prefs.fontFamily = "MiSans";
+    prefs.monoFontFamily = "Consolas";
+
+    const auto parsedPrefs = ParseUserPreferencesJson(SerializeUserPreferencesJson(prefs));
+    REQUIRE(parsedPrefs.has_value());
+    CHECK(parsedPrefs->theme == ThemePreference::Auto);
+    CHECK_FALSE(parsedPrefs->traySpeedometer);
+    CHECK_FALSE(parsedPrefs->showTooltips);
+    CHECK(parsedPrefs->aria2NextUpdateUrl == "https://example.com/releases/latest");
+    CHECK(parsedPrefs->aria2NextMirrorPrefix == "https://ghproxy.net/");
+    CHECK(parsedPrefs->deleteFilesWhenDeleteTask);
+    CHECK(parsedPrefs->logLevel == "debug");
+    CHECK(parsedPrefs->keepSeeding);
+    CHECK_FALSE(parsedPrefs->useProxy);
+    CHECK(parsedPrefs->fontFamily == "MiSans");
+    CHECK(parsedPrefs->monoFontFamily == "Consolas");
+
+    SystemConfig sys = DefaultSystemConfig();
+    sys.btEncryption = "required";
+    sys.btTransport = "utp";
+    sys.fileAllocation = "falloc";
+    sys.btMaxPeers = 250;
+    sys.mediaMode = "hls";
+    sys.mediaFormat = "mkv";
+    sys.btFirstLastPieceFirst = true;
+    sys.detachShareOnly = true;
+    sys.rpcSaveUploadMetadata = false;
+    sys.seedRatio = 2.5;
+    sys.seedTime = 120;
+    sys.allProxy = "http://127.0.0.1:8080";
+    sys.noProxy = "localhost";
+
+    const auto parsedSys = ParseSystemConfigJson(SerializeSystemConfigJson(sys));
+    REQUIRE(parsedSys.has_value());
+    CHECK(parsedSys->btEncryption == "required");
+    CHECK(parsedSys->btForceEncryption);
+    CHECK(parsedSys->btTransport == "utp");
+    CHECK(parsedSys->fileAllocation == "falloc");
+    CHECK(parsedSys->btMaxPeers == 250);
+    CHECK(parsedSys->mediaMode == "hls");
+    CHECK(parsedSys->mediaFormat == "mkv");
+    CHECK(parsedSys->btFirstLastPieceFirst);
+    CHECK(parsedSys->detachShareOnly);
+    CHECK_FALSE(parsedSys->rpcSaveUploadMetadata);
+    CHECK_FALSE(parsedSys->btSaveMetadata);
+
+    const auto eff = BuildEffectiveSystemConfig(sys, prefs);
+    CHECK(eff.seedRatio == 0.0);
+    CHECK(eff.seedTime == 0);
+    CHECK(eff.allProxy.empty());
+    CHECK(eff.noProxy.empty());
+    CHECK(eff.btForceEncryption);
+
+    const auto pairs = SystemConfigToOptionPairs(eff);
+    auto hasPair = [&](std::string_view k, std::string_view v) {
+        return std::ranges::any_of(pairs, [&](const auto& p) { return p.first == k && p.second == v; });
+    };
+    CHECK(hasPair("seed-ratio", "0.00"));
+    CHECK(hasPair("seed-time", "0"));
+    CHECK(hasPair("bt-encryption", "required"));
+    CHECK(hasPair("bt-transport", "utp"));
+    CHECK(hasPair("file-allocation", "falloc"));
+    CHECK(hasPair("media", "hls"));
+    CHECK(hasPair("bt-first-last-piece-first", "true"));
+    CHECK(hasPair("detach-share-only", "true"));
+    CHECK_FALSE(std::ranges::any_of(pairs, [](const auto& p) { return p.first == "all-proxy"; }));
+}
+
+TEST_CASE("motrix.domain ParseSystemConfigJson migrates legacy aria2 keys", "[domain][config]") {
+    using namespace motrix::domain;
+    const auto migrated =
+        ParseSystemConfigJson(R"({"bt-save-metadata": false, "bt-force-encryption": true})");
+    REQUIRE(migrated.has_value());
+    CHECK_FALSE(migrated->rpcSaveUploadMetadata);
+    CHECK(migrated->btEncryption == "required");
+    CHECK(migrated->btForceEncryption);
 }

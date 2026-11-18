@@ -262,6 +262,31 @@ std::string FormatUnixTimestampUtc(std::int64_t unixSeconds) {
     return std::format("{:%Y-%m-%d %H:%M:%S}", tp);
 }
 
+std::string FormatUnixTimestampLocal(std::int64_t unixSeconds, bool zhCn) {
+    if (unixSeconds <= 0) {
+        return {};
+    }
+    const auto tp = std::chrono::sys_seconds{std::chrono::seconds{unixSeconds}};
+    try {
+        const auto localTp = std::chrono::current_zone()->to_local(tp);
+        if (zhCn) {
+            const auto days = std::chrono::floor<std::chrono::days>(localTp);
+            const std::chrono::year_month_day ymd{days};
+            const std::chrono::hh_mm_ss tod{localTp - days};
+            return std::format("{}年{}月{}日 {:02}:{:02}:{:02}",
+                               static_cast<int>(ymd.year()),
+                               static_cast<unsigned>(ymd.month()),
+                               static_cast<unsigned>(ymd.day()),
+                               tod.hours().count(),
+                               tod.minutes().count(),
+                               tod.seconds().count());
+        }
+        return std::format("{:%Y-%m-%d %H:%M:%S}", localTp);
+    } catch (...) {
+        return FormatUnixTimestampUtc(unixSeconds);
+    }
+}
+
 float BitfieldCompletion(std::string_view bitfieldHex, std::uint32_t numPieces) noexcept {
     if (bitfieldHex.empty()) {
         return 0.0f;

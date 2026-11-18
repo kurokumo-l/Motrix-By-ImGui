@@ -10,6 +10,7 @@ import :el_widgets;
 import :theme;
 import :fonts;
 import :icons;
+import :anim;
 import :scope_guard;
 
 namespace motrix::ui {
@@ -46,21 +47,27 @@ bool RenderSelectPopup(const ElStyle& st, const ElSelectSpec& spec, const char* 
     if (!pop.IsOpen()) {
         return false;
     }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        ImGui::CloseCurrentPopup();
+        return false;
+    }
     bool changed = false;
     for (int i = 0; i < static_cast<int>(spec.items.size()); ++i) {
         const bool selected = (i == *spec.currentIdx);
         const ImVec2 itemPos = ImGui::GetCursorScreenPos();
         if (ImGui::InvisibleButton(std::format("{}_opt_{}", spec.id, i).c_str(),
-                                   ImVec2(spec.width, 30.0f * s))) {
+                                   ImVec2(spec.width, 32.0f * s))) {
             *spec.currentIdx = i;
             changed = true;
             ImGui::CloseCurrentPopup();
         }
         ImDrawList* pdl = ImGui::GetWindowDrawList();
-        if (ImGui::IsItemHovered()) {
+        const float optHovT = AnimStep(
+            st.anim, {ImGui::GetItemID() ^ 0x2C02u, ImGui::IsItemHovered() ? 1.0f : 0.0f, 24.0f, 0.0f});
+        if (optHovT > 0.01f) {
             pdl->AddRectFilled(itemPos,
-                               ImVec2(itemPos.x + spec.width, itemPos.y + 30.0f * s),
-                               ToAbgrU32(p.inputAddonBg));
+                               ImVec2(itemPos.x + spec.width, itemPos.y + 32.0f * s),
+                               ToAbgrU32(WithAlpha(p.inputAddonBg, p.inputAddonBg.a * optHovT)));
         }
         const char* lbl = spec.items[static_cast<std::size_t>(i)];
         const ImVec2 lSz = ImGui::CalcTextSize(lbl);
@@ -158,6 +165,10 @@ bool RenderTrackerPopup(const ElStyle& st,
     if (!pop.IsOpen()) {
         return false;
     }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        ImGui::CloseCurrentPopup();
+        return false;
+    }
     bool changed = false;
     for (std::size_t i = 0; i < allOpts.size(); ++i) {
         bool on = selected[i];
@@ -177,8 +188,8 @@ bool RenderTrackerPopup(const ElStyle& st,
 bool ElSelectCombo(const ElStyle& st, const ElSelectSpec& spec) {
     const MotrixPalette& p = st.palette;
     const float s = st.dpiScale;
-    FontGuard fnt(st.fonts, FontRole::Regular, 13.5f);
-    const float h = 30.0f * s;
+    FontGuard fnt(st.fonts, FontRole::Regular, 14.5f);
+    const float h = 32.0f * s;
     const ImVec2 rMin = ImGui::GetCursorScreenPos();
     const ImVec2 rMax(rMin.x + spec.width, rMin.y + h);
     const std::string popId = std::format("{}_pop", spec.id);
@@ -193,7 +204,8 @@ bool ElSelectCombo(const ElStyle& st, const ElSelectSpec& spec) {
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(rMin, rMax, ToAbgrU32(p.inputBg), 4.0f * s);
-    dl->AddRect(rMin, rMax, ToAbgrU32(ResolveElBorderColor(p, open, hovered)), 4.0f * s, 0, 1.0f);
+    dl->AddRect(
+        rMin, rMax, ToAbgrU32(AnimateElBorderColor(st, spec.id, open, hovered)), 4.0f * s, 0, 1.0f);
 
     if (!spec.items.empty()) {
         const int idx = std::clamp(*spec.currentIdx, 0, static_cast<int>(spec.items.size()) - 1);
@@ -203,13 +215,15 @@ bool ElSelectCombo(const ElStyle& st, const ElSelectSpec& spec) {
             ImVec2(rMin.x + 12.0f * s, rMin.y + (h - tSz.y) * 0.5f), ToAbgrU32(p.panelTitle), curTxt);
     }
     const float chevSz = 12.0f * s;
+    const float chevT = AnimStep(
+        st.anim, {ImGui::GetID(spec.id) ^ 0x2C01u, (open || hovered) ? 1.0f : 0.0f, 20.0f, 0.0f});
     DrawMotrixIcon(IconSpec{
         open ? MotrixIcon::ChevronUp : MotrixIcon::ChevronDown,
         rMax.x - chevSz - 10.0f * s,
         rMin.y + (h - chevSz) * 0.5f,
         chevSz,
         chevSz,
-        p.inputPlaceholder,
+        LerpColor(p.inputPlaceholder, p.primary, chevT),
         s,
     });
 
@@ -254,7 +268,11 @@ bool ElDirectoryInput(const ElStyle& st, const ElDirInputSpec& spec) {
     StyleColorGuard popBg(ImGuiCol_PopupBg, p.modalBg);
     PopupGuard pop(histPopId.c_str());
     if (pop.IsOpen()) {
-        FontGuard lf(st.fonts, FontRole::Regular, 13.0f);
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            ImGui::CloseCurrentPopup();
+            return changed;
+        }
+        FontGuard lf(st.fonts, FontRole::Regular, 13.5f);
         changed = DrawDirEntryGroup(spec.favoriteDirs, "fav", spec.buf, spec.cap) || changed;
         changed = DrawDirEntryGroup(spec.historyDirs, "hist", spec.buf, spec.cap) || changed;
         if (spec.favoriteDirs.empty() && spec.historyDirs.empty()) {
@@ -272,13 +290,13 @@ bool ElTrackerTagSelect(const ElStyle& st, const char* id, std::vector<bool>& se
         selected.assign(allOpts.size(), false);
     }
 
-    FontGuard fnt(st.fonts, FontRole::Regular, 12.0f);
+    FontGuard fnt(st.fonts, FontRole::Regular, 13.0f);
     const float padX = 6.0f * s;
     const float padY = 5.0f * s;
-    const float tagH = 22.0f * s;
+    const float tagH = 24.0f * s;
     const float maxInnerW = std::max(60.0f * s, width - padX - 24.0f * s);
     const std::vector<ChipLayout> chips = LayoutTrackerChips(allOpts, selected, maxInnerW, s);
-    const float boxH = std::max(32.0f * s, chips.empty() ? 32.0f * s : chips.back().relY + tagH + padY);
+    const float boxH = std::max(34.0f * s, chips.empty() ? 34.0f * s : chips.back().relY + tagH + padY);
 
     const ImVec2 rMin = ImGui::GetCursorScreenPos();
     const ImVec2 rMax(rMin.x + width, rMin.y + boxH);
@@ -297,14 +315,16 @@ bool ElTrackerTagSelect(const ElStyle& st, const char* id, std::vector<bool>& se
         ImGui::OpenPopup(popId.c_str());
     }
     const bool open = ImGui::IsPopupOpen(popId.c_str());
-    dl->AddRect(rMin, rMax, ToAbgrU32(ResolveElBorderColor(p, open, hovered)), 4.0f * s, 0, 1.0f);
+    dl->AddRect(rMin, rMax, ToAbgrU32(AnimateElBorderColor(st, id, open, hovered)), 4.0f * s, 0, 1.0f);
+    const float chevT =
+        AnimStep(st.anim, {ImGui::GetID(id) ^ 0x2C01u, (open || hovered) ? 1.0f : 0.0f, 20.0f, 0.0f});
     DrawMotrixIcon(IconSpec{
         open ? MotrixIcon::ChevronUp : MotrixIcon::ChevronDown,
         rMax.x - 20.0f * s,
         rMin.y + (boxH - 12.0f * s) * 0.5f,
         12.0f * s,
         12.0f * s,
-        p.inputPlaceholder,
+        LerpColor(p.inputPlaceholder, p.primary, chevT),
         s,
     });
 

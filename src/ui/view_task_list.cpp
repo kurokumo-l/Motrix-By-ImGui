@@ -8,7 +8,9 @@ import std;
 import motrix.domain;
 import motrix.app;
 import :views_internal;
+import :el_widgets;
 import :theme;
+import :anim;
 import :icons;
 import :scope_guard;
 
@@ -52,10 +54,11 @@ bool HeaderActionIconButton(UiFrameContext& ctx, const HeaderActionBtnSpec& spec
     ImGui::SetCursorScreenPos(ImVec2(spec.x, spec.y));
     const bool clicked = ImGui::InvisibleButton(spec.id, ImVec2(box, box));
     const bool hovered = !spec.disabled && ImGui::IsItemHovered();
+    const float hovT = ctx.anim.Float(HashId(spec.id), hovered ? 1.0f : 0.0f, 22.0f, 0.0f);
 
     const RgbaColor col = spec.disabled
                               ? ctx.palette.headerActionDisabled
-                              : (hovered ? ctx.palette.headerActionHover : ctx.palette.headerAction);
+                              : LerpColor(ctx.palette.headerAction, ctx.palette.headerActionHover, hovT);
     DrawMotrixIcon(IconSpec{
         spec.icon,
         spec.x + (box - iconSz) * 0.5f,
@@ -67,7 +70,7 @@ bool HeaderActionIconButton(UiFrameContext& ctx, const HeaderActionBtnSpec& spec
     });
 
     if (hovered && !spec.tooltip.empty()) {
-        ImGui::SetTooltip("%.*s", static_cast<int>(spec.tooltip.size()), spec.tooltip.data());
+        ElDrawTooltip({ctx.palette, ctx.fonts, s, &ctx.anim}, {spec.tooltip, ElTooltipPlacement::Top});
     }
     return !spec.disabled && clicked;
 }
@@ -106,15 +109,13 @@ void RenderHeaderActions(UiFrameContext& ctx, float rightEdgeX, float topY) {
     curX -= step;
 
     if (ctx.state.activeCategory != motrix::domain::TaskCategory::Stopped) {
-        const bool disabled = ctx.state.selectedTaskGid.empty();
-        if (HeaderActionIconButton(ctx,
-                                   {"##act_del_sel",
-                                    MotrixIcon::Delete,
-                                    curX,
-                                    topY,
-                                    ctx.tr.Tr("task.delete_selected"),
-                                    disabled})) {
-            ctx.sink.Dispatch(motrix::app::RemoveTaskCmd{ctx.state.selectedTaskGid, false});
+        const bool disabled = ctx.state.selectedTaskGids.empty();
+        const std::string_view delTip = ctx.state.selectedTaskGids.size() > 1
+                                            ? ctx.tr.Tr("task.remove_selected")
+                                            : ctx.tr.Tr("task.delete_selected");
+        if (HeaderActionIconButton(
+                ctx, {"##act_del_sel", MotrixIcon::Delete, curX, topY, delTip, disabled})) {
+            RequestTasksRemoval(ctx, ctx.state.selectedTaskGids, {});
         }
         curX -= step;
     }
@@ -128,19 +129,21 @@ void RenderHeaderActions(UiFrameContext& ctx, float rightEdgeX, float topY) {
 
 void RenderEmptyState(UiFrameContext& ctx, const PanelRect& area) {
     const float s = ctx.dpiScale;
-    const float ufoW = std::min(380.0f * s, area.w * 0.72f);
+    const float maxByH = std::max(200.0f * s, (area.h - 92.0f * s) * (504.0f / 309.0f));
+    const float ufoW = std::min(std::clamp(area.w * 0.78f, 380.0f * s, 560.0f * s), maxByH);
     const float ufoH = ufoW * (309.0f / 504.0f);
-    const float blockH = ufoH + 28.0f * s;
-    const float topY = area.y + std::max(24.0f * s, (area.h - blockH) * 0.42f);
+    const float blockH = ufoH + 34.0f * s;
+    const float topY = area.y + std::max(20.0f * s, (area.h - blockH) * 0.50f);
     const float cx = area.x + area.w * 0.5f;
 
-    DrawEmptyUfoIllustration({cx, topY, ufoW, ufoH, ctx.palette.isDark});
+    DrawEmptyUfoIllustration(
+        {cx, topY, ufoW, ufoH, ctx.palette.isDark, &ctx.host, &ctx.anim.UfoCache()});
 
     FontGuard emptyFont(ctx.fonts, FontRole::Regular, 15.0f);
     const std::string_view label = ctx.tr.Tr("task.empty");
     const ImVec2 tSz = ImGui::CalcTextSize(label.data(), label.data() + label.size());
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddText(ImVec2(cx - tSz.x * 0.5f, topY + ufoH + 22.0f * s),
+    dl->AddText(ImVec2(cx - tSz.x * 0.5f, topY + ufoH + 14.0f * s),
                 ToAbgrU32(ctx.palette.emptyText),
                 label.data(),
                 label.data() + label.size());

@@ -57,6 +57,7 @@ export struct TaskBittorrentInfo {
     std::string infoHash;
     std::string creationDate;
     std::string comment;
+    std::int64_t creationTimestamp = 0;
 };
 
 export struct DownloadTaskView {
@@ -90,5 +91,6 @@ export [[nodiscard]] TaskCategory CategoryOf(TaskStatus status) noexcept;
 export [[nodiscard]] float ProgressOf(const DownloadTaskView& task) noexcept;
 export [[nodiscard]] std::uint64_t RemainingBytesOf(const DownloadTaskView& task) noexcept;
 export [[nodiscard]] std::optional<std::uint64_t> EtaSecondsOf(const DownloadTaskView& task) noexcept;
+export [[nodiscard]] std::string ResolveTaskFullPath(const DownloadTaskView& task);
 
 }  // namespace motrix::domain

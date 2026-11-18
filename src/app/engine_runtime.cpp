@@ -74,18 +74,79 @@ void EngineRuntime::Enqueue(EngineWorkCommand cmd) {
     queueCv_.notify_all();
 }
 
+void EngineRuntime::Reconfigure(EngineRuntimeConfig cfg, bool restartEngine) {
+    {
+        std::scoped_lock lock(queueMutex_);
+        pendingConfig_ = std::move(cfg);
+        if (restartEngine) {
+            restartRequested_.store(true, std::memory_order_release);
+        }
+    }
+    queueCv_.notify_all();
+}
+
+void EngineRuntime::SetShutdownSuspended(bool suspended) noexcept {
+    shutdownSuspended_.store(suspended, std::memory_order_release);
+    queueCv_.notify_all();
+}
+
+bool EngineRuntime::IsShutdownBlocked() const noexcept {
+    return shutdownSuspended_.load(std::memory_order_acquire)
+           || motrix::engine::IsOsSessionShuttingDown();
+}
+
+bool EngineRuntime::WaitWhileShutdownSuspended(std::stop_token st) {
+    std::unique_lock lock(queueMutex_);
+    queueCv_.wait(lock, st, [&] {
+        return st.stop_requested() || !shutdownSuspended_.load(std::memory_order_acquire);
+    });
+    return !st.stop_requested() && !motrix::engine::IsOsSessionShuttingDown();
+}
+
+void EngineRuntime::WaitReconnectBackoff(std::stop_token st, std::chrono::milliseconds delay) {
+    std::unique_lock lock(queueMutex_);
+    queueCv_.wait_for(lock, st, delay, [&] { return st.stop_requested() || IsShutdownBlocked(); });
+}
+
 void EngineRuntime::RunLoop(std::stop_token st) {
     onSync_(EngineSyncUpdate{.connState = EngineConnectionState::Starting});
     while (!st.stop_requested()) {
+        if (!WaitWhileShutdownSuspended(st)) {
+            break;
+        }
+        {
+            std::scoped_lock lock(queueMutex_);
+            if (pendingConfig_) {
+                config_ = std::move(*pendingConfig_);
+                pendingConfig_.reset();
+            }
+            restartRequested_.store(false, std::memory_order_release);
+            resetSessionRequested_ = false;
+        }
+        if (IsShutdownBlocked()) {
+            continue;
+        }
         if (!TryStartAndConnect(st)) {
-            if (st.stop_requested()) {
+            if (st.stop_requested() || motrix::engine::IsOsSessionShuttingDown()) {
                 break;
             }
-            std::unique_lock lock(queueMutex_);
-            queueCv_.wait_for(lock, st, std::chrono::seconds(3), [&] { return st.stop_requested(); });
+            if (!shutdownSuspended_.load(std::memory_order_acquire)) {
+                WaitReconnectBackoff(st, std::chrono::seconds(3));
+            }
             continue;
         }
         RunConnectedSession(st);
+        if (st.stop_requested() || motrix::engine::IsOsSessionShuttingDown()) {
+            break;
+        }
+        if (resetSessionRequested_) {
+            onSync_(EngineSyncUpdate{.connState = EngineConnectionState::Starting});
+        } else if (restartRequested_.load(std::memory_order_acquire)) {
+            ShutdownEngineGracefully();
+            onSync_(EngineSyncUpdate{.connState = EngineConnectionState::Starting});
+        } else if (!shutdownSuspended_.load(std::memory_order_acquire)) {
+            WaitReconnectBackoff(st, std::chrono::milliseconds(400));
+        }
     }
     ShutdownEngineGracefully();
 }
@@ -94,17 +155,22 @@ void EngineRuntime::RunConnectedSession(std::stop_token st) {
     disconnectedFlag_.store(false, std::memory_order_release);
     wakeSync_.store(true, std::memory_order_release);
 
-    while (!st.stop_requested()) {
+    while (!st.stop_requested() && !IsShutdownBlocked()) {
+        if (restartRequested_.load(std::memory_order_acquire)) {
+            return;
+        }
         const bool lost = disconnectedFlag_.load(std::memory_order_acquire)
                           || proc_->State() == motrix::engine::EngineProcessState::Crashed
                           || !rpc_->IsConnected();
         if (lost) {
-            onSync_(EngineSyncUpdate{
-                .connState = EngineConnectionState::Reconnecting,
-                .version = &versionInfo_,
-                .enginePath = resolvedPath_,
-                .errorMsg = "Engine connection lost, reconnecting...",
-            });
+            if (!IsShutdownBlocked()) {
+                onSync_(EngineSyncUpdate{
+                    .connState = EngineConnectionState::Reconnecting,
+                    .version = &versionInfo_,
+                    .enginePath = resolvedPath_,
+                    .errorMsg = "Engine connection lost, reconnecting...",
+                });
+            }
             rpc_->Disconnect();
             (void)proc_->Stop(std::chrono::milliseconds(1000));
             return;
@@ -113,18 +179,24 @@ void EngineRuntime::RunConnectedSession(std::stop_token st) {
         std::deque<EngineWorkCommand> pending;
         {
             std::unique_lock lock(queueMutex_);
+            if (pendingConfig_ && !restartRequested_.load(std::memory_order_acquire)) {
+                config_ = std::move(*pendingConfig_);
+                pendingConfig_.reset();
+            }
             const auto waitDur =
                 hasActiveTasks_ ? std::chrono::milliseconds(500) : std::chrono::seconds(5);
             if (queue_.empty() && !wakeSync_.load(std::memory_order_acquire)) {
                 queueCv_.wait_for(lock, st, waitDur, [&] {
-                    return st.stop_requested() || !queue_.empty()
+                    return st.stop_requested() || IsShutdownBlocked() || !queue_.empty()
                            || wakeSync_.load(std::memory_order_acquire)
-                           || disconnectedFlag_.load(std::memory_order_acquire);
+                           || disconnectedFlag_.load(std::memory_order_acquire)
+                           || restartRequested_.load(std::memory_order_acquire);
                 });
             }
             pending.swap(queue_);
         }
-        if (st.stop_requested()) {
+        if (st.stop_requested() || IsShutdownBlocked()
+            || restartRequested_.load(std::memory_order_acquire)) {
             return;
         }
 
@@ -133,6 +205,13 @@ void EngineRuntime::RunConnectedSession(std::stop_token st) {
         while (!pending.empty()) {
             ProcessCommand(pending.front(), needSync, cmdErr);
             pending.pop_front();
+            if (resetSessionRequested_ || st.stop_requested()
+                || restartRequested_.load(std::memory_order_acquire)) {
+                break;
+            }
+        }
+        if (resetSessionRequested_) {
+            return;
         }
         if (!needSync && !hasActiveTasks_) {
             continue;
@@ -148,9 +227,7 @@ void EngineRuntime::RunConnectedSession(std::stop_token st) {
 
 void EngineRuntime::ShutdownEngineGracefully() {
     if (rpc_->IsConnected()) {
-        if (dialect_ && !dialect_->UsesStateDirInsteadOfAria2Files()) {
-            (void)rpc_->SaveSession();
-        }
+        (void)rpc_->SaveSession();
         (void)rpc_->Shutdown(false);
         rpc_->Disconnect();
     }
@@ -167,19 +244,30 @@ EngineRuntime::PreparedLaunch EngineRuntime::PrepareLaunchSpec(const std::filesy
     launch.rpcSecret = config_.sysConfig.rpcSecret;
     launch.hostPid = motrix::engine::CurrentHostProcessId();
     launch.saveIntervalSeconds = 10;
+    launch.logLevel = config_.logLevel.empty() ? "warn" : config_.logLevel;
+    launch.sessionFilePath = config_.appDataDir / "aria2.session";
+    launch.sessionFileExists = std::filesystem::is_regular_file(launch.sessionFilePath, ec);
     if (dialect_->UsesStateDirInsteadOfAria2Files()) {
         launch.stateOrSessionPath = config_.appDataDir / "engine_state";
         std::filesystem::create_directories(launch.stateOrSessionPath, ec);
     } else {
-        launch.stateOrSessionPath = config_.appDataDir / "aria2.session";
-        launch.sessionFileExists = std::filesystem::is_regular_file(launch.stateOrSessionPath, ec);
+        launch.stateOrSessionPath = launch.sessionFilePath;
     }
 
     auto globalOpts = ToEnginePairs(motrix::domain::SystemConfigToOptionPairs(config_.sysConfig));
+    globalOpts.push_back({"bt-port-mapping", config_.enableUpnp ? "true" : "false"});
+    const auto filteredOpts = dialect_->FilterGlobalOptions(globalOpts);
+    const std::filesystem::path confPath = config_.appDataDir / "aria2.conf";
+    if (motrix::core::WriteTextAtomic(confPath, motrix::engine::FormatAria2Conf(filteredOpts))) {
+        launch.confPath = confPath;
+    }
+
     PreparedLaunch out{};
     out.spec.executablePath = binPath;
     out.spec.launchOptions = launch;
-    out.spec.initialOptions = dialect_->FilterGlobalOptions(globalOpts);
+    if (launch.confPath.empty()) {
+        out.spec.initialOptions = filteredOpts;
+    }
     out.spec.hintKind = kind;
     out.globalOpts = std::move(globalOpts);
     return out;
@@ -222,6 +310,9 @@ void EngineRuntime::FinalizeConnectedSession(
 }
 
 bool EngineRuntime::TryStartAndConnect(std::stop_token st) {
+    if (st.stop_requested() || IsShutdownBlocked()) {
+        return false;
+    }
     const auto binOpt = motrix::engine::DiscoverEngineExecutable(config_.enginePathOverride);
     if (!binOpt) {
         onSync_(EngineSyncUpdate{
@@ -233,6 +324,9 @@ bool EngineRuntime::TryStartAndConnect(std::stop_token st) {
 
     resolvedPath_ = motrix::core::PathToUtf8(*binOpt);
     const auto probe = motrix::engine::ProbeEngineBinaryVersion(*binOpt);
+    if (st.stop_requested() || IsShutdownBlocked()) {
+        return false;
+    }
     const auto kind = probe ? probe->kind : motrix::engine::EngineKind::ClassicAria2;
     if (probe) {
         versionInfo_ = *probe;
@@ -241,12 +335,14 @@ bool EngineRuntime::TryStartAndConnect(std::stop_token st) {
     const PreparedLaunch launch = PrepareLaunchSpec(*binOpt, kind);
 
     if (auto startRes = proc_->Start(launch.spec); !startRes) {
-        onSync_(EngineSyncUpdate{
-            .connState = EngineConnectionState::Offline,
-            .version = &versionInfo_,
-            .enginePath = resolvedPath_,
-            .errorMsg = startRes.error().message,
-        });
+        if (!IsShutdownBlocked()) {
+            onSync_(EngineSyncUpdate{
+                .connState = EngineConnectionState::Offline,
+                .version = &versionInfo_,
+                .enginePath = resolvedPath_,
+                .errorMsg = startRes.error().message,
+            });
+        }
         return false;
     }
 
@@ -255,14 +351,16 @@ bool EngineRuntime::TryStartAndConnect(std::stop_token st) {
         .port = config_.sysConfig.rpcListenPort,
         .secret = config_.sysConfig.rpcSecret,
     };
-    for (int attempt = 0; attempt < 25 && !st.stop_requested(); ++attempt) {
+    for (int attempt = 0; attempt < 25 && !st.stop_requested() && !IsShutdownBlocked(); ++attempt) {
         if (proc_->State() == motrix::engine::EngineProcessState::Crashed) {
-            onSync_(EngineSyncUpdate{
-                .connState = EngineConnectionState::Offline,
-                .version = &versionInfo_,
-                .enginePath = resolvedPath_,
-                .errorMsg = "Engine exited immediately on startup (check RPC port conflict)",
-            });
+            if (!IsShutdownBlocked()) {
+                onSync_(EngineSyncUpdate{
+                    .connState = EngineConnectionState::Offline,
+                    .version = &versionInfo_,
+                    .enginePath = resolvedPath_,
+                    .errorMsg = "Engine exited immediately on startup (check RPC port conflict)",
+                });
+            }
             return false;
         }
         if (rpc_->Connect(rpcOpts)) {
@@ -270,17 +368,21 @@ bool EngineRuntime::TryStartAndConnect(std::stop_token st) {
             return true;
         }
         std::unique_lock lock(queueMutex_);
-        queueCv_.wait_for(lock, st, std::chrono::milliseconds(150), [&] { return st.stop_requested(); });
+        queueCv_.wait_for(lock, st, std::chrono::milliseconds(150), [&] {
+            return st.stop_requested() || IsShutdownBlocked();
+        });
     }
 
     rpc_->Disconnect();
     (void)proc_->Stop(std::chrono::milliseconds(1000));
-    onSync_(EngineSyncUpdate{
-        .connState = EngineConnectionState::Offline,
-        .version = &versionInfo_,
-        .enginePath = resolvedPath_,
-        .errorMsg = "Timed out connecting to aria2 WebSocket RPC",
-    });
+    if (!st.stop_requested() && !IsShutdownBlocked()) {
+        onSync_(EngineSyncUpdate{
+            .connState = EngineConnectionState::Offline,
+            .version = &versionInfo_,
+            .enginePath = resolvedPath_,
+            .errorMsg = "Timed out connecting to aria2 WebSocket RPC",
+        });
+    }
     return false;
 }
 

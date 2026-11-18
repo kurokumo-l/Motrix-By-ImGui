@@ -16,6 +16,20 @@ namespace {
     return "INFO";
 }
 
+[[nodiscard]] bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        const char ca = (a[i] >= 'A' && a[i] <= 'Z') ? static_cast<char>(a[i] + 32) : a[i];
+        const char cb = (b[i] >= 'A' && b[i] <= 'Z') ? static_cast<char>(b[i] + 32) : b[i];
+        if (ca != cb) {
+            return false;
+        }
+    }
+    return true;
+}
+
 [[nodiscard]] std::string FormatTimestamp() {
     const auto now = std::chrono::system_clock::now();
     const auto local = std::chrono::zoned_time{std::chrono::current_zone(), now};
@@ -24,6 +38,19 @@ namespace {
 }
 
 }  // namespace
+
+LogLevel ParseLogLevel(std::string_view raw) noexcept {
+    if (EqualsIgnoreCaseAscii(raw, "debug")) {
+        return LogLevel::Debug;
+    }
+    if (EqualsIgnoreCaseAscii(raw, "warn") || EqualsIgnoreCaseAscii(raw, "notice")) {
+        return LogLevel::Warn;
+    }
+    if (EqualsIgnoreCaseAscii(raw, "error")) {
+        return LogLevel::Error;
+    }
+    return LogLevel::Info;
+}
 
 Logger::Logger(LoggerOptions options) : options_(std::move(options)) {
     minLevel_.store(static_cast<int>(options_.minLevel), std::memory_order_relaxed);

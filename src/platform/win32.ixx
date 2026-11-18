@@ -6,45 +6,7 @@ import :window_host;
 
 namespace motrix::platform {
 
-export class UniqueHandle {
-public:
-    UniqueHandle() noexcept = default;
-    explicit UniqueHandle(void* raw) noexcept : handle_(raw) {}
-    ~UniqueHandle();
-
-    UniqueHandle(const UniqueHandle&) = delete;
-    UniqueHandle& operator=(const UniqueHandle&) = delete;
-
-    UniqueHandle(UniqueHandle&& other) noexcept;
-    UniqueHandle& operator=(UniqueHandle&& other) noexcept;
-
-    [[nodiscard]] void* Get() const noexcept { return handle_; }
-    [[nodiscard]] bool IsValid() const noexcept;
-    void Reset(void* newHandle = nullptr) noexcept;
-    [[nodiscard]] void* Release() noexcept;
-
-private:
-    void* handle_ = nullptr;
-};
-
-export class UniqueFindHandle {
-public:
-    UniqueFindHandle() noexcept = default;
-    explicit UniqueFindHandle(void* raw) noexcept : handle_(raw) {}
-    ~UniqueFindHandle();
-
-    UniqueFindHandle(const UniqueFindHandle&) = delete;
-    UniqueFindHandle& operator=(const UniqueFindHandle&) = delete;
-
-    UniqueFindHandle(UniqueFindHandle&& other) noexcept;
-    UniqueFindHandle& operator=(UniqueFindHandle&& other) noexcept;
-
-    [[nodiscard]] bool IsValid() const noexcept;
-    void Reset(void* newHandle = nullptr) noexcept;
-
-private:
-    void* handle_ = nullptr;
-};
+export using UniqueHandle = motrix::core::UniqueHandle;
 
 export template <typename T> class ComPtr {
 public:
@@ -101,6 +63,7 @@ public:
     [[nodiscard]] float DpiScale() const noexcept override;
     [[nodiscard]] bool IsMaximized() const noexcept override;
     [[nodiscard]] bool IsHiddenToTray() const noexcept override;
+    [[nodiscard]] bool IsSystemDarkMode() const noexcept override;
     [[nodiscard]] HostMetricsSnapshot Metrics() const noexcept override;
     [[nodiscard]] WindowBounds CurrentWindowBounds() const override;
 
@@ -116,7 +79,8 @@ public:
     void SetBindCloseToHide(bool enabled) noexcept override;
     void SetAutoHideOnBlur(bool enabled) noexcept override;
     void SetTrayEnabled(bool enabled) override;
-    void UpdateTrayStatus(bool hasActiveDownloads, bool isZhCn) override;
+    void
+    UpdateTrayStatus(bool hasActiveDownloads, bool isZhCn, std::string_view tooltipText = {}) override;
     void UpdateTaskbarProgress(TaskbarProgressMode mode,
                                std::uint64_t completed,
                                std::uint64_t total) override;
@@ -128,11 +92,16 @@ public:
     void RequestFrame() override;
     void NotifyAnimationActive() override;
     void SetTitlebarHeight(float heightPx) override;
+    void SetTitlebarBlocked(bool blocked) override;
     void RegisterTitlebarInteractiveRect(TitlebarRect rect) override;
     void CopyTextToClipboard(std::string_view utf8) override;
     void OpenPathInExplorer(std::string_view utf8Path) override;
     [[nodiscard]] std::optional<std::string> PickTorrentFile() override;
     [[nodiscard]] std::optional<std::string> PickFolder(std::string_view initialDir = {}) override;
+    [[nodiscard]] std::uint64_t UploadRgbaTexture(std::uint64_t existingId,
+                                                  int width,
+                                                  int height,
+                                                  std::span<const std::uint8_t> rgba) override;
 
     // Called from WndProc bridge inside win32_host.cpp
     struct Impl;
@@ -152,5 +121,35 @@ export [[nodiscard]] motrix::core::Result<void> ApplyProtocolAssociations(
     const std::filesystem::path& exePath, bool enableMotrix, bool enableMagnet, bool enableThunder);
 export [[nodiscard]] bool IsProtocolRegisteredForSelf(std::string_view scheme,
                                                       const std::filesystem::path& exePath);
+export enum class MotrixIconKind {
+    TrayIdle,
+    TrayActive,
+    AppBadge
+};
+
+export struct NativeIconResource {
+    int resourceId = 101;
+    const wchar_t* fileName = L"app.ico";
+};
+
+export [[nodiscard]] constexpr NativeIconResource
+ResolveMotrixIconResource(MotrixIconKind kind) noexcept {
+    switch (kind) {
+        case MotrixIconKind::TrayIdle: return {102, L"tray-normal.ico"};
+        case MotrixIconKind::TrayActive: return {103, L"tray-active.ico"};
+        case MotrixIconKind::AppBadge: return {101, L"app.ico"};
+    }
+    return {101, L"app.ico"};
+}
+
+export [[nodiscard]] std::vector<std::uint32_t>
+RenderMotrixIconBgra(MotrixIconKind kind, int sizePx, bool darkTaskbar);
+
+export [[nodiscard]] bool QuerySystemDarkMode() noexcept;
+export [[nodiscard]] motrix::core::Locale QuerySystemPreferredLocale() noexcept;
+export [[nodiscard]] std::string FormatCrashDumpFilename(std::uint32_t pid,
+                                                         std::uint32_t yyyymmdd,
+                                                         std::uint32_t hhmmssms,
+                                                         unsigned int attempt = 0);
 
 }  // namespace motrix::platform

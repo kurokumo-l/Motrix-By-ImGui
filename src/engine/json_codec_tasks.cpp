@@ -200,7 +200,8 @@ void PopulateBtMetadata(const nlohmann::json& obj,
     bt.infoHash = infoHash;
     bt.comment = ReadStr(*btIt, "comment");
     const std::uint64_t createdSec = ParseUInt64Field(*btIt, "creationDate");
-    bt.creationDate = FormatUnixTimestampUtc(static_cast<std::int64_t>(createdSec));
+    bt.creationTimestamp = static_cast<std::int64_t>(createdSec);
+    bt.creationDate = FormatUnixTimestampUtc(bt.creationTimestamp);
     if (const auto infoIt = btIt->find("info"); infoIt != btIt->end() && infoIt->is_object()) {
         bt.name = ReadStr(*infoIt, "name");
     }
@@ -239,7 +240,7 @@ void PopulateTaskFiles(const nlohmann::json& obj,
         return;
     }
     task.filesTotal = filesIt->size();
-    if (truncateFiles) {
+    if (truncateFiles && filesIt->size() > kMaxTaskFilesInSnapshot) {
         PopulateTruncatedFiles(*filesIt, task);
         return;
     }
@@ -276,6 +277,11 @@ void PopulateTaskFiles(const nlohmann::json& obj,
     PopulateBtMetadata(obj, infoHash, task);
     PopulateTaskFiles(obj, truncateFiles, task);
 
+    if (task.uri.empty()) {
+        if (const auto btIt = obj.find("bittorrent"); btIt != obj.end() && btIt->is_object()) {
+            task.uri = ReadStr(*btIt, "magnetLink");
+        }
+    }
     if (task.uri.empty() && !infoHash.empty()) {
         task.uri = std::format("magnet:?xt=urn:btih:{}", infoHash);
     }

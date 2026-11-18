@@ -11,6 +11,7 @@ import motrix.app;
 import :views_internal;
 import :el_widgets;
 import :theme;
+import :anim;
 import :icons;
 import :scope_guard;
 
@@ -53,7 +54,7 @@ void ResetAddFormFields(const UiFrameContext& ctx, AddTaskFormState& form) {
     const std::string defaultDir =
         ctx.state.sysConfig.dir.empty() ? "C:/Users/Public/Downloads" : ctx.state.sysConfig.dir;
     CopyUtf8ToBuffer(defaultDir, form.dirBuffer.data(), form.dirBuffer.size());
-    form.splitCount = ctx.state.sysConfig.split > 0 ? ctx.state.sysConfig.split : 32;
+    form.splitCount = ctx.state.sysConfig.split > 0 ? ctx.state.sysConfig.split : 16;
     CopyUtf8ToBuffer(
         ctx.state.sysConfig.userAgent, form.userAgentBuffer.data(), form.userAgentBuffer.size());
     CopyUtf8ToBuffer(ctx.state.prefs.useProxy ? ctx.state.sysConfig.allProxy : std::string{},
@@ -62,13 +63,14 @@ void ResetAddFormFields(const UiFrameContext& ctx, AddTaskFormState& form) {
     form.authBuffer.fill('\0');
     form.refererBuffer.fill('\0');
     form.cookieBuffer.fill('\0');
-    form.uriBuffer.fill('\0');
     form.nameBuffer.fill('\0');
     form.torrentMeta.reset();
     form.torrentBase64.clear();
     form.torrentFileSelected.clear();
     form.torrentPath.clear();
     form.torrentError.clear();
+    form.uriError.clear();
+    form.autoFilledTorrentName.clear();
     form.activeTab = 0;
     form.showAdvanced = false;
     form.navigateToDownloading = ctx.state.prefs.newTaskShowDownloading;
@@ -84,6 +86,8 @@ void CloseAddModalAndReset(UiFrameContext& ctx, AddTaskFormState& form) {
     form.torrentFileSelected.clear();
     form.torrentPath.clear();
     form.torrentError.clear();
+    form.uriError.clear();
+    form.autoFilledTorrentName.clear();
     form.showAdvanced = false;
     form.initialized = false;
     ctx.sink.Dispatch(motrix::app::CloseModalCmd{});
@@ -106,6 +110,7 @@ void SubmitAddTaskForm(UiFrameContext& ctx, AddTaskFormState& form) {
     if (form.activeTab == 0) {
         auto uris = motrix::domain::SplitAndNormalizeUris(form.uriBuffer.data());
         if (uris.empty()) {
+            form.uriError = std::string(ctx.tr.Tr("task.uri_required"));
             return;
         }
         motrix::app::SubmitAddUriCmd cmd;
@@ -117,6 +122,7 @@ void SubmitAddTaskForm(UiFrameContext& ctx, AddTaskFormState& form) {
     }
 
     if (!form.torrentMeta.has_value() || form.torrentBase64.empty()) {
+        form.torrentError = std::string(ctx.tr.Tr("task.torrent_required"));
         return;
     }
     std::vector<int> selIndices;
@@ -159,15 +165,30 @@ void SyncDroppedAndPrefilled(AddTaskFormState& form, const motrix::app::AppState
     }
 }
 
-float DrawAddModalTabItem(UiFrameContext& ctx, AddTaskFormState& form, const AddModalTabSpec& spec) {
+struct AddModalTabResult {
+    float width = 0.0f;
+    float barY = 0.0f;
+};
+
+AddModalTabResult
+DrawAddModalTabItem(UiFrameContext& ctx, AddTaskFormState& form, const AddModalTabSpec& spec) {
     const float s = ctx.dpiScale;
     FontGuard fg(ctx.fonts, form.activeTab == spec.tabIdx ? FontRole::Medium : FontRole::Regular, 14.5f);
     const ImVec2 sz = ImGui::CalcTextSize(spec.label.data(), spec.label.data() + spec.label.size());
     ImGui::SetCursorScreenPos(ImVec2(spec.tx, spec.curY));
     if (ImGui::InvisibleButton(spec.id, ImVec2(sz.x, 30.0f * s)) && form.activeTab != spec.tabIdx) {
         form.activeTab = spec.tabIdx;
+        form.uriError.clear();
         if (spec.tabIdx == 0) {
             form.focusRequested = true;
+            if (!form.autoFilledTorrentName.empty()
+                && std::string_view(form.nameBuffer.data()) == form.autoFilledTorrentName) {
+                form.nameBuffer.fill('\0');
+            }
+        } else if (form.nameBuffer[0] == '\0' && form.torrentMeta.has_value()
+                   && !form.torrentMeta->name.empty()) {
+            CopyUtf8ToBuffer(form.torrentMeta->name, form.nameBuffer.data(), form.nameBuffer.size());
+            form.autoFilledTorrentName = form.nameBuffer.data();
         }
     }
     const bool hov = ImGui::IsItemHovered();
@@ -176,26 +197,32 @@ float DrawAddModalTabItem(UiFrameContext& ctx, AddTaskFormState& form, const Add
     }
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const bool active = (form.activeTab == spec.tabIdx);
-    const RgbaColor txtCol = (active || hov) ? ctx.palette.primary : ctx.palette.panelTitle;
+    const float txtT = ctx.anim.Float(
+        HashId(spec.id) ^ 0xA100u, (active || hov) ? 1.0f : 0.0f, 22.0f, active ? 1.0f : 0.0f);
+    const RgbaColor txtCol = LerpColor(ctx.palette.panelTitle, ctx.palette.primary, txtT);
     dl->AddText(ImVec2(spec.tx, spec.curY),
                 ToAbgrU32(txtCol),
                 spec.label.data(),
                 spec.label.data() + spec.label.size());
-    if (active) {
-        const float barY = spec.curY + sz.y + 8.0f * s;
-        dl->AddRectFilled(ImVec2(spec.tx, barY),
-                          ImVec2(spec.tx + sz.x, barY + 2.0f * s),
-                          ToAbgrU32(ctx.palette.primary));
-    }
-    return spec.tx + sz.x;
+    return {sz.x, spec.curY + sz.y + 8.0f * s};
 }
 
 void RenderAddTaskHeaderTabs(UiFrameContext& ctx, AddTaskFormState& form, const AddModalFooterBox& box) {
     const float s = ctx.dpiScale;
-    const float tab0End =
+    const AddModalTabResult tab0 =
         DrawAddModalTabItem(ctx, form, {"##tab_uri", ctx.tr.Tr("task.tab_uri"), 0, box.x0, box.curY});
-    DrawAddModalTabItem(
-        ctx, form, {"##tab_torrent", ctx.tr.Tr("task.tab_torrent"), 1, tab0End + 30.0f * s, box.curY});
+    const float tab1RelX = tab0.width + 30.0f * s;
+    const AddModalTabResult tab1 = DrawAddModalTabItem(
+        ctx, form, {"##tab_torrent", ctx.tr.Tr("task.tab_torrent"), 1, box.x0 + tab1RelX, box.curY});
+
+    const float targetRelX = (form.activeTab == 0) ? 0.0f : tab1RelX;
+    const float targetW = (form.activeTab == 0) ? tab0.width : tab1.width;
+    const float barY = (form.activeTab == 0) ? tab0.barY : tab1.barY;
+    const float barRelX = ctx.anim.Float(HashId("add.tab_x"), targetRelX, 24.0f, targetRelX);
+    const float barW = ctx.anim.Float(HashId("add.tab_w"), targetW, 24.0f, targetW);
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(box.x0 + barRelX, barY),
+                                              ImVec2(box.x0 + barRelX + barW, barY + 2.0f * s),
+                                              ToAbgrU32(ctx.palette.primary));
 
     const float closeBox = 24.0f * s;
     const float closeX = box.x0 + (box.modalW - 48.0f * s) + 24.0f * s - 16.0f * s - closeBox;
@@ -207,6 +234,8 @@ void RenderAddTaskHeaderTabs(UiFrameContext& ctx, AddTaskFormState& form, const 
     if (closeHov) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     }
+    const float closeT =
+        ctx.anim.Float(HashId("##add_modal_close"), closeHov ? 1.0f : 0.0f, 22.0f, 0.0f);
     const float iconSz = 11.0f * s;
     DrawMotrixIcon(IconSpec{
         MotrixIcon::WinClose,
@@ -214,29 +243,49 @@ void RenderAddTaskHeaderTabs(UiFrameContext& ctx, AddTaskFormState& form, const 
         box.curY - 2.0f * s + (closeBox - iconSz) * 0.5f,
         iconSz,
         iconSz,
-        closeHov ? ctx.palette.primary : ctx.palette.taskMetaText,
+        LerpColor(ctx.palette.taskMetaText, ctx.palette.primary, closeT),
         s,
     });
 }
 
+void RenderAddTaskUriError(UiFrameContext& ctx, const AddTaskFormState& form, ModalFlowPos& flow) {
+    if (form.uriError.empty()) {
+        return;
+    }
+    const float s = ctx.dpiScale;
+    FontGuard ef(ctx.fonts, FontRole::Regular, 12.5f);
+    flow.curY += 6.0f * s;
+    ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(),
+                                        ImGui::GetFontSize(),
+                                        ImVec2(flow.x0, flow.curY),
+                                        ToAbgrU32(ctx.palette.progressError),
+                                        form.uriError.c_str(),
+                                        nullptr,
+                                        flow.bodyW);
+    flow.curY += ImGui::CalcTextSize(form.uriError.c_str(), nullptr, false, flow.bodyW).y;
+}
+
 void RenderAddTaskPrimaryInputs(UiFrameContext& ctx, AddTaskFormState& form, ModalFlowPos& flow) {
     const float s = ctx.dpiScale;
-    const ElStyle elSt{ctx.palette, ctx.fonts, s};
+    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
     if (form.activeTab == 0) {
         if (form.focusRequested) {
             ImGui::SetKeyboardFocusHere();
             form.focusRequested = false;
         }
         ImGui::SetCursorScreenPos(ImVec2(flow.x0, flow.curY));
-        ElInputTextMultiline(elSt,
-                             {"##add_uris",
-                              form.uriBuffer.data(),
-                              form.uriBuffer.size(),
-                              flow.bodyW,
-                              ctx.tr.Tr("task.uri_tips"),
-                              0,
-                              80.0f * s});
+        if (ElInputTextMultiline(elSt,
+                                 {"##add_uris",
+                                  form.uriBuffer.data(),
+                                  form.uriBuffer.size(),
+                                  flow.bodyW,
+                                  ctx.tr.Tr("task.uri_tips"),
+                                  0,
+                                  80.0f * s})) {
+            form.uriError.clear();
+        }
         flow.curY += 80.0f * s;
+        RenderAddTaskUriError(ctx, form, flow);
     } else {
         ImGui::SetCursorScreenPos(ImVec2(flow.x0, flow.curY));
         StyleVarGuard zeroChildPad(ImGuiStyleVar_WindowPadding, 0.0f, 0.0f);
@@ -301,7 +350,7 @@ void RenderAddTaskFooter(UiFrameContext& ctx, AddTaskFormState& form, const AddM
                       6.0f * s,
                       ImDrawFlags_RoundCornersBottom);
 
-    const ElStyle elSt{ctx.palette, ctx.fonts, s};
+    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
     ImGui::SetCursorScreenPos(ImVec2(box.x0, box.curY + (footerH - 20.0f * s) * 0.5f));
     ElCheckbox(elSt, "##add_adv_toggle", ctx.tr.Tr("task.show_advanced"), &form.showAdvanced);
 
@@ -325,26 +374,29 @@ void RenderAddTaskFooter(UiFrameContext& ctx, AddTaskFormState& form, const AddM
     ImGui::Dummy(ImVec2(box.modalW, 0.0f));
 }
 
-void RenderAddTaskModal(UiFrameContext& ctx, AddTaskFormState& form) {
+void RenderAddTaskModal(UiFrameContext& ctx, AddTaskFormState& form, bool justOpened) {
     if (!form.initialized) {
         ResetAddFormFields(ctx, form);
     }
     SyncDroppedAndPrefilled(form, ctx.state);
 
     const float s = ctx.dpiScale;
+    const float openT = SmoothOpenProgress(ctx.anim, HashId("modal.add.open"), justOpened);
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float modalW = std::clamp(ctx.viewportW * 0.67f, 380.0f * s, 632.0f * s);
-    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.5f),
-                            ImGuiCond_Always,
-                            ImVec2(0.5f, 0.5f));
+    const float openOffsetY = 6.0f * s * (1.0f - openT);
+    ImGui::SetNextWindowPos(
+        ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.5f + openOffsetY),
+        ImGuiCond_Always,
+        ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(modalW, 0.0f), ImGuiCond_Always);
 
     StyleVarGuard winPad(ImGuiStyleVar_WindowPadding, 0.0f, 0.0f);
     StyleVarGuard winRound(ImGuiStyleVar_WindowRounding, 6.0f * s);
     StyleVarGuard winBorder(ImGuiStyleVar_WindowBorderSize, 0.0f);
     StyleColorGuard popBg(ImGuiCol_PopupBg, ctx.palette.modalBg);
-    StyleColorGuard dimBg(ImGuiCol_ModalWindowDimBg,
-                          RgbaColor{0.0f, 0.0f, 0.0f, ctx.palette.isDark ? 0.56f : 0.45f});
+    const float maxDim = ctx.palette.isDark ? 0.56f : 0.45f;
+    StyleColorGuard dimBg(ImGuiCol_ModalWindowDimBg, RgbaColor{0.0f, 0.0f, 0.0f, maxDim * openT});
 
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar
                                         | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
@@ -353,6 +405,7 @@ void RenderAddTaskModal(UiFrameContext& ctx, AddTaskFormState& form) {
         return;
     }
 
+    const bool hadOpenChildPopup = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     const ImVec2 winPos = ImGui::GetWindowPos();
     const float padX = 24.0f * s;
     ModalFlowPos flow{winPos.x + padX, modalW - padX * 2.0f, winPos.y + 18.0f * s};
@@ -368,7 +421,8 @@ void RenderAddTaskModal(UiFrameContext& ctx, AddTaskFormState& form) {
 
     RenderAddTaskFooter(ctx, form, {winPos, modalW, padX, flow.x0, flow.curY});
 
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    if (!hadOpenChildPopup && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)
+        && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
         CloseAddModalAndReset(ctx, form);
     } else if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Enter)) {
         SubmitAddTaskForm(ctx, form);
@@ -378,26 +432,30 @@ void RenderAddTaskModal(UiFrameContext& ctx, AddTaskFormState& form) {
 }  // namespace
 
 void RenderModals(UiFrameContext& ctx, AddTaskFormState& addForm) {
-    if (ctx.state.activeModal == motrix::app::ActiveModal::AddTask) {
-        if (!addForm.wasAddOpen) {
+    const bool addActive = (ctx.state.activeModal == motrix::app::ActiveModal::AddTask);
+    if (addActive) {
+        const bool justOpened = !addForm.wasAddOpen;
+        if (justOpened) {
             addForm.initialized = false;
             ImGui::OpenPopup("##AddTaskModal");
         }
         addForm.wasAddOpen = true;
-        RenderAddTaskModal(ctx, addForm);
-    } else {
+        RenderAddTaskModal(ctx, addForm, justOpened);
+    } else if (addForm.wasAddOpen) {
+        addForm.uriBuffer.fill('\0');
+        addForm.uriError.clear();
         addForm.wasAddOpen = false;
     }
 
-    if (ctx.state.activeModal == motrix::app::ActiveModal::About) {
-        if (!addForm.wasAboutOpen) {
-            ImGui::OpenPopup("##AboutModal");
-        }
-        addForm.wasAboutOpen = true;
-        RenderAboutModalDialog(ctx);
-    } else {
-        addForm.wasAboutOpen = false;
+    const bool aboutActive = (ctx.state.activeModal == motrix::app::ActiveModal::About);
+    if (aboutActive && !addForm.wasAboutOpen) {
+        ImGui::OpenPopup("##AboutModal");
     }
+    if (aboutActive) {
+        RenderAboutModalDialog(ctx, !addForm.wasAboutOpen);
+    }
+    addForm.wasAboutOpen = aboutActive;
+    RenderDeleteConfirmModal(ctx);
 }
 
 }  // namespace motrix::ui

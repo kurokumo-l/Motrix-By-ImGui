@@ -1,6 +1,8 @@
 export module motrix.ui:icons;
 
 import std;
+import motrix.platform;
+import :anim;
 import :theme;
 
 namespace motrix::ui {
@@ -49,6 +51,11 @@ export enum class MotrixIcon {
     ChevronDown,
     ChevronUp,
     TagClose,
+    DetailInfo,
+    DetailGrid,
+    DetailCompass,
+    DetailUser,
+    DetailFiles,
 };
 
 export struct IconSpec {
@@ -60,6 +67,7 @@ export struct IconSpec {
     RgbaColor color{};
     float dpiScale = 1.0f;
     bool foreground = false;
+    RgbaColor cutoutColor{1.0f, 1.0f, 1.0f, 1.0f};
 };
 
 export void DrawMotrixIcon(const IconSpec& spec);
@@ -67,11 +75,24 @@ export void DrawMotrixIcon(const IconSpec& spec);
 export struct UfoIllustrationSpec {
     float centerX = 0.0f;
     float topY = 0.0f;
-    float width = 380.0f;
-    float height = 233.0f;
+    float width = 560.0f;
+    float height = 343.33f;
     bool dark = false;
+    motrix::platform::IWindowHost* host = nullptr;
+    CachedTextureSlot* cache = nullptr;
 };
 
 export void DrawEmptyUfoIllustration(const UfoIllustrationSpec& spec);
+
+export struct AppIconSpec {
+    float x = 0.0f;
+    float y = 0.0f;
+    float size = 72.0f;
+    bool dark = false;
+    motrix::platform::IWindowHost* host = nullptr;
+    CachedTextureSlot* cache = nullptr;
+};
+
+export void DrawMotrixAppIcon(const AppIconSpec& spec);
 
 }  // namespace motrix::ui

@@ -6,6 +6,7 @@ import motrix.domain;
 import motrix.ipc;
 import motrix.engine;
 import motrix.platform;
+import motrix.app;
 
 using namespace motrix::domain;
 using namespace motrix::ipc;
@@ -299,4 +300,141 @@ TEST_CASE("motrix.ipc NamedPipe single-instance acquire, forward, and teardown",
     REQUIRE(acq3.has_value());
     CHECK(*acq3 == true);
     reacquired->Close();
+}
+
+TEST_CASE("motrix.platform Motrix M tray and window icon pixel rendering", "[platform][icon][m4]") {
+    using motrix::platform::MotrixIconKind;
+    using motrix::platform::RenderMotrixIconBgra;
+    using motrix::platform::ResolveMotrixIconResource;
+
+    CHECK(ResolveMotrixIconResource(MotrixIconKind::AppBadge).resourceId == 101);
+    CHECK(std::wstring_view(ResolveMotrixIconResource(MotrixIconKind::AppBadge).fileName) == L"app.ico");
+    CHECK(ResolveMotrixIconResource(MotrixIconKind::TrayIdle).resourceId == 102);
+    CHECK(std::wstring_view(ResolveMotrixIconResource(MotrixIconKind::TrayIdle).fileName)
+          == L"tray-normal.ico");
+    CHECK(ResolveMotrixIconResource(MotrixIconKind::TrayActive).resourceId == 103);
+    CHECK(std::wstring_view(ResolveMotrixIconResource(MotrixIconKind::TrayActive).fileName)
+          == L"tray-active.ico");
+
+    const auto at = [](const std::vector<std::uint32_t>& buf, int size, int x, int y) {
+        return buf[static_cast<std::size_t>(y) * static_cast<std::size_t>(size)
+                   + static_cast<std::size_t>(x)];
+    };
+    const auto alpha = [](std::uint32_t bgra) -> std::uint32_t { return (bgra >> 24u) & 0xFFu; };
+    const auto red = [](std::uint32_t bgra) -> std::uint32_t { return (bgra >> 16u) & 0xFFu; };
+    const auto green = [](std::uint32_t bgra) -> std::uint32_t { return (bgra >> 8u) & 0xFFu; };
+    const auto blue = [](std::uint32_t bgra) -> std::uint32_t { return bgra & 0xFFu; };
+
+    const auto darkTray = RenderMotrixIconBgra(MotrixIconKind::TrayIdle, 32, true);
+    const auto lightTray = RenderMotrixIconBgra(MotrixIconKind::TrayIdle, 32, false);
+    REQUIRE(darkTray.size() == 32u * 32u);
+    REQUIRE(lightTray.size() == 32u * 32u);
+    CHECK(alpha(at(darkTray, 32, 0, 0)) == 0u);
+    const std::uint32_t framePx = at(darkTray, 32, 6, 16);
+    CHECK(alpha(framePx) > 240u);
+    CHECK(blue(framePx) > green(framePx));
+    CHECK(blue(framePx) > red(framePx));
+    const std::uint32_t facePx = at(darkTray, 32, 16, 16);
+    CHECK(alpha(facePx) > 240u);
+    CHECK(red(facePx) > 220u);
+    CHECK(green(facePx) > 220u);
+    CHECK(blue(facePx) > 220u);
+    const std::uint32_t visorPx = at(lightTray, 32, 16, 10);
+    CHECK(alpha(visorPx) > 240u);
+    CHECK(red(visorPx) < 60u);
+    CHECK(green(visorPx) < 60u);
+    CHECK(blue(visorPx) < 60u);
+
+    const auto activeTray = RenderMotrixIconBgra(MotrixIconKind::TrayActive, 32, true);
+    REQUIRE(activeTray.size() == 32u * 32u);
+    const std::uint32_t dotPx = at(activeTray, 32, 26, 5);
+    CHECK(alpha(dotPx) > 220u);
+    CHECK(green(dotPx) > red(dotPx));
+    CHECK(green(dotPx) > blue(dotPx));
+
+    const auto badge = RenderMotrixIconBgra(MotrixIconKind::AppBadge, 32, true);
+    REQUIRE(badge.size() == 32u * 32u);
+    CHECK(alpha(at(badge, 32, 0, 0)) == 0u);
+    const std::uint32_t bgPx = at(badge, 32, 6, 16);
+    CHECK(alpha(bgPx) > 240u);
+    CHECK(blue(bgPx) > green(bgPx));
+    const std::uint32_t glyphPx = at(badge, 32, 16, 16);
+    CHECK(red(glyphPx) > 220u);
+    CHECK(green(glyphPx) > 220u);
+    CHECK(blue(glyphPx) > 220u);
+}
+
+TEST_CASE(
+    "motrix.app HandleStartupPayload preserves both URIs and torrents and keeps pause/resume quiet",
+    "[app][ipc][m4]") {
+    motrix::core::Logger logger;
+    motrix::app::CoordinatorOptions opts{};
+    opts.enableEngine = false;
+    opts.loadPersistedConfig = false;
+
+    motrix::app::AppCoordinator coord(opts, logger);
+    coord.Dispatch(motrix::app::HandleStartupPayloadCmd{
+        .uris = {"https://example.com/archive.tar.zst"},
+        .torrentFiles = {R"(C:\Downloads\ubuntu.torrent)"},
+        .deepLinks = {},
+        .activateWindow = true,
+    });
+    const auto afterAdd = coord.Snapshot();
+    CHECK(afterAdd->activeModal == motrix::app::ActiveModal::AddTask);
+    CHECK(afterAdd->pendingPrefillUri == "https://example.com/archive.tar.zst");
+    CHECK(afterAdd->pendingDroppedTorrentPath == R"(C:\Downloads\ubuntu.torrent)");
+
+    coord.Dispatch(motrix::app::CloseModalCmd{});
+    coord.Dispatch(motrix::app::HandleStartupPayloadCmd{
+        .uris = {},
+        .torrentFiles = {},
+        .deepLinks = {"motrix://pause-all-task"},
+        .activateWindow = false,
+    });
+    const auto afterPause = coord.Snapshot();
+    CHECK(afterPause->activeModal == motrix::app::ActiveModal::None);
+}
+
+TEST_CASE("motrix.app FactoryResetCmd and ResetSessionCmd reset session and regenerate secret",
+          "[app][parity][m4]") {
+    motrix::core::Logger logger;
+    motrix::app::CoordinatorOptions opts{};
+    opts.enableEngine = false;
+    opts.loadPersistedConfig = false;
+    opts.populatePreviewTasks = true;
+
+    motrix::app::AppCoordinator coord(opts, logger);
+    const auto initial = coord.Snapshot();
+    REQUIRE(!initial->downloadingTasks.empty());
+
+    auto customPrefs = initial->prefs;
+    customPrefs.theme = ThemePreference::Dark;
+    auto customSys = initial->sysConfig;
+    customSys.maxConcurrentDownloads = 16;
+    customSys.rpcSecret = "old_custom_secret";
+    coord.Dispatch(motrix::app::SavePreferencesCmd{std::move(customPrefs), std::move(customSys), false});
+
+    const auto modified = coord.Snapshot();
+    CHECK(modified->prefs.theme == ThemePreference::Dark);
+    CHECK(modified->sysConfig.maxConcurrentDownloads == 16);
+    CHECK(modified->sysConfig.rpcSecret == "old_custom_secret");
+
+    coord.Dispatch(motrix::app::SelectTaskCmd{initial->downloadingTasks.front().gid, true});
+    REQUIRE(!coord.Snapshot()->detailedTaskGid.empty());
+
+    coord.Dispatch(motrix::app::ResetSessionCmd{});
+    const auto afterReset = coord.Snapshot();
+    CHECK(afterReset->downloadingTasks.empty());
+    CHECK(afterReset->waitingTasks.empty());
+    CHECK(afterReset->stoppedTasks.empty());
+    CHECK(afterReset->selectedTaskGids.empty());
+    CHECK(afterReset->detailedTaskGid.empty());
+
+    coord.Dispatch(motrix::app::FactoryResetCmd{});
+    const auto afterFactory = coord.Snapshot();
+    CHECK(afterFactory->prefs.theme == DefaultUserPreferences().theme);
+    CHECK(afterFactory->sysConfig.maxConcurrentDownloads
+          == DefaultSystemConfig().maxConcurrentDownloads);
+    CHECK_FALSE(afterFactory->sysConfig.rpcSecret.empty());
+    CHECK(afterFactory->sysConfig.rpcSecret != "old_custom_secret");
 }

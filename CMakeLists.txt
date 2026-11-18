@@ -247,7 +247,9 @@ add_library(motrix_engine STATIC
     src/engine/win32_util.cpp
     src/engine/process_manager.cpp
     src/engine/process_probe.cpp
+    src/engine/http_winhttp.cpp
     src/engine/tracker_winhttp.cpp
+    src/engine/aria2_updater.cpp
     src/engine/upnp_miniupnpc.cpp
 )
 target_sources(motrix_engine
@@ -262,11 +264,13 @@ target_sources(motrix_engine
             src/engine/json_codec.ixx
             src/engine/tracker.ixx
             src/engine/upnp.ixx
+            src/engine/aria2_updater.ixx
     PRIVATE
         FILE_SET internal_modules TYPE CXX_MODULES
         BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
         FILES
             src/engine/win32_util.ixx
+            src/engine/http_winhttp.ixx
 )
 target_link_libraries(motrix_engine
     PUBLIC
@@ -281,17 +285,19 @@ target_link_libraries(motrix_engine
         winhttp
         shell32
         ole32
+        bcrypt
 )
 motrix_configure_target(motrix_engine)
 
 add_library(motrix_ipc STATIC
     src/ipc/named_pipe_ipc.cpp
 )
-target_sources(motrix_ipc PUBLIC
-    FILE_SET CXX_MODULES
-    BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
-    FILES
-        src/ipc/ipc.ixx
+target_sources(motrix_ipc
+    PUBLIC
+        FILE_SET CXX_MODULES
+        BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        FILES
+            src/ipc/ipc.ixx
 )
 target_link_libraries(motrix_ipc
     PUBLIC
@@ -299,6 +305,7 @@ target_link_libraries(motrix_ipc
     PRIVATE
         nlohmann_json::nlohmann_json
         kernel32
+        advapi32
 )
 motrix_configure_target(motrix_ipc)
 
@@ -356,6 +363,7 @@ add_library(motrix_app STATIC
     src/app/coordinator_commands.cpp
     src/app/coordinator_desktop.cpp
     src/app/coordinator_mock.cpp
+    src/app/coordinator_updater.cpp
     src/app/engine_runtime.cpp
     src/app/engine_runtime_detail.cpp
 )
@@ -384,10 +392,13 @@ add_library(motrix_ui STATIC
     src/ui/theme.cpp
     src/ui/anim.cpp
     src/ui/fonts.cpp
+    src/ui/fonts_dwrite.cpp
     src/ui/scope_guard.cpp
     src/ui/icons.cpp
     src/ui/icons_extra.cpp
+    src/ui/svg_raster.cpp
     src/ui/icons_ufo.cpp
+    src/ui/icons_appicon.cpp
     src/ui/el_widgets.cpp
     src/ui/el_inputs.cpp
     src/ui/el_selects.cpp
@@ -401,12 +412,15 @@ add_library(motrix_ui STATIC
     src/ui/view_drawer_activity.cpp
     src/ui/view_drawer_tabs.cpp
     src/ui/view_prefs.cpp
+    src/ui/view_prefs_actions.cpp
     src/ui/view_prefs_basic.cpp
     src/ui/view_prefs_advanced.cpp
     src/ui/view_prefs_lab.cpp
+    src/ui/view_prefs_updater.cpp
     src/ui/view_add_torrent.cpp
     src/ui/view_modals.cpp
     src/ui/view_modal_about.cpp
+    src/ui/view_modal_delete.cpp
     src/ui/shell.cpp
 )
 target_sources(motrix_ui
@@ -420,13 +434,16 @@ target_sources(motrix_ui
             src/ui/fonts.ixx
             src/ui/scope_guard.ixx
             src/ui/icons.ixx
+            src/ui/prefs_model.ixx
             src/ui/shell.ixx
     PRIVATE
         FILE_SET internal_modules TYPE CXX_MODULES
         BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
         FILES
+            src/ui/fonts_dwrite.ixx
             src/ui/views_internal.ixx
             src/ui/el_widgets.ixx
+            src/ui/svg_internal.ixx
 )
 target_link_libraries(motrix_ui
     PUBLIC
@@ -436,14 +453,21 @@ target_link_libraries(motrix_ui
         motrix_core
     PRIVATE
         imgui
+        dwrite
 )
 motrix_configure_target(motrix_ui)
 
 # ---------------------------------------------------------------------------
 # Executable & Tests
 # ---------------------------------------------------------------------------
+set_source_files_properties(src/platform/app.rc PROPERTIES
+    OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/app.ico;${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/tray-normal.ico;${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/tray-active.ico"
+)
+
 add_executable(motrix_native WIN32
     src/main.cpp
+    src/platform/app.rc
 )
 target_link_libraries(motrix_native PRIVATE
     motrix_ui
@@ -469,14 +493,35 @@ add_executable(motrix_tests
     tests/test_dialect.cpp
     tests/test_engine_rpc.cpp
     tests/test_m4.cpp
+    tests/test_platform_hardening.cpp
+    tests/test_server_util.cpp
+    tests/test_server.cpp
+    tests/test_server_torrent.cpp
+    tests/test_downloads.cpp
+    tests/test_bt_downloads.cpp
+    tests/test_aria2_updater.cpp
+    tests/test_ui.cpp
+    tests/test_ui_views.cpp
+)
+target_sources(motrix_tests PRIVATE
+    FILE_SET test_modules TYPE CXX_MODULES
+    BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+    FILES
+        tests/test_server_util.ixx
+        tests/test_server.ixx
 )
 target_link_libraries(motrix_tests PRIVATE
     Catch2::Catch2WithMain
+    motrix_ui
+    motrix_app
     motrix_platform
     motrix_ipc
     motrix_engine
     motrix_domain
     motrix_core
+    imgui
+    ws2_32
+    advapi32
 )
 motrix_configure_target(motrix_tests)
 catch_discover_tests(motrix_tests)

@@ -16,12 +16,13 @@ BuildAddUriOptions(const EngineWorkCommand& cmd) {
     if (!cmd.dir.empty()) {
         out.push_back({"dir", cmd.dir});
     }
-    if (!cmd.outName.empty()) {
+    if (!cmd.outName.empty() && cmd.uris.size() <= 1) {
         out.push_back({"out", cmd.outName});
     }
     if (cmd.split > 0) {
-        out.push_back({"split", std::to_string(cmd.split)});
-        out.push_back({"max-connection-per-server", std::to_string(std::clamp(cmd.split, 1, 64))});
+        const int clampedSplit = std::clamp(cmd.split, 1, 128);
+        out.push_back({"split", std::to_string(clampedSplit)});
+        out.push_back({"max-connection-per-server", std::to_string(clampedSplit)});
     }
     if (!cmd.userAgent.empty()) {
         out.push_back({"user-agent", cmd.userAgent});
@@ -41,6 +42,50 @@ BuildAddUriOptions(const EngineWorkCommand& cmd) {
     return out;
 }
 
+void RemoveFileWithRetry(const std::filesystem::path& target) {
+    std::error_code ec;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        if (std::filesystem::remove(target, ec) || !std::filesystem::exists(target, ec)) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    }
+}
+
+void PruneEmptyTaskSubdirs(std::filesystem::path dir, const std::filesystem::path& stopRoot) {
+    if (stopRoot.empty()) {
+        return;
+    }
+    const std::filesystem::path normRoot = stopRoot.lexically_normal();
+    std::error_code ec;
+    for (int depth = 0; depth < 16 && !dir.empty(); ++depth) {
+        const std::filesystem::path normDir = dir.lexically_normal();
+        if (normDir == normRoot || !std::filesystem::is_directory(dir, ec)
+            || !std::filesystem::is_empty(dir, ec)) {
+            break;
+        }
+        std::filesystem::remove(dir, ec);
+        dir = dir.parent_path();
+    }
+}
+
+void DeleteRemovedTaskFiles(const std::vector<std::string>& paths, std::string_view taskDirUtf8) {
+    const auto baseDir =
+        taskDirUtf8.empty() ? std::filesystem::path{} : motrix::core::PathFromUtf8(taskDirUtf8);
+    for (const auto& utf8Path : paths) {
+        if (utf8Path.empty()) {
+            continue;
+        }
+        std::filesystem::path p = motrix::core::PathFromUtf8(utf8Path);
+        if (p.is_relative() && !baseDir.empty()) {
+            p = baseDir / p;
+        }
+        RemoveFileWithRetry(p);
+        RemoveFileWithRetry(motrix::core::PathFromUtf8(motrix::core::PathToUtf8(p) + ".aria2"));
+        PruneEmptyTaskSubdirs(p.parent_path(), baseDir);
+    }
+}
+
 void PopulatePeerProgress(const motrix::domain::DownloadTaskView& task,
                           std::vector<motrix::domain::TaskPeerView>& peers) {
     if (task.numPieces <= 0) {
@@ -53,23 +98,139 @@ void PopulatePeerProgress(const motrix::domain::DownloadTaskView& task,
     }
 }
 
+void RemoveAndClearEngineTask(motrix::engine::IEngineRpcClient& rpc,
+                              std::string_view gid,
+                              bool alreadyStopped);
+
+void ExecuteRestartTaskCommand(motrix::engine::IEngineRpcClient& rpc,
+                               const motrix::engine::IEngineDialect& dialect,
+                               const EngineWorkCommand& cmd,
+                               std::string& lastErr) {
+    if (cmd.uris.empty()) {
+        return;
+    }
+    const motrix::engine::AddUriRequest req{
+        .uris = cmd.uris,
+        .options = dialect.FilterTaskOptions(BuildAddUriOptions(cmd)),
+        .position = std::nullopt,
+    };
+    if (auto res = rpc.AddUri(req); res) {
+        RemoveAndClearEngineTask(rpc, cmd.gid, cmd.taskInStopped);
+    } else {
+        lastErr = res.error().message;
+    }
+}
+
+struct RemovalTargets {
+    std::vector<std::string> files;
+    std::string dir;
+    std::string btName;
+    std::string infoHash;
+};
+
+[[nodiscard]] RemovalTargets CollectRemovalTargets(motrix::engine::IEngineRpcClient& rpc,
+                                                   const EngineWorkCommand& cmd) {
+    RemovalTargets out{.files = cmd.filesToDelete, .dir = cmd.dir};
+    if (!cmd.deleteFiles) {
+        return out;
+    }
+    auto detail = rpc.TellStatus(cmd.gid);
+    if (!detail) {
+        return out;
+    }
+    std::vector<std::string> fullFiles;
+    fullFiles.reserve(detail->task.files.size());
+    for (const auto& f : detail->task.files) {
+        if (!f.path.empty()) {
+            fullFiles.push_back(f.path);
+        }
+    }
+    if (!fullFiles.empty()) {
+        out.files = std::move(fullFiles);
+    }
+    if (out.dir.empty()) {
+        out.dir = detail->task.dir;
+    }
+    if (detail->task.btInfo) {
+        out.btName = detail->task.btInfo->name;
+        out.infoHash = detail->task.btInfo->infoHash;
+    }
+    return out;
+}
+
+void DeleteBtSidecarFiles(const std::filesystem::path& appDataDir, const RemovalTargets& targets) {
+    const auto baseDir =
+        targets.dir.empty() ? std::filesystem::path{} : motrix::core::PathFromUtf8(targets.dir);
+    if (!targets.btName.empty() && !baseDir.empty()) {
+        RemoveFileWithRetry(baseDir / motrix::core::PathFromUtf8(targets.btName + ".aria2"));
+    }
+    if (targets.infoHash.empty()) {
+        return;
+    }
+    const auto torrentRel = motrix::core::PathFromUtf8(targets.infoHash + ".torrent");
+    if (!baseDir.empty()) {
+        RemoveFileWithRetry(baseDir / torrentRel);
+    }
+    if (!appDataDir.empty()) {
+        RemoveFileWithRetry(appDataDir / torrentRel);
+    }
+}
+
+void RemoveAndClearEngineTask(motrix::engine::IEngineRpcClient& rpc,
+                              std::string_view gid,
+                              bool alreadyStopped) {
+    if (alreadyStopped) {
+        (void)rpc.RemoveDownloadResult(gid);
+        return;
+    }
+    (void)rpc.ForceRemove(gid);
+    for (int attempt = 0; attempt < 12; ++attempt) {
+        if (rpc.RemoveDownloadResult(gid)) {
+            return;
+        }
+        if (const auto st = rpc.TellStatus(gid); !st) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    }
+}
+
 }  // namespace
 
 void EngineRuntime::HandleApplyGlobalOptionsCmd(const EngineWorkCommand& cmd, std::string& lastErr) {
+    std::vector<motrix::engine::EngineOptionPair> allOpts;
+    allOpts.reserve(cmd.options.size() + 1);
     std::vector<motrix::engine::EngineOptionPair> runtimeOpts;
+    runtimeOpts.reserve(cmd.options.size() + 1);
     for (const auto& [k, v] : cmd.options) {
+        allOpts.push_back({k, v});
         if (k != "rpc-listen-port" && k != "rpc-secret" && k != "listen-port" && k != "dht-listen-port"
-            && k != "continue" && k != "follow-torrent") {
+            && k != "continue" && k != "follow-torrent" && k != "disable-ipv6" && k != "log-level") {
             runtimeOpts.push_back({k, v});
         }
     }
-    const auto filtered = dialect_->FilterGlobalOptions(runtimeOpts);
-    if (filtered.empty()) {
-        return;
+    allOpts.push_back({"bt-port-mapping", config_.enableUpnp ? "true" : "false"});
+    runtimeOpts.push_back({"bt-port-mapping", config_.enableUpnp ? "true" : "false"});
+    constexpr std::array<std::string_view, 4> kClearableRuntimeKeys{
+        "bt-tracker", "all-proxy", "no-proxy", "user-agent"};
+    for (const auto key : kClearableRuntimeKeys) {
+        const bool present =
+            std::ranges::any_of(runtimeOpts, [&](const auto& opt) { return opt.key == key; });
+        if (!present) {
+            runtimeOpts.push_back({std::string(key), ""});
+        }
     }
-    if (auto res = rpc_->ChangeGlobalOption(filtered); !res) {
-        lastErr = res.error().message;
-        logger_.Warn("rpc", "changeGlobalOption failed: {}", lastErr);
+    const auto filtered = dialect_->FilterGlobalOptions(runtimeOpts);
+    if (!filtered.empty()) {
+        if (auto res = rpc_->ChangeGlobalOption(filtered); !res) {
+            lastErr = res.error().message;
+            logger_.Warn("rpc", "changeGlobalOption failed: {}", lastErr);
+        }
+    }
+    if (!config_.appDataDir.empty() && !cmd.options.empty()) {
+        const auto confOpts = dialect_->FilterGlobalOptions(allOpts);
+        (void)motrix::core::WriteTextAtomic(config_.appDataDir / "aria2.conf",
+                                            motrix::engine::FormatAria2Conf(confOpts));
     }
 }
 
@@ -162,27 +323,11 @@ void EngineRuntime::HandleTaskControlCommand(const EngineWorkCommand& cmd,
             needSync = true;
             break;
         case K::Remove:
-            if (cmd.taskInStopped) {
-                (void)rpc_->RemoveDownloadResult(cmd.gid);
-            } else {
-                (void)rpc_->ForceRemove(cmd.gid);
-                (void)rpc_->RemoveDownloadResult(cmd.gid);
-            }
+            ExecuteRemoveCommand(cmd);
             needSync = true;
             break;
         case K::Restart:
-            if (!cmd.uris.empty()) {
-                const motrix::engine::AddUriRequest req{
-                    .uris = cmd.uris,
-                    .options = dialect_->FilterTaskOptions(BuildAddUriOptions(cmd)),
-                    .position = std::nullopt,
-                };
-                if (auto res = rpc_->AddUri(req); res) {
-                    (void)rpc_->RemoveDownloadResult(cmd.gid);
-                } else {
-                    lastErr = res.error().message;
-                }
-            }
+            ExecuteRestartTaskCommand(*rpc_, *dialect_, cmd, lastErr);
             needSync = true;
             break;
         case K::PauseAll:
@@ -197,8 +342,41 @@ void EngineRuntime::HandleTaskControlCommand(const EngineWorkCommand& cmd,
             (void)rpc_->PurgeDownloadResult();
             needSync = true;
             break;
+        case K::UpdateUpnp: {
+            config_.enableUpnp = cmd.enableUpnp;
+            config_.sysConfig.listenPort = cmd.btPort;
+            config_.sysConfig.dhtListenPort = cmd.dhtPort;
+            const bool nativeUpnp = dialect_ && dialect_->SupportsNativeUpnp();
+            StartOrRefreshUpnpAsync(nativeUpnp ? false : cmd.enableUpnp, cmd.btPort, cmd.dhtPort);
+            break;
+        }
+        case K::ResetSession: ExecuteResetSessionCommand(); break;
         default: break;
     }
+}
+
+void EngineRuntime::ExecuteRemoveCommand(const EngineWorkCommand& cmd) {
+    const RemovalTargets targets = CollectRemovalTargets(*rpc_, cmd);
+    RemoveAndClearEngineTask(*rpc_, cmd.gid, cmd.taskInStopped);
+    if (!cmd.deleteFiles) {
+        return;
+    }
+    DeleteRemovedTaskFiles(targets.files, targets.dir);
+    DeleteBtSidecarFiles(config_.appDataDir, targets);
+}
+
+void EngineRuntime::ExecuteResetSessionCommand() {
+    if (rpc_->IsConnected()) {
+        (void)rpc_->Shutdown(true);
+        rpc_->Disconnect();
+    }
+    (void)proc_->Stop(std::chrono::milliseconds(3000));
+    if (!config_.appDataDir.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(config_.appDataDir / "aria2.session", ec);
+        std::filesystem::remove_all(config_.appDataDir / "engine_state", ec);
+    }
+    resetSessionRequested_ = true;
 }
 
 void EngineRuntime::SetDetailCallback(DetailCallback cb) {
@@ -240,15 +418,12 @@ void EngineRuntime::FetchAndPublishDetail(std::string_view gid) {
 }
 
 void EngineRuntime::UpdateUpnpPreference(bool enabled, int btPort, int dhtPort) {
-    config_.enableUpnp = enabled;
-    config_.sysConfig.listenPort = btPort;
-    config_.sysConfig.dhtListenPort = dhtPort;
-    const bool nativeUpnp = dialect_ && dialect_->SupportsNativeUpnp();
-    if (!nativeUpnp) {
-        StartOrRefreshUpnpAsync(enabled, btPort, dhtPort);
-    } else if (upnp_) {
-        StartOrRefreshUpnpAsync(false, btPort, dhtPort);
-    }
+    Enqueue(EngineWorkCommand{
+        .kind = EngineWorkCommand::Kind::UpdateUpnp,
+        .enableUpnp = enabled,
+        .btPort = btPort,
+        .dhtPort = dhtPort,
+    });
 }
 
 void EngineRuntime::StartOrRefreshUpnpAsync(bool enabled, int btPort, int dhtPort) {

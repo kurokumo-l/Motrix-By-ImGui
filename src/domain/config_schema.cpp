@@ -124,49 +124,6 @@ UserPreferences DefaultUserPreferences() {
     return prefs;
 }
 
-SystemConfig DefaultSystemConfig() {
-    return SystemConfig{};
-}
-
-std::vector<std::pair<std::string, std::string>> SystemConfigToOptionPairs(const SystemConfig& cfg) {
-    std::vector<std::pair<std::string, std::string>> out;
-    out.emplace_back("max-concurrent-downloads", std::to_string(cfg.maxConcurrentDownloads));
-    out.emplace_back("max-connection-per-server", std::to_string(cfg.maxConnectionPerServer));
-    out.emplace_back("split", std::to_string(cfg.split));
-    out.emplace_back("listen-port", std::to_string(cfg.listenPort));
-    out.emplace_back("dht-listen-port", std::to_string(cfg.dhtListenPort));
-    out.emplace_back("seed-ratio", std::format("{:.2f}", cfg.seedRatio));
-    out.emplace_back("seed-time", std::to_string(cfg.seedTime));
-    out.emplace_back("max-overall-download-limit", std::to_string(cfg.maxOverallDownloadLimit));
-    out.emplace_back("max-overall-upload-limit", std::to_string(cfg.maxOverallUploadLimit));
-    out.emplace_back("continue", cfg.continueDownloads ? "true" : "false");
-    out.emplace_back("follow-torrent", cfg.followTorrent ? "true" : "false");
-    out.emplace_back("bt-save-metadata", cfg.btSaveMetadata ? "true" : "false");
-    out.emplace_back("pause-metadata", cfg.pauseMetadata ? "true" : "false");
-    if (cfg.btForceEncryption) {
-        out.emplace_back("bt-require-crypto", "true");
-        out.emplace_back("bt-min-crypto-level", "arc4");
-    } else {
-        out.emplace_back("bt-require-crypto", "false");
-    }
-    if (!cfg.dir.empty()) {
-        out.emplace_back("dir", cfg.dir);
-    }
-    if (!cfg.btTracker.empty()) {
-        out.emplace_back("bt-tracker", cfg.btTracker);
-    }
-    if (!cfg.allProxy.empty()) {
-        out.emplace_back("all-proxy", cfg.allProxy);
-    }
-    if (!cfg.noProxy.empty()) {
-        out.emplace_back("no-proxy", cfg.noProxy);
-    }
-    if (!cfg.userAgent.empty()) {
-        out.emplace_back("user-agent", cfg.userAgent);
-    }
-    return out;
-}
-
 std::string SerializeUserPreferencesJson(const UserPreferences& prefs) {
     nlohmann::json windowState = {
         {"width", prefs.windowWidth},
@@ -187,23 +144,28 @@ std::string SerializeUserPreferencesJson(const UserPreferences& prefs) {
              : (prefs.theme == ThemePreference::Auto ? "auto" : "light")},
         {"locale", prefs.locale == motrix::core::Locale::ZhCN ? "zh-CN" : "en-US"},
         {"runMode", static_cast<int>(prefs.runMode)},
-        {"hideAppMenu", prefs.hideAppMenu},
         {"keepWindowState", prefs.keepWindowState},
         {"autoHideWindow", prefs.autoHideWindow},
         {"openAtLogin", prefs.openAtLogin},
         {"resumeAllWhenAppLaunched", prefs.resumeAllWhenAppLaunched},
         {"newTaskShowDownloading", prefs.newTaskShowDownloading},
         {"noConfirmBeforeDeleteTask", prefs.noConfirmBeforeDeleteTask},
+        {"deleteFilesWhenDeleteTask", prefs.deleteFilesWhenDeleteTask},
         {"showProgressBar", prefs.showProgressBar},
         {"taskNotification", prefs.taskNotification},
         {"traySpeedometer", prefs.traySpeedometer},
+        {"showTooltips", prefs.showTooltips},
         {"enableUpnp", prefs.enableUpnp},
         {"autoSyncTracker", prefs.autoSyncTracker},
         {"useProxy", prefs.useProxy},
         {"keepSeeding", prefs.keepSeeding},
-        {"autoCheckUpdate", prefs.autoCheckUpdate},
-        {"lastCheckUpdateTime", prefs.lastCheckUpdateTime},
         {"engineBinPath", prefs.engineBinPath},
+        {"aria2NextUpdateUrl",
+         prefs.aria2NextUpdateUrl.empty() ? std::string(kDefaultAria2NextUpdateUrl)
+                                          : prefs.aria2NextUpdateUrl},
+        {"aria2NextMirrorPrefix", prefs.aria2NextMirrorPrefix},
+        {"fontFamily", prefs.fontFamily},
+        {"monoFontFamily", prefs.monoFontFamily},
         {"logLevel", prefs.logLevel},
         {"favoriteDirectories", prefs.favoriteDirectories},
         {"historyDirectories", prefs.historyDirectories},
@@ -253,23 +215,29 @@ motrix::core::Result<UserPreferences> ParseUserPreferencesJson(std::string_view 
         prefs.runMode = static_cast<RunMode>(runModeVal);
     }
 
-    ReadBool(parsed, "hideAppMenu", prefs.hideAppMenu);
     ReadBool(parsed, "keepWindowState", prefs.keepWindowState);
     ReadBool(parsed, "autoHideWindow", prefs.autoHideWindow);
     ReadBool(parsed, "openAtLogin", prefs.openAtLogin);
     ReadBool(parsed, "resumeAllWhenAppLaunched", prefs.resumeAllWhenAppLaunched);
     ReadBool(parsed, "newTaskShowDownloading", prefs.newTaskShowDownloading);
     ReadBool(parsed, "noConfirmBeforeDeleteTask", prefs.noConfirmBeforeDeleteTask);
+    ReadBool(parsed, "deleteFilesWhenDeleteTask", prefs.deleteFilesWhenDeleteTask);
     ReadBool(parsed, "showProgressBar", prefs.showProgressBar);
     ReadBool(parsed, "taskNotification", prefs.taskNotification);
     ReadBool(parsed, "traySpeedometer", prefs.traySpeedometer);
+    ReadBool(parsed, "showTooltips", prefs.showTooltips);
     ReadBool(parsed, "enableUpnp", prefs.enableUpnp);
     ReadBool(parsed, "autoSyncTracker", prefs.autoSyncTracker);
     ReadBool(parsed, "useProxy", prefs.useProxy);
     ReadBool(parsed, "keepSeeding", prefs.keepSeeding);
-    ReadBool(parsed, "autoCheckUpdate", prefs.autoCheckUpdate);
-    ReadInt64(parsed, "lastCheckUpdateTime", prefs.lastCheckUpdateTime);
     ReadString(parsed, "engineBinPath", prefs.engineBinPath);
+    ReadString(parsed, "aria2NextUpdateUrl", prefs.aria2NextUpdateUrl);
+    if (motrix::core::TrimAscii(prefs.aria2NextUpdateUrl).empty()) {
+        prefs.aria2NextUpdateUrl = std::string(kDefaultAria2NextUpdateUrl);
+    }
+    ReadString(parsed, "aria2NextMirrorPrefix", prefs.aria2NextMirrorPrefix);
+    ReadString(parsed, "fontFamily", prefs.fontFamily);
+    ReadString(parsed, "monoFontFamily", prefs.monoFontFamily);
     ReadString(parsed, "logLevel", prefs.logLevel);
     ReadStringArray(parsed, "favoriteDirectories", prefs.favoriteDirectories);
     ReadStringArray(parsed, "historyDirectories", prefs.historyDirectories);
@@ -312,7 +280,26 @@ std::string SerializeSystemConfigJson(const SystemConfig& cfg) {
         {"continue", cfg.continueDownloads},
         {"follow-torrent", cfg.followTorrent},
         {"bt-save-metadata", cfg.btSaveMetadata},
-        {"bt-force-encryption", cfg.btForceEncryption},
+        {"rpc-save-upload-metadata", cfg.rpcSaveUploadMetadata},
+        {"bt-force-encryption", cfg.btEncryption == "required"},
+        {"bt-encryption", cfg.btEncryption},
+        {"bt-transport", cfg.btTransport},
+        {"file-allocation", cfg.fileAllocation},
+        {"auto-file-renaming", cfg.autoFileRenaming},
+        {"allow-overwrite", cfg.allowOverwrite},
+        {"check-integrity", cfg.checkIntegrity},
+        {"enable-dht", cfg.enableDht},
+        {"enable-peer-exchange", cfg.enablePeerExchange},
+        {"bt-enable-lpd", cfg.btEnableLpd},
+        {"bt-anonymous-mode", cfg.btAnonymousMode},
+        {"bt-max-peers", cfg.btMaxPeers},
+        {"check-certificate", cfg.checkCertificate},
+        {"disable-ipv6", cfg.disableIpv6},
+        {"remote-time", cfg.remoteTime},
+        {"media", cfg.mediaMode},
+        {"media-format", cfg.mediaFormat},
+        {"bt-first-last-piece-first", cfg.btFirstLastPieceFirst},
+        {"detach-share-only", cfg.detachShareOnly},
         {"pause-metadata", cfg.pauseMetadata},
         {"bt-tracker", cfg.btTracker},
         {"all-proxy", cfg.allProxy},
@@ -346,13 +333,119 @@ motrix::core::Result<SystemConfig> ParseSystemConfigJson(std::string_view jsonTe
     ReadBool(parsed, "continue", cfg.continueDownloads);
     ReadBool(parsed, "follow-torrent", cfg.followTorrent);
     ReadBool(parsed, "bt-save-metadata", cfg.btSaveMetadata);
+    cfg.rpcSaveUploadMetadata = cfg.btSaveMetadata;
+    ReadBool(parsed, "rpc-save-upload-metadata", cfg.rpcSaveUploadMetadata);
+    cfg.btSaveMetadata = cfg.rpcSaveUploadMetadata;
     ReadBool(parsed, "bt-force-encryption", cfg.btForceEncryption);
+    if (cfg.btForceEncryption) {
+        cfg.btEncryption = "required";
+    }
+    ReadString(parsed, "bt-encryption", cfg.btEncryption);
+    cfg.btForceEncryption = (cfg.btEncryption == "required");
+    ReadString(parsed, "bt-transport", cfg.btTransport);
+    ReadString(parsed, "file-allocation", cfg.fileAllocation);
+    ReadBool(parsed, "auto-file-renaming", cfg.autoFileRenaming);
+    ReadBool(parsed, "allow-overwrite", cfg.allowOverwrite);
+    ReadBool(parsed, "check-integrity", cfg.checkIntegrity);
+    ReadBool(parsed, "enable-dht", cfg.enableDht);
+    ReadBool(parsed, "enable-peer-exchange", cfg.enablePeerExchange);
+    ReadBool(parsed, "bt-enable-lpd", cfg.btEnableLpd);
+    ReadBool(parsed, "bt-anonymous-mode", cfg.btAnonymousMode);
+    ReadInt(parsed, "bt-max-peers", cfg.btMaxPeers);
+    ReadBool(parsed, "check-certificate", cfg.checkCertificate);
+    ReadBool(parsed, "disable-ipv6", cfg.disableIpv6);
+    ReadBool(parsed, "remote-time", cfg.remoteTime);
+    ReadString(parsed, "media", cfg.mediaMode);
+    ReadString(parsed, "media-format", cfg.mediaFormat);
+    ReadBool(parsed, "bt-first-last-piece-first", cfg.btFirstLastPieceFirst);
+    ReadBool(parsed, "detach-share-only", cfg.detachShareOnly);
     ReadBool(parsed, "pause-metadata", cfg.pauseMetadata);
     ReadString(parsed, "bt-tracker", cfg.btTracker);
     ReadString(parsed, "all-proxy", cfg.allProxy);
     ReadString(parsed, "no-proxy", cfg.noProxy);
     ReadString(parsed, "user-agent", cfg.userAgent);
     return cfg;
+}
+
+SystemConfig DefaultSystemConfig() {
+    return SystemConfig{};
+}
+
+SystemConfig BuildEffectiveSystemConfig(const SystemConfig& cfg,
+                                        const UserPreferences& prefs,
+                                        bool suspendSpeedLimit) {
+    SystemConfig out = cfg;
+    if (!prefs.useProxy) {
+        out.allProxy.clear();
+        out.noProxy.clear();
+    }
+    if (prefs.keepSeeding) {
+        out.seedRatio = 0.0;
+        out.seedTime = 0;
+    }
+    if (suspendSpeedLimit) {
+        out.maxOverallDownloadLimit = 0;
+        out.maxOverallUploadLimit = 0;
+    }
+    out.btForceEncryption = (out.btEncryption == "required");
+    out.btSaveMetadata = out.rpcSaveUploadMetadata;
+    return out;
+}
+
+std::vector<std::pair<std::string, std::string>> SystemConfigToOptionPairs(const SystemConfig& cfg) {
+    std::vector<std::pair<std::string, std::string>> out;
+    out.reserve(32);
+    out.emplace_back("max-concurrent-downloads", std::to_string(cfg.maxConcurrentDownloads));
+    out.emplace_back("max-connection-per-server", std::to_string(cfg.maxConnectionPerServer));
+    out.emplace_back("split", std::to_string(cfg.split));
+    out.emplace_back("listen-port", std::to_string(cfg.listenPort));
+    out.emplace_back("dht-listen-port", std::to_string(cfg.dhtListenPort));
+    out.emplace_back("seed-ratio", std::format("{:.2f}", cfg.seedRatio));
+    out.emplace_back("seed-time", std::to_string(cfg.seedTime));
+    out.emplace_back("max-overall-download-limit", std::to_string(cfg.maxOverallDownloadLimit));
+    out.emplace_back("max-overall-upload-limit", std::to_string(cfg.maxOverallUploadLimit));
+    out.emplace_back("continue", cfg.continueDownloads ? "true" : "false");
+    out.emplace_back("follow-torrent", cfg.followTorrent ? "true" : "false");
+    out.emplace_back("rpc-save-upload-metadata", cfg.rpcSaveUploadMetadata ? "true" : "false");
+    out.emplace_back("pause-metadata", cfg.pauseMetadata ? "true" : "false");
+
+    const std::string enc =
+        cfg.btForceEncryption ? "required" : (cfg.btEncryption.empty() ? "preferred" : cfg.btEncryption);
+    out.emplace_back("bt-encryption", enc);
+    out.emplace_back("bt-transport", cfg.btTransport.empty() ? "both" : cfg.btTransport);
+    out.emplace_back("file-allocation", cfg.fileAllocation.empty() ? "none" : cfg.fileAllocation);
+    out.emplace_back("auto-file-renaming", cfg.autoFileRenaming ? "true" : "false");
+    out.emplace_back("allow-overwrite", cfg.allowOverwrite ? "true" : "false");
+    out.emplace_back("check-integrity", cfg.checkIntegrity ? "true" : "false");
+    out.emplace_back("enable-dht", cfg.enableDht ? "true" : "false");
+    out.emplace_back("enable-peer-exchange", cfg.enablePeerExchange ? "true" : "false");
+    out.emplace_back("bt-enable-lpd", cfg.btEnableLpd ? "true" : "false");
+    out.emplace_back("bt-anonymous-mode", cfg.btAnonymousMode ? "true" : "false");
+    out.emplace_back("bt-max-peers", std::to_string(std::clamp(cfg.btMaxPeers, 0, 2000)));
+    out.emplace_back("check-certificate", cfg.checkCertificate ? "true" : "false");
+    out.emplace_back("disable-ipv6", cfg.disableIpv6 ? "true" : "false");
+    out.emplace_back("remote-time", cfg.remoteTime ? "true" : "false");
+    out.emplace_back("media", cfg.mediaMode.empty() ? "auto" : cfg.mediaMode);
+    out.emplace_back("media-format", cfg.mediaFormat.empty() ? "mp4" : cfg.mediaFormat);
+    out.emplace_back("bt-first-last-piece-first", cfg.btFirstLastPieceFirst ? "true" : "false");
+    out.emplace_back("detach-share-only", cfg.detachShareOnly ? "true" : "false");
+
+    if (!cfg.dir.empty()) {
+        out.emplace_back("dir", cfg.dir);
+    }
+    if (!cfg.btTracker.empty()) {
+        out.emplace_back("bt-tracker", cfg.btTracker);
+    }
+    if (!cfg.allProxy.empty()) {
+        out.emplace_back("all-proxy", cfg.allProxy);
+    }
+    if (!cfg.noProxy.empty()) {
+        out.emplace_back("no-proxy", cfg.noProxy);
+    }
+    if (!cfg.userAgent.empty()) {
+        out.emplace_back("user-agent", cfg.userAgent);
+    }
+    return out;
 }
 
 }  // namespace motrix::domain

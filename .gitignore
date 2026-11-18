@@ -16,3 +16,4 @@ compile_commands.json
 # Runtime logs & captured test screenshots
 *.log
 /screenshots/
+/dist/

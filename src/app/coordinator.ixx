@@ -10,10 +10,26 @@ import :snapshot;
 
 namespace motrix::app {
 
+export struct CompletedTaskNotice {
+    std::string name;
+    std::string dir;
+    bool btSeeding = false;
+};
+
+export struct TaskCompletionTracker {
+    bool initialSyncSeen = false;
+    std::unordered_map<std::string, motrix::domain::TaskStatus> lastStatuses;
+};
+
+export [[nodiscard]] std::vector<CompletedTaskNotice>
+UpdateTaskCompletionTracker(TaskCompletionTracker& tracker, const AppStateSnapshot& state);
+
 export struct CoordinatorOptions {
-    motrix::domain::ThemePreference initialTheme = motrix::domain::ThemePreference::Light;
+    motrix::domain::ThemePreference initialTheme = motrix::domain::ThemePreference::Auto;
     motrix::core::Locale initialLocale = motrix::core::Locale::EnUS;
     motrix::domain::TaskCategory initialCategory = motrix::domain::TaskCategory::Downloading;
+    int initialDetailTab = 0;
+    std::string initialUri;
     bool populatePreviewTasks = false;
     bool openAddModal = false;
     bool openAboutModal = false;
@@ -47,21 +63,28 @@ public:
     [[nodiscard]] std::shared_ptr<const AppStateSnapshot> Snapshot() const noexcept;
 
     void Dispatch(Command cmd) override;
+    void SetSessionEnding(bool ending);
+    void BeginShutdown();
 
 private:
     struct DispatchOutcome;
 
     void InitStateFromOptions(const CoordinatorOptions& options);
     void StartLiveEngineIfEnabled(const CoordinatorOptions& options);
+    void CreateAndStartEngineRuntime(const AppStateSnapshot& state,
+                                     const std::string& binPathOverride = {});
+    void EnqueueGlobalOptionsWork(std::vector<std::pair<std::string, std::string>> options);
     void PublishMutated(const std::function<void(AppStateSnapshot&)>& mutator);
     void RecomputeStats(AppStateSnapshot& state);
     [[nodiscard]] bool TryHandleImmediateCommand(const Command& cmd);
+    void ApplySelectionCommand(AppStateSnapshot& state, const Command& cmd);
+    static void PruneSelectionGids(AppStateSnapshot& state);
     void ApplyStateCommand(AppStateSnapshot& state, const Command& cmd, DispatchOutcome& outcome);
     [[nodiscard]] bool
     ApplySystemAndFileCommand(AppStateSnapshot& state, const Command& cmd, DispatchOutcome& outcome);
+    [[nodiscard]] bool ApplyDesktopActionCommand(AppStateSnapshot& state, const Command& cmd);
     [[nodiscard]] bool
     ApplyLiveSubmissionCommand(AppStateSnapshot& state, const Command& cmd, DispatchOutcome& outcome);
-    void ApplyLiveTaskCommand(AppStateSnapshot& state, const Command& cmd, DispatchOutcome& outcome);
     void HandleTaskAction(AppStateSnapshot& state, const Command& cmd);
     void HandleBulkAndSubmit(AppStateSnapshot& state, const Command& cmd);
     void HandleEngineSyncUpdate(const EngineSyncUpdate& update);
@@ -75,6 +98,11 @@ private:
     void UpdateLivePlatformStatus(const AppStateSnapshot& state);
     void DetectAndNotifyCompletions(const AppStateSnapshot& state);
     void StartTrackerSyncAsync(std::vector<std::string> sources, std::string proxyUrl);
+    void StartAria2NextUpdateAsync(bool forceReinstall);
+    void ExecuteAria2NextUpdate(std::stop_token st, motrix::engine::Aria2NextUpdateSpec spec);
+    void FinishAria2NextInstall(const std::stop_token& st,
+                                const motrix::engine::Aria2NextUpdateSpec& spec,
+                                const motrix::engine::Aria2NextStageOutcome& stage);
     void HandleTrayAction(motrix::platform::TrayMenuAction action);
     void HandleStartupPayload(const HandleStartupPayloadCmd& cmd);
     static void SeedPreviewTasks(AppStateSnapshot& state);
@@ -90,15 +118,21 @@ private:
     bool persistConfig_ = false;
     bool enableOsIntegration_ = false;
     bool previewMockMode_ = false;
-    bool sleepBlockerActive_ = false;
-    bool initialSyncSeen_ = false;
-    std::unordered_map<std::string, motrix::domain::TaskStatus> lastTaskStatuses_;
+    bool enableEngine_ = false;
+    std::atomic<bool> sleepBlockerActive_{false};
+    std::atomic<bool> hasLiveRuntime_{false};
+    std::atomic<bool> stopping_{false};
+    TaskCompletionTracker completionTracker_;
     std::mutex writeMutex_;
+    std::mutex platformStatusMu_;
+    mutable std::mutex engineLifecycleMu_;
     AppStateSnapshot mutableState_;
     std::atomic<std::shared_ptr<const AppStateSnapshot>> published_;
     std::uint64_t nextLocalGid_ = 1000;
+    std::string enginePathOverride_;
     std::unique_ptr<EngineRuntime> engineRuntime_;
     std::jthread trackerSyncWorker_;
+    std::jthread engineUpdateWorker_;
 };
 
 }  // namespace motrix::app
