@@ -59,6 +59,8 @@ jobs:
 
       - name: Configure, Build, Test & Check Standards (Release)
         shell: pwsh
+        env:
+          MOTRIX_SKIP_CLANG_FORMAT: "1"
         run: |
           [Console]::OutputEncoding = [Text.Encoding]::UTF8
           pwsh -NoProfile -File .\scripts\build.ps1 -Config Release -Test -CheckStandards

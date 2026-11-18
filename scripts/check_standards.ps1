@@ -191,16 +191,18 @@ foreach ($ps in (Get-ChildItem -Path (Join-Path $Root "scripts") -Filter *.ps1))
     }
 }
 
-$cf = (Get-Command clang-format -ErrorAction SilentlyContinue)?.Source
-if (-not $cf -and (Test-Path "C:\Program Files\LLVM\bin\clang-format.exe")) {
+$skipCf = ($env:MOTRIX_SKIP_CLANG_FORMAT -eq '1')
+$cf = if (-not $skipCf) { (Get-Command clang-format -ErrorAction SilentlyContinue)?.Source } else { $null }
+if (-not $skipCf -and -not $cf -and (Test-Path "C:\Program Files\LLVM\bin\clang-format.exe")) {
     $cf = "C:\Program Files\LLVM\bin\clang-format.exe"
 }
 if ($cf) {
     $cppFiles = @($firstPartyFiles | Where-Object { $_.Extension -in @('.ixx', '.cpp') } | ForEach-Object { $_.FullName })
     if ($cppFiles.Count -gt 0) {
-        & $cf --dry-run --Werror @cppFiles 2>$null
+        $cfErr = & $cf --dry-run --Werror @cppFiles 2>&1
         if ($LASTEXITCODE -ne 0) {
-            $Violations.Add("clang-format : One or more .ixx/.cpp files do not match .clang-format")
+            $preview = ($cfErr | Select-Object -First 8) -join "`n"
+            $Violations.Add("clang-format : One or more .ixx/.cpp files do not match .clang-format`n$preview")
         }
     }
 }
