@@ -35,6 +35,28 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-deps-
 
+      - name: Setup aria2-next engine for live tests
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [Console]::OutputEncoding = [Text.Encoding]::UTF8
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "MotrixByImGui-CI" }
+          $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/AnInsomniacy/aria2-next/releases/latest" -Headers $headers
+          $asset = $rel.assets | Where-Object {
+            $n = $_.name.ToLowerInvariant()
+            $n.EndsWith(".exe") -and $n.Contains("windows") -and ($n.Contains("x86_64") -or $n.Contains("x64") -or $n.Contains("amd64")) -and -not ($n.Contains("arm64") -or $n.Contains("386"))
+          } | Select-Object -First 1
+          if ($asset) {
+            $dir = "C:\tools\aria2-next"
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            Invoke-WebRequest -Uri $asset.browser_download_url -Headers $headers -OutFile "$dir\aria2-next.exe"
+            Add-Content -Path $env:GITHUB_PATH -Value $dir
+            Write-Host "Installed $($asset.name) to $dir\aria2-next.exe"
+          } else {
+            Write-Warning "Could not find Windows x64 aria2-next asset; live tests will fall back to PATH."
+          }
+
       - name: Configure, Build, Test & Check Standards (Release)
         shell: pwsh
         run: |

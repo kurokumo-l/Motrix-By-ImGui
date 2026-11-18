@@ -261,7 +261,15 @@ TEST_CASE("Live engine process spawn and WebSocket JSON-RPC smoke test", "[engin
     CHECK(foundWaiting);
 
     CHECK(rpc->ForceRemove(*gidRes).has_value());
-    CHECK(rpc->RemoveDownloadResult(*gidRes).has_value());
+    bool removedResult = false;
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        if (rpc->RemoveDownloadResult(*gidRes).has_value()) {
+            removedResult = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    }
+    CHECK(removedResult);
     CHECK(rpc->PurgeDownloadResult().has_value());
 
     const auto sync2 = rpc->SyncAll();
