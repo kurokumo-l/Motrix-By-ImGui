@@ -5,8 +5,8 @@
 103 ICON "../../assets/icons/tray-active.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,1,0,0
- PRODUCTVERSION 0,1,0,0
+ FILEVERSION 0,1,1,0
+ PRODUCTVERSION 0,1,1,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -23,12 +23,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Motrix By ImGui Contributors"
             VALUE "FileDescription", "Motrix By ImGui (C++23 / Dear ImGui Download Manager)"
-            VALUE "FileVersion", "0.1.0.0"
+            VALUE "FileVersion", "0.1.1.0"
             VALUE "InternalName", "motrix_native"
             VALUE "LegalCopyright", "Copyright (c) 2026 Motrix By ImGui Contributors (MIT)"
             VALUE "OriginalFilename", "motrix_native.exe"
             VALUE "ProductName", "Motrix By ImGui"
-            VALUE "ProductVersion", "0.1.0.0"
+            VALUE "ProductVersion", "0.1.1.0"
         END
     END
     BLOCK "VarFileInfo"
