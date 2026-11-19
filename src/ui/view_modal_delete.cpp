@@ -188,6 +188,16 @@ void RenderDeleteActions(UiFrameContext& ctx, const DeleteLayout& lay, float cur
     ImGui::Dummy(ImVec2(lay.modalW, 0.0f));
 }
 
+[[nodiscard]] bool AllTasksInStopped(const motrix::app::AppStateSnapshot& state,
+                                     std::span<const std::string> gids) noexcept {
+    if (gids.empty()) {
+        return false;
+    }
+    return std::ranges::all_of(gids, [&](const std::string& gid) {
+        return std::ranges::any_of(state.stoppedTasks, [&](const auto& t) { return t.gid == gid; });
+    });
+}
+
 }  // namespace
 
 void RequestTasksRemoval(UiFrameContext& ctx,
@@ -195,6 +205,14 @@ void RequestTasksRemoval(UiFrameContext& ctx,
                          std::string_view singleName) {
     std::erase_if(gids, [](const std::string& g) { return g.empty(); });
     if (gids.empty()) {
+        return;
+    }
+    if (AllTasksInStopped(ctx.state, gids)) {
+        if (gids.size() == 1) {
+            ctx.sink.Dispatch(motrix::app::RemoveTaskCmd{std::move(gids.front()), false});
+        } else {
+            ctx.sink.Dispatch(motrix::app::RemoveTasksCmd{std::move(gids), false});
+        }
         return;
     }
     const bool shiftHeld = ImGui::GetIO().KeyShift;

@@ -52,20 +52,57 @@ void RemoveFileWithRetry(const std::filesystem::path& target) {
     }
 }
 
+[[nodiscard]] bool IsSameDirectoryPath(const std::filesystem::path& a, const std::filesystem::path& b) {
+    std::error_code ec;
+    if (std::filesystem::equivalent(a, b, ec) && !ec) {
+        return true;
+    }
+    const auto stripTrail = [](const std::filesystem::path& p) {
+        std::string utf8 = motrix::core::AsciiLower(motrix::core::PathToUtf8(p.lexically_normal()));
+        while (utf8.size() > 3u && (utf8.back() == '\\' || utf8.back() == '/')) {
+            utf8.pop_back();
+        }
+        return utf8;
+    };
+    return stripTrail(a) == stripTrail(b);
+}
+
+[[nodiscard]] bool IsStrictDescendantDir(std::filesystem::path candidate,
+                                         const std::filesystem::path& root) {
+    if (candidate.empty() || root.empty() || IsSameDirectoryPath(candidate, root)) {
+        return false;
+    }
+    for (int depth = 0; depth < 32; ++depth) {
+        const std::filesystem::path parent = candidate.parent_path();
+        if (parent.empty() || parent == candidate) {
+            return false;
+        }
+        if (IsSameDirectoryPath(parent, root)) {
+            return true;
+        }
+        candidate = parent;
+    }
+    return false;
+}
+
 void PruneEmptyTaskSubdirs(std::filesystem::path dir, const std::filesystem::path& stopRoot) {
-    if (stopRoot.empty()) {
+    if (dir.empty() || stopRoot.empty() || !IsStrictDescendantDir(dir, stopRoot)) {
         return;
     }
-    const std::filesystem::path normRoot = stopRoot.lexically_normal();
     std::error_code ec;
     for (int depth = 0; depth < 16 && !dir.empty(); ++depth) {
-        const std::filesystem::path normDir = dir.lexically_normal();
-        if (normDir == normRoot || !std::filesystem::is_directory(dir, ec)
+        if (IsSameDirectoryPath(dir, stopRoot) || !std::filesystem::is_directory(dir, ec)
             || !std::filesystem::is_empty(dir, ec)) {
             break;
         }
-        std::filesystem::remove(dir, ec);
-        dir = dir.parent_path();
+        if (!std::filesystem::remove(dir, ec) || ec) {
+            break;
+        }
+        const std::filesystem::path parent = dir.parent_path();
+        if (parent.empty() || parent == dir) {
+            break;
+        }
+        dir = parent;
     }
 }
 

@@ -206,6 +206,10 @@ LRESULT HandleMessage(Win32WindowState& state, const WindowMsg& m) {
             return 0;
         }
         case WM_DPICHANGED: {
+            const UINT newDpi = HIWORD(m.wParam);
+            if (newDpi > 0) {
+                state.dpiScale = static_cast<float>(newDpi) / 96.0f;
+            }
             const auto* s = reinterpret_cast<const RECT*>(m.lParam);
             ::SetWindowPos(m.hWnd,
                            nullptr,
@@ -247,7 +251,11 @@ LRESULT HandleMessage(Win32WindowState& state, const WindowMsg& m) {
                 return 0;
             }
             break;
-        case WM_DESTROY: ::PostQuitMessage(0); return 0;
+        case WM_DESTROY:
+            Win32DestroyTrayIcons(state);
+            state.hwnd = nullptr;
+            ::PostQuitMessage(0);
+            return 0;
         default:
             if (LRESULT sr = 0; Win32HandleShellOrEndSession(state, m.msg, m.wParam, sr)) {
                 return sr;

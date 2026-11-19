@@ -1,6 +1,7 @@
 module motrix.core;
 
 import std;
+import :encoding;
 import :error;
 
 namespace motrix::core {
@@ -9,26 +10,28 @@ Result<std::vector<std::uint8_t>> ReadFileBytes(const std::filesystem::path& pat
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
         return std::unexpected(
-            MakeError(ErrorDomain::Core, ErrorCode::NotFound, "File does not exist", path.string()));
+            MakeError(ErrorDomain::Core, ErrorCode::NotFound, "File does not exist", PathToUtf8(path)));
     }
 
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
-        return std::unexpected(MakeError(
-            ErrorDomain::Core, ErrorCode::IoFailure, "Failed to open file for reading", path.string()));
+        return std::unexpected(MakeError(ErrorDomain::Core,
+                                         ErrorCode::IoFailure,
+                                         "Failed to open file for reading",
+                                         PathToUtf8(path)));
     }
 
     const auto size = file.tellg();
     if (size < 0) {
         return std::unexpected(MakeError(
-            ErrorDomain::Core, ErrorCode::IoFailure, "Failed to determine file size", path.string()));
+            ErrorDomain::Core, ErrorCode::IoFailure, "Failed to determine file size", PathToUtf8(path)));
     }
 
     std::vector<std::uint8_t> data(static_cast<std::size_t>(size));
     file.seekg(0, std::ios::beg);
     if (size > 0 && !file.read(reinterpret_cast<char*>(data.data()), size)) {
         return std::unexpected(MakeError(
-            ErrorDomain::Core, ErrorCode::IoFailure, "Failed while reading file", path.string()));
+            ErrorDomain::Core, ErrorCode::IoFailure, "Failed while reading file", PathToUtf8(path)));
     }
     return data;
 }
@@ -69,8 +72,10 @@ Result<void> WriteFileAtomic(const std::filesystem::path& path, std::span<const 
     {
         std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
         if (!out.is_open()) {
-            return std::unexpected(MakeError(
-                ErrorDomain::Core, ErrorCode::IoFailure, "Failed to open temp file", tmpPath.string()));
+            return std::unexpected(MakeError(ErrorDomain::Core,
+                                             ErrorCode::IoFailure,
+                                             "Failed to open temp file",
+                                             PathToUtf8(tmpPath)));
         }
         if (!bytes.empty()) {
             out.write(reinterpret_cast<const char*>(bytes.data()),
@@ -80,8 +85,10 @@ Result<void> WriteFileAtomic(const std::filesystem::path& path, std::span<const 
         if (!out.good()) {
             out.close();
             std::filesystem::remove(tmpPath, ec);
-            return std::unexpected(MakeError(
-                ErrorDomain::Core, ErrorCode::IoFailure, "Failed writing temp file", tmpPath.string()));
+            return std::unexpected(MakeError(ErrorDomain::Core,
+                                             ErrorCode::IoFailure,
+                                             "Failed writing temp file",
+                                             PathToUtf8(tmpPath)));
         }
     }
 

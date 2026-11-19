@@ -131,35 +131,40 @@ ReadRegString(HKEY root, const wchar_t* subkey, const wchar_t* valueName) {
     return false;
 }
 
-[[nodiscard]] motrix::core::Result<void> SetOrCleanScheme(std::wstring_view scheme,
+[[nodiscard]] motrix::core::Result<bool> SetOrCleanScheme(std::wstring_view scheme,
                                                           std::wstring_view description,
                                                           const std::filesystem::path& exePath,
                                                           bool enable) {
     const std::wstring baseKey = L"Software\\Classes\\" + std::wstring(scheme);
+    const std::wstring cmdSubkey = baseKey + L"\\shell\\open\\command";
+    const auto existingCmd = ReadRegString(HKEY_CURRENT_USER, cmdSubkey.c_str(), nullptr);
     if (enable) {
         const std::wstring exeWide = exePath.wstring();
+        const std::wstring desiredCmd = L"\"" + exeWide + L"\" \"%1\"";
+        const auto urlProto = ReadRegString(HKEY_CURRENT_USER, baseKey.c_str(), L"URL Protocol");
+        if (existingCmd && *existingCmd == desiredCmd && urlProto.has_value()) {
+            return false;
+        }
         if (auto res = WriteRegString(HKEY_CURRENT_USER, baseKey, nullptr, std::wstring(description));
             !res) {
-            return res;
+            return std::unexpected(res.error());
         }
         if (auto res = WriteRegString(HKEY_CURRENT_USER, baseKey, L"URL Protocol", L""); !res) {
-            return res;
+            return std::unexpected(res.error());
         }
         if (auto res = WriteRegString(
                 HKEY_CURRENT_USER, baseKey + L"\\DefaultIcon", nullptr, L"\"" + exeWide + L"\",0");
             !res) {
-            return res;
+            return std::unexpected(res.error());
         }
-        return WriteRegString(HKEY_CURRENT_USER,
-                              baseKey + L"\\shell\\open\\command",
-                              nullptr,
-                              L"\"" + exeWide + L"\" \"%1\"");
+        if (auto res = WriteRegString(HKEY_CURRENT_USER, cmdSubkey, nullptr, desiredCmd); !res) {
+            return std::unexpected(res.error());
+        }
+        return true;
     }
 
-    const std::wstring cmdSubkey = baseKey + L"\\shell\\open\\command";
-    const auto existingCmd = ReadRegString(HKEY_CURRENT_USER, cmdSubkey.c_str(), nullptr);
     if (!existingCmd) {
-        return {};
+        return false;
     }
 
     const std::wstring exeWide = exePath.wstring();
@@ -168,14 +173,14 @@ ReadRegString(HKEY root, const wchar_t* subkey, const wchar_t* valueName) {
                              || (!exeWide.empty() && ContainsInsensitive(*existingCmd, exeWide))
                              || (!exeName.empty() && ContainsInsensitive(*existingCmd, exeName));
     if (!ownedBySelf) {
-        return {};
+        return false;
     }
 
     const LSTATUS delSt = ::RegDeleteTreeW(HKEY_CURRENT_USER, baseKey.c_str());
     if (delSt != ERROR_SUCCESS && delSt != ERROR_FILE_NOT_FOUND) {
         return std::unexpected(MakeRegistryError("Failed to remove protocol registration", delSt));
     }
-    return {};
+    return delSt == ERROR_SUCCESS;
 }
 
 }  // namespace
@@ -193,6 +198,10 @@ motrix::core::Result<void> SetOpenAtLoginEnabled(bool enabled, const std::filesy
                                                            "Executable path is empty"));
         }
         const std::wstring cmd = L"\"" + targetExe.wstring() + L"\" --opened-at-login=1";
+        if (const auto existing = ReadRegString(HKEY_CURRENT_USER, kRunSubkey, kRunValueName);
+            existing && *existing == cmd) {
+            return {};
+        }
         return WriteRegString(HKEY_CURRENT_USER, kRunSubkey, kRunValueName, cmd);
     }
 
@@ -228,20 +237,28 @@ motrix::core::Result<void> ApplyProtocolAssociations(const std::filesystem::path
                                                        "Executable path is empty"));
     }
 
-    if (auto res = SetOrCleanScheme(L"motrix", L"URL:Motrix Protocol", targetExe, enableMotrix); !res) {
-        return res;
+    struct SchemeRule {
+        std::wstring_view scheme;
+        std::wstring_view desc;
+        bool enable = false;
+    };
+    const std::array<SchemeRule, 4> rules{{
+        {L"motrix", L"URL:Motrix Protocol", enableMotrix},
+        {L"mo", L"URL:Motrix Protocol", enableMotrix},
+        {L"magnet", L"URL:Magnet Protocol", enableMagnet},
+        {L"thunder", L"URL:Thunder Protocol", enableThunder},
+    }};
+    bool anyChanged = false;
+    for (const auto& r : rules) {
+        const auto res = SetOrCleanScheme(r.scheme, r.desc, targetExe, r.enable);
+        if (!res) {
+            return std::unexpected(res.error());
+        }
+        anyChanged = anyChanged || *res;
     }
-    if (auto res = SetOrCleanScheme(L"mo", L"URL:Motrix Protocol", targetExe, enableMotrix); !res) {
-        return res;
+    if (anyChanged) {
+        ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     }
-    if (auto res = SetOrCleanScheme(L"magnet", L"URL:Magnet Protocol", targetExe, enableMagnet); !res) {
-        return res;
-    }
-    if (auto res = SetOrCleanScheme(L"thunder", L"URL:Thunder Protocol", targetExe, enableThunder);
-        !res) {
-        return res;
-    }
-    ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     return {};
 }
 

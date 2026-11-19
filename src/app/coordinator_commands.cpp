@@ -42,27 +42,6 @@ void ApplyCommonAddFields(EngineWorkCommand& work, const SrcT& src, AppStateSnap
     return out;
 }
 
-[[nodiscard]] std::string ExtractTaskOutName(const motrix::domain::DownloadTaskView& t) {
-    if (t.taskType == motrix::domain::TaskType::BitTorrent || t.files.empty()
-        || t.files[0].path.empty()) {
-        return {};
-    }
-    const std::string_view p = t.files[0].path;
-    const std::size_t slash = p.find_last_of("/\\");
-    return std::string((slash == std::string_view::npos) ? p : p.substr(slash + 1));
-}
-
-[[nodiscard]] std::vector<std::string> CollectTaskFilePaths(const motrix::domain::DownloadTaskView& t) {
-    std::vector<std::string> out;
-    out.reserve(t.files.size());
-    for (const auto& f : t.files) {
-        if (!f.path.empty()) {
-            out.push_back(f.path);
-        }
-    }
-    return out;
-}
-
 void ClearTaskDetailFields(AppStateSnapshot& state, bool clearTask) {
     if (clearTask) {
         state.detailedTask.reset();

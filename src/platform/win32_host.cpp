@@ -31,7 +31,8 @@ struct Win32WindowHost::Impl {
     UniqueHandle wakeEvent;
     Dx11Context dx11;
     InitCallback savedImGuiInit;
-    std::uint32_t uiThreadId = 0;
+    std::atomic<std::uint32_t> uiThreadId{0};
+    std::atomic<void*> wakeupHwnd{nullptr};
     std::mutex uiActionMutex;
     std::vector<std::function<void()>> pendingUiActions;
     bool occluded = false;
@@ -43,7 +44,8 @@ struct Win32WindowHost::Impl {
     std::uint64_t sleepWaits = 0;
 
     void RunOnUiThread(std::function<void()> fn) {
-        if (uiThreadId != 0 && static_cast<std::uint32_t>(::GetCurrentThreadId()) == uiThreadId) {
+        const std::uint32_t tid = uiThreadId.load(std::memory_order_acquire);
+        if (tid != 0 && static_cast<std::uint32_t>(::GetCurrentThreadId()) == tid) {
             fn();
             return;
         }
@@ -54,8 +56,8 @@ struct Win32WindowHost::Impl {
         if (wakeEvent.IsValid()) {
             ::SetEvent(wakeEvent.Get());
         }
-        if (state.hwnd) {
-            ::PostMessageW(static_cast<HWND>(state.hwnd), kWmAppWakeup, 0, 0);
+        if (void* rawHwnd = wakeupHwnd.load(std::memory_order_acquire)) {
+            ::PostMessageW(static_cast<HWND>(rawHwnd), kWmAppWakeup, 0, 0);
         }
     }
 
@@ -185,7 +187,9 @@ struct Win32WindowHost::Impl {
 
     [[nodiscard]] motrix::core::Result<void> SetupWindow(const WindowHostConfig& config,
                                                          bool screenshotMode) {
+        Win32ReleaseTaskbarList(state);
         Win32DestroyTrayIcons(state);
+        wakeupHwnd.store(nullptr, std::memory_order_release);
         state = Win32WindowState{
             .config = config,
             .darkFrame = config.initialDark,
@@ -209,6 +213,7 @@ struct Win32WindowHost::Impl {
         if (auto winRes = Win32CreateWindow(state); !winRes) {
             return std::unexpected(winRes.error());
         }
+        wakeupHwnd.store(state.hwnd, std::memory_order_release);
         if (!screenshotMode && state.enableTrayIcon) {
             Win32InstallOrUpdateTray(state);
         }
@@ -268,8 +273,10 @@ struct Win32WindowHost::Impl {
     }
 
     void ShutdownSession() {
+        wakeupHwnd.store(nullptr, std::memory_order_release);
         Win32SetSleepBlocker(false);
-        Win32UpdateTaskbarProgress(state.hwnd, TaskbarProgressMode::None, 0, 0);
+        Win32SetCachedTaskbarProgress(state, TaskbarProgressMode::None, 0, 0);
+        Win32ReleaseTaskbarList(state);
         Win32DestroyTrayIcons(state);
         if (imguiInitialized) {
             ImGui_ImplDX11_Shutdown();
@@ -289,6 +296,7 @@ Win32WindowHost::Win32WindowHost() : impl_(std::make_unique<Impl>()) {
 Win32WindowHost::~Win32WindowHost() {
     if (impl_) {
         Win32SetSleepBlocker(false);
+        Win32ReleaseTaskbarList(impl_->state);
         Win32DestroyTrayIcons(impl_->state);
     }
 }
@@ -297,13 +305,15 @@ motrix::core::Result<int> Win32WindowHost::Run(const WindowHostConfig& config,
                                                const InitCallback& onImGuiInit,
                                                const FrameCallback& onFrame) {
     ScopedComInit comScope;
-    impl_->uiThreadId = static_cast<std::uint32_t>(::GetCurrentThreadId());
+    impl_->uiThreadId.store(static_cast<std::uint32_t>(::GetCurrentThreadId()),
+                            std::memory_order_release);
     struct RunSessionGuard {
         Impl& impl;
         ~RunSessionGuard() {
             std::lock_guard lock(impl.uiActionMutex);
             impl.pendingUiActions.clear();
-            impl.uiThreadId = 0;
+            impl.wakeupHwnd.store(nullptr, std::memory_order_release);
+            impl.uiThreadId.store(0, std::memory_order_release);
         }
     } runGuard{*impl_};
     const bool screenshotMode = !config.screenshotPath.empty();
@@ -475,8 +485,8 @@ void Win32WindowHost::SetSleepBlockerEnabled(bool active) noexcept {
     });
 }
 void Win32WindowHost::RequestFrame() {
-    if (impl_->uiThreadId != 0
-        && static_cast<std::uint32_t>(::GetCurrentThreadId()) != impl_->uiThreadId) {
+    const std::uint32_t tid = impl_->uiThreadId.load(std::memory_order_acquire);
+    if (tid != 0 && static_cast<std::uint32_t>(::GetCurrentThreadId()) != tid) {
         impl_->TryRunOnUiThread([this] { RequestFrame(); });
         return;
     }

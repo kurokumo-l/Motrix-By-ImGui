@@ -35,6 +35,8 @@ public:
         return &ptr_;
     }
 
+    [[nodiscard]] T* Detach() noexcept { return std::exchange(ptr_, nullptr); }
+
     void Reset(T* newPtr = nullptr) noexcept {
         if (ptr_) {
             ptr_->Release();

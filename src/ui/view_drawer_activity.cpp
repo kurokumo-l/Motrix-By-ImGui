@@ -287,17 +287,46 @@ void DrawInfoHashRow(UiFrameContext& ctx, std::string_view hash) {
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
-[[nodiscard]] RgbaColor BucketColor(const MotrixPalette& p, int nibble) noexcept {
-    if (nibble <= 3) {
+constexpr std::size_t kMaxHeatmapCells = 280;
+
+[[nodiscard]] unsigned ParseHexNibble(char ch) noexcept {
+    if (ch >= '0' && ch <= '9') {
+        return static_cast<unsigned>(ch - '0');
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return static_cast<unsigned>(10 + (ch - 'a'));
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return static_cast<unsigned>(10 + (ch - 'A'));
+    }
+    return 0u;
+}
+
+[[nodiscard]] RgbaColor BucketColorForRatio(const MotrixPalette& p, float ratio) noexcept {
+    if (ratio <= 0.0f) {
         return p.graphicS0;
     }
-    if (nibble <= 7) {
+    if (ratio <= 0.5f) {
         return p.graphicS1;
     }
-    if (nibble <= 11) {
+    if (ratio < 1.0f) {
         return p.graphicS2;
     }
     return p.graphicS3;
+}
+
+[[nodiscard]] float SampleBitfieldBucketRatio(std::string_view bitfieldHex,
+                                              std::size_t cellIdx,
+                                              std::size_t cellCount) noexcept {
+    const std::size_t n = bitfieldHex.size();
+    const std::size_t start = (cellIdx * n) / cellCount;
+    const std::size_t end = std::max(start + 1u, ((cellIdx + 1u) * n) / cellCount);
+    std::uint32_t doneBits = 0u;
+    const std::uint32_t totalBits = static_cast<std::uint32_t>(end - start) * 4u;
+    for (std::size_t i = start; i < end && i < n; ++i) {
+        doneBits += static_cast<std::uint32_t>(std::popcount(ParseHexNibble(bitfieldHex[i])));
+    }
+    return totalBits > 0u ? static_cast<float>(doneBits) / static_cast<float>(totalBits) : 0.0f;
 }
 
 void RenderTaskGraphicHeatmap(UiFrameContext& ctx, std::string_view bitfieldHex) {
@@ -309,7 +338,7 @@ void RenderTaskGraphicHeatmap(UiFrameContext& ctx, std::string_view bitfieldHex)
     const float padX = 16.0f * s;
     const float padY = 14.0f * s;
     const int cols = std::max(1, static_cast<int>((availW - padX * 2.0f + gutter) / step));
-    const std::size_t cellCount = bitfieldHex.size();
+    const std::size_t cellCount = std::min(bitfieldHex.size(), kMaxHeatmapCells);
     const int rows =
         cellCount == 0 ? 1 : static_cast<int>((cellCount + static_cast<std::size_t>(cols) - 1) / cols);
     const float boxH = padY * 2.0f + static_cast<float>(rows) * atom
@@ -326,22 +355,14 @@ void RenderTaskGraphicHeatmap(UiFrameContext& ctx, std::string_view bitfieldHex)
             ? boxMin.x + std::max(padX, (availW - static_cast<float>(cols) * step + gutter) * 0.5f)
             : boxMin.x + padX;
     for (std::size_t i = 0; i < cellCount; ++i) {
-        const char ch = bitfieldHex[i];
-        int nib = 0;
-        if (ch >= '0' && ch <= '9') {
-            nib = ch - '0';
-        } else if (ch >= 'a' && ch <= 'f') {
-            nib = 10 + (ch - 'a');
-        } else if (ch >= 'A' && ch <= 'F') {
-            nib = 10 + (ch - 'A');
-        }
+        const float ratio = SampleBitfieldBucketRatio(bitfieldHex, i, cellCount);
         const int col = static_cast<int>(i) % cols;
         const int row = static_cast<int>(i) / cols;
         const float cx = startX + static_cast<float>(col) * step;
         const float cy = boxMin.y + padY + static_cast<float>(row) * step;
         dl->AddRectFilled(ImVec2(cx, cy),
                           ImVec2(cx + atom, cy + atom),
-                          ToAbgrU32(BucketColor(ctx.palette, nib)),
+                          ToAbgrU32(BucketColorForRatio(ctx.palette, ratio)),
                           2.0f * s);
     }
 

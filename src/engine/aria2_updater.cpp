@@ -224,7 +224,7 @@ motrix::core::Result<Aria2NextReleaseInfo> ParseAria2NextReleaseJson(std::string
 
     Aria2NextReleaseInfo info{};
     if (const auto it = root.find("tag_name"); it != root.end() && it->is_string()) {
-        info.tagName = it->get<std::string>();
+        info.tagName = it->get_ref<const std::string&>();
         info.normalizedVersion = NormalizeVersionTag(info.tagName);
     }
 
@@ -246,12 +246,12 @@ motrix::core::Result<Aria2NextReleaseInfo> ParseAria2NextReleaseJson(std::string
         if (nameIt == item.end() || !nameIt->is_string() || urlIt == item.end() || !urlIt->is_string()) {
             continue;
         }
-        const std::string candidateName = nameIt->get<std::string>();
+        const std::string& candidateName = nameIt->get_ref<const std::string&>();
         const int score = ScoreWindowsX64ExeAsset(candidateName);
         if (score > bestScore) {
             bestScore = score;
             info.assetName = candidateName;
-            rawUrl = urlIt->get<std::string>();
+            rawUrl = urlIt->get_ref<const std::string&>();
             info.expectedSha256 = ExtractAssetSha256(item);
         }
     }

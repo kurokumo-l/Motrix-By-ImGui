@@ -87,11 +87,13 @@ FindGidIndex(const std::vector<motrix::domain::DownloadTaskView>& list, std::str
                                                    const motrix::domain::DownloadTaskView* task,
                                                    std::string_view gid,
                                                    bool deleteFiles) {
+    const bool allowDeleteFiles =
+        deleteFiles && (!task || task->status != motrix::domain::TaskStatus::Complete);
     std::vector<std::string> toDelete;
     std::string taskDir;
     if (task) {
         taskDir = task->dir;
-        if (deleteFiles) {
+        if (allowDeleteFiles) {
             toDelete = CollectFiles(*task);
         }
     }
@@ -100,7 +102,7 @@ FindGidIndex(const std::vector<motrix::domain::DownloadTaskView>& list, std::str
         .gid = std::string(gid),
         .dir = std::move(taskDir),
         .taskInStopped = ContainsTaskGid(state.stoppedTasks, gid),
-        .deleteFiles = deleteFiles,
+        .deleteFiles = allowDeleteFiles,
         .filesToDelete = std::move(toDelete),
     };
 }

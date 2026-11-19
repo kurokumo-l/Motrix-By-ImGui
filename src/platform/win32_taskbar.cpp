@@ -28,6 +28,42 @@ namespace {
     return TBPF_NOPROGRESS;
 }
 
+struct TaskbarProgressValue {
+    TaskbarProgressMode mode = TaskbarProgressMode::None;
+    std::uint64_t completed = 0;
+    std::uint64_t total = 0;
+};
+
+void ApplyTaskbarProgress(ITaskbarList3* taskbar, HWND hwnd, const TaskbarProgressValue& val) noexcept {
+    if (!taskbar || !hwnd) {
+        return;
+    }
+    const TBPFLAG flag = ToWin32ProgressFlag(val.mode);
+    taskbar->SetProgressState(hwnd, flag);
+    if (val.mode == TaskbarProgressMode::Normal || val.mode == TaskbarProgressMode::Error
+        || val.mode == TaskbarProgressMode::Paused) {
+        const std::uint64_t safeTotal = std::max<std::uint64_t>(val.total, 1ull);
+        const std::uint64_t safeCompleted = std::min(val.completed, safeTotal);
+        taskbar->SetProgressValue(hwnd, safeCompleted, safeTotal);
+    }
+}
+
+[[nodiscard]] ITaskbarList3* AcquireCachedTaskbarList(Win32WindowState& state) noexcept {
+    if (state.taskbarList) {
+        return static_cast<ITaskbarList3*>(state.taskbarList);
+    }
+    ComPtr<ITaskbarList3> taskbar;
+    const HRESULT hrCreate = ::CoCreateInstance(CLSID_TaskbarList,
+                                                nullptr,
+                                                CLSCTX_INPROC_SERVER,
+                                                IID_PPV_ARGS(taskbar.ReleaseAndGetAddressOf()));
+    if (FAILED(hrCreate) || !taskbar || FAILED(taskbar->HrInit())) {
+        return nullptr;
+    }
+    state.taskbarList = taskbar.Detach();
+    return static_cast<ITaskbarList3*>(state.taskbarList);
+}
+
 }  // namespace
 
 void Win32UpdateTaskbarProgress(void* hwndVoid,
@@ -51,17 +87,7 @@ void Win32UpdateTaskbarProgress(void* hwndVoid,
     if (FAILED(hrCreate) || !taskbar || FAILED(taskbar->HrInit())) {
         return;
     }
-
-    HWND hwnd = static_cast<HWND>(hwndVoid);
-    const TBPFLAG flag = ToWin32ProgressFlag(mode);
-    taskbar->SetProgressState(hwnd, flag);
-
-    if (mode == TaskbarProgressMode::Normal || mode == TaskbarProgressMode::Error
-        || mode == TaskbarProgressMode::Paused) {
-        const std::uint64_t safeTotal = std::max<std::uint64_t>(total, 1ull);
-        const std::uint64_t safeCompleted = std::min(completed, safeTotal);
-        taskbar->SetProgressValue(hwnd, safeCompleted, safeTotal);
-    }
+    ApplyTaskbarProgress(taskbar.Get(), static_cast<HWND>(hwndVoid), {mode, completed, total});
 }
 
 void Win32SetCachedTaskbarProgress(Win32WindowState& state,
@@ -73,7 +99,18 @@ void Win32SetCachedTaskbarProgress(Win32WindowState& state,
         return;
     }
     std::tie(state.lastProgressMode, state.lastProgressCompleted, state.lastProgressTotal) = next;
-    Win32UpdateTaskbarProgress(state.hwnd, mode, completed, total);
+    if (!state.hwnd) {
+        return;
+    }
+    ApplyTaskbarProgress(
+        AcquireCachedTaskbarList(state), static_cast<HWND>(state.hwnd), {mode, completed, total});
+}
+
+void Win32ReleaseTaskbarList(Win32WindowState& state) noexcept {
+    if (state.taskbarList) {
+        static_cast<ITaskbarList3*>(state.taskbarList)->Release();
+        state.taskbarList = nullptr;
+    }
 }
 
 void Win32RegisterShellMessages(Win32WindowState& state) noexcept {
@@ -120,11 +157,12 @@ bool Win32HandleShellOrEndSession(Win32WindowState& state,
         return true;
     }
     if (state.wmTaskbarButtonCreated != 0 && msg == state.wmTaskbarButtonCreated) {
-        if (state.lastProgressMode != TaskbarProgressMode::None) {
-            Win32UpdateTaskbarProgress(state.hwnd,
-                                       state.lastProgressMode,
-                                       state.lastProgressCompleted,
-                                       state.lastProgressTotal);
+        Win32ReleaseTaskbarList(state);
+        if (state.hwnd && state.lastProgressMode != TaskbarProgressMode::None) {
+            ApplyTaskbarProgress(
+                AcquireCachedTaskbarList(state),
+                static_cast<HWND>(state.hwnd),
+                {state.lastProgressMode, state.lastProgressCompleted, state.lastProgressTotal});
         }
         resultOut = 0;
         return true;

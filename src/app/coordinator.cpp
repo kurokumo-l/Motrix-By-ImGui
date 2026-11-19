@@ -188,13 +188,18 @@ void AppCoordinator::CreateAndStartEngineRuntime(const AppStateSnapshot& state,
         runtime->SetDetailGid(state.detailedTaskGid);
     }
     runtime->Start();
-    std::scoped_lock lock(engineLifecycleMu_);
-    if (stopping_.load(std::memory_order_acquire)) {
-        runtime.reset();
-        return;
+    std::unique_ptr<EngineRuntime> discarded;
+    {
+        std::scoped_lock lock(engineLifecycleMu_);
+        if (stopping_.load(std::memory_order_acquire)) {
+            discarded = std::move(runtime);
+        } else {
+            discarded = std::move(engineRuntime_);
+            hasLiveRuntime_.store(true, std::memory_order_release);
+            engineRuntime_ = std::move(runtime);
+        }
     }
-    hasLiveRuntime_.store(true, std::memory_order_release);
-    engineRuntime_ = std::move(runtime);
+    discarded.reset();
 }
 
 void AppCoordinator::EnqueueGlobalOptionsWork(std::vector<std::pair<std::string, std::string>> options) {

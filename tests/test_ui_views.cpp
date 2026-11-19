@@ -313,3 +313,54 @@ TEST_CASE("motrix.ui Detail drawer suppresses background list shortcuts and clip
     });
     CHECK(sawSelectAll);
 }
+
+TEST_CASE("motrix.ui Removing completed task record never deletes local files",
+          "[ui][stopped][delete]") {
+    HeadlessUiRunner ui(900.0f, 640.0f);
+    motrix::app::AppStateSnapshot state;
+    auto doneTask = MakeSampleTask(false);
+    doneTask.gid = "done000000000001";
+    doneTask.status = motrix::domain::TaskStatus::Complete;
+    doneTask.completedLength = doneTask.totalLength;
+    state.stoppedTasks.push_back(doneTask);
+    state.activeCategory = motrix::domain::TaskCategory::Stopped;
+    state.selectedTaskGid = doneTask.gid;
+    state.selectedTaskGids = {doneTask.gid};
+    state.prefs.deleteFilesWhenDeleteTask = true;
+    state.prefs.noConfirmBeforeDeleteTask = true;
+
+    (void)ui.Step(state, 900.0f, 640.0f);
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddKeyEvent(ImGuiMod_Shift, true);
+    io.AddKeyEvent(ImGuiKey_Delete, true);
+    (void)ui.Step(state, 900.0f, 640.0f);
+    io.AddKeyEvent(ImGuiKey_Delete, false);
+    io.AddKeyEvent(ImGuiMod_Shift, false);
+    (void)ui.Step(state, 900.0f, 640.0f);
+
+    bool sawSafeRemove = false;
+    for (const auto& cmd : ui.sink.commands) {
+        if (const auto* rm = std::get_if<motrix::app::RemoveTaskCmd>(&cmd)) {
+            CHECK(rm->gid == doneTask.gid);
+            CHECK_FALSE(rm->deleteFiles);
+            sawSafeRemove = true;
+        }
+    }
+    CHECK(sawSafeRemove);
+}
+
+TEST_CASE("motrix.ui Large BT bitfield heatmap stays bounded in vertex count", "[ui][drawer][heatmap]") {
+    HeadlessUiRunner ui(1024.0f, 768.0f);
+    motrix::app::AppStateSnapshot state;
+    auto hugeBt = MakeSampleTask(true);
+    hugeBt.bitfieldHex = std::string(20000, 'a');
+    state.downloadingTasks.push_back(hugeBt);
+    state.detailedTaskGid = hugeBt.gid;
+    state.detailedTask = hugeBt;
+    state.activeDetailTab = 1;
+
+    ImDrawData* dd = ui.Step(state, 1024.0f, 768.0f);
+    REQUIRE(dd != nullptr);
+    CHECK(dd->Valid);
+    CHECK(dd->TotalVtxCount < 30000);
+}

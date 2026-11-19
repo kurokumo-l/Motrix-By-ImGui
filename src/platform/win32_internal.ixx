@@ -14,6 +14,7 @@ export struct Win32WindowState {
     void* hInstance = nullptr;
     void* trayIdleIcon = nullptr;
     void* trayActiveIcon = nullptr;
+    void* taskbarList = nullptr;
     float dpiScale = 1.0f;
     float titlebarHeightPx = 36.0f;
     bool darkFrame = false;
@@ -85,6 +86,7 @@ export void Win32SetCachedTaskbarProgress(Win32WindowState& state,
                                           TaskbarProgressMode mode,
                                           std::uint64_t completed,
                                           std::uint64_t total) noexcept;
+export void Win32ReleaseTaskbarList(Win32WindowState& state) noexcept;
 export void Win32RegisterShellMessages(Win32WindowState& state) noexcept;
 export [[nodiscard]] bool Win32HandleShellOrEndSession(Win32WindowState& state,
                                                        std::uint32_t msg,
