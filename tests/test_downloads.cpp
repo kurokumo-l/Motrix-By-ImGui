@@ -253,9 +253,11 @@ TEST_CASE("Live controls: pause, resume, bulk pause/resume, restart error, delet
     }));
     CHECK(VerifyFileMatches(td.root / "dl" / "slow_ctrl.bin", slowExp));
 
+    // Removing a completed task record must preserve the downloaded file even if deleteFiles is
+    // requested.
     coord.Dispatch(RemoveTaskCmd{slowGid, true});
     REQUIRE(WaitUntil([&] { return FindByGid(*coord.Snapshot(), slowGid) == nullptr; }));
-    CHECK_FALSE(std::filesystem::exists(td.root / "dl" / "slow_ctrl.bin"));
+    CHECK(std::filesystem::exists(td.root / "dl" / "slow_ctrl.bin"));
 
     coord.Dispatch(SubmitAddUriCmd{
         .uris = {server.BaseUrl() + "/toggle/dl?id=7"},
