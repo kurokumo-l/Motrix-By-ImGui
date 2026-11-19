@@ -73,6 +73,10 @@ TEST_CASE("motrix.domain config schema defaults align with personal preferences"
     CHECK(prefs.aria2NextUpdateUrl == kDefaultAria2NextUpdateUrl);
     CHECK(prefs.newTaskShowDownloading);
     CHECK(prefs.enableUpnp);
+    CHECK_FALSE(prefs.protocolMagnet);
+    CHECK_FALSE(prefs.protocolThunder);
+    CHECK_FALSE(prefs.protocolMotrix);
+    CHECK_FALSE(prefs.protocolTorrent);
 
     const auto sys = DefaultSystemConfig();
     CHECK(sys.rpcListenPort == 16800);

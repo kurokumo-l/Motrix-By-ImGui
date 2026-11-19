@@ -18,6 +18,10 @@ namespace {
 
 constexpr wchar_t kRunSubkey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t kRunValueName[] = L"MotrixNative";
+constexpr wchar_t kTorrentProgId[] = L"MotrixNative.Torrent";
+constexpr wchar_t kTorrentExtKey[] = L"Software\\Classes\\.torrent";
+constexpr wchar_t kTorrentOpenWithKey[] = L"Software\\Classes\\.torrent\\OpenWithProgids";
+constexpr wchar_t kTorrentProgIdKey[] = L"Software\\Classes\\MotrixNative.Torrent";
 
 class UniqueHKey {
 public:
@@ -183,6 +187,89 @@ ReadRegString(HKEY root, const wchar_t* subkey, const wchar_t* valueName) {
     return delSt == ERROR_SUCCESS;
 }
 
+[[nodiscard]] motrix::core::Result<bool>
+DeleteRegValueIfPresent(HKEY root, const wchar_t* subkey, const wchar_t* valueName) {
+    UniqueHKey key;
+    const LSTATUS openSt = ::RegOpenKeyExW(root, subkey, 0, KEY_SET_VALUE, key.Put());
+    if (openSt == ERROR_FILE_NOT_FOUND) {
+        return false;
+    }
+    if (openSt != ERROR_SUCCESS) {
+        return std::unexpected(MakeRegistryError("Failed to open registry key for cleanup", openSt));
+    }
+    const LSTATUS delSt = ::RegDeleteValueW(key.Get(), valueName);
+    if (delSt == ERROR_FILE_NOT_FOUND) {
+        return false;
+    }
+    if (delSt != ERROR_SUCCESS) {
+        return std::unexpected(MakeRegistryError("Failed to delete registry value", delSt));
+    }
+    return true;
+}
+
+[[nodiscard]] motrix::core::Result<bool>
+SetOrCleanTorrentAssociation(const std::filesystem::path& exePath, bool enable) {
+    const std::wstring cmdSubkey = std::wstring(kTorrentProgIdKey) + L"\\shell\\open\\command";
+    const auto existingProgCmd = ReadRegString(HKEY_CURRENT_USER, cmdSubkey.c_str(), nullptr);
+    const auto existingExtProgId = ReadRegString(HKEY_CURRENT_USER, kTorrentExtKey, nullptr);
+
+    if (enable) {
+        const std::wstring exeWide = exePath.wstring();
+        const std::wstring desiredCmd = L"\"" + exeWide + L"\" \"%1\"";
+        const auto existingOpenWith =
+            ReadRegString(HKEY_CURRENT_USER, kTorrentOpenWithKey, kTorrentProgId);
+        if (existingProgCmd && *existingProgCmd == desiredCmd && existingExtProgId
+            && *existingExtProgId == kTorrentProgId && existingOpenWith.has_value()) {
+            return false;
+        }
+        if (auto res = WriteRegString(HKEY_CURRENT_USER, kTorrentProgIdKey, nullptr, L"BitTorrent File");
+            !res) {
+            return std::unexpected(res.error());
+        }
+        if (auto res = WriteRegString(HKEY_CURRENT_USER,
+                                      std::wstring(kTorrentProgIdKey) + L"\\DefaultIcon",
+                                      nullptr,
+                                      L"\"" + exeWide + L"\",0");
+            !res) {
+            return std::unexpected(res.error());
+        }
+        if (auto res = WriteRegString(HKEY_CURRENT_USER, cmdSubkey, nullptr, desiredCmd); !res) {
+            return std::unexpected(res.error());
+        }
+        if (auto res = WriteRegString(HKEY_CURRENT_USER, kTorrentExtKey, nullptr, kTorrentProgId);
+            !res) {
+            return std::unexpected(res.error());
+        }
+        if (auto res = WriteRegString(HKEY_CURRENT_USER, kTorrentOpenWithKey, kTorrentProgId, L"");
+            !res) {
+            return std::unexpected(res.error());
+        }
+        return true;
+    }
+
+    bool changed = false;
+    if (existingExtProgId && ContainsInsensitive(*existingExtProgId, kTorrentProgId)) {
+        const auto delRes = DeleteRegValueIfPresent(HKEY_CURRENT_USER, kTorrentExtKey, nullptr);
+        if (!delRes) {
+            return std::unexpected(delRes.error());
+        }
+        changed = changed || *delRes;
+    }
+    const auto delOw = DeleteRegValueIfPresent(HKEY_CURRENT_USER, kTorrentOpenWithKey, kTorrentProgId);
+    if (!delOw) {
+        return std::unexpected(delOw.error());
+    }
+    changed = changed || *delOw;
+    if (existingProgCmd) {
+        const LSTATUS delSt = ::RegDeleteTreeW(HKEY_CURRENT_USER, kTorrentProgIdKey);
+        if (delSt != ERROR_SUCCESS && delSt != ERROR_FILE_NOT_FOUND) {
+            return std::unexpected(MakeRegistryError("Failed to remove .torrent ProgID", delSt));
+        }
+        changed = changed || (delSt == ERROR_SUCCESS);
+    }
+    return changed;
+}
+
 }  // namespace
 
 std::filesystem::path CurrentExecutablePath() {
@@ -227,11 +314,11 @@ bool IsOpenAtLoginEnabled() {
 }
 
 motrix::core::Result<void> ApplyProtocolAssociations(const std::filesystem::path& exePath,
-                                                     bool enableMotrix,
-                                                     bool enableMagnet,
-                                                     bool enableThunder) {
+                                                     const ProtocolAssociationOptions& options) {
     const std::filesystem::path targetExe = exePath.empty() ? CurrentExecutablePath() : exePath;
-    if (targetExe.empty() && (enableMotrix || enableMagnet || enableThunder)) {
+    const bool anyEnabled =
+        options.enableMotrix || options.enableMagnet || options.enableThunder || options.enableTorrent;
+    if (targetExe.empty() && anyEnabled) {
         return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Platform,
                                                        motrix::core::ErrorCode::InvalidArgument,
                                                        "Executable path is empty"));
@@ -243,10 +330,10 @@ motrix::core::Result<void> ApplyProtocolAssociations(const std::filesystem::path
         bool enable = false;
     };
     const std::array<SchemeRule, 4> rules{{
-        {L"motrix", L"URL:Motrix Protocol", enableMotrix},
-        {L"mo", L"URL:Motrix Protocol", enableMotrix},
-        {L"magnet", L"URL:Magnet Protocol", enableMagnet},
-        {L"thunder", L"URL:Thunder Protocol", enableThunder},
+        {L"motrix", L"URL:Motrix Protocol", options.enableMotrix},
+        {L"mo", L"URL:Motrix Protocol", options.enableMotrix},
+        {L"magnet", L"URL:Magnet Protocol", options.enableMagnet},
+        {L"thunder", L"URL:Thunder Protocol", options.enableThunder},
     }};
     bool anyChanged = false;
     for (const auto& r : rules) {
@@ -256,6 +343,11 @@ motrix::core::Result<void> ApplyProtocolAssociations(const std::filesystem::path
         }
         anyChanged = anyChanged || *res;
     }
+    const auto torRes = SetOrCleanTorrentAssociation(targetExe, options.enableTorrent);
+    if (!torRes) {
+        return std::unexpected(torRes.error());
+    }
+    anyChanged = anyChanged || *torRes;
     if (anyChanged) {
         ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     }
@@ -282,6 +374,20 @@ bool IsProtocolRegisteredForSelf(std::string_view scheme, const std::filesystem:
         return false;
     }
     return ContainsInsensitive(*cmd, targetExe.wstring());
+}
+
+bool IsTorrentAssociationRegisteredForSelf(const std::filesystem::path& exePath) {
+    const std::filesystem::path targetExe = exePath.empty() ? CurrentExecutablePath() : exePath;
+    if (targetExe.empty()) {
+        return false;
+    }
+    const auto extProgId = ReadRegString(HKEY_CURRENT_USER, kTorrentExtKey, nullptr);
+    if (!extProgId || !ContainsInsensitive(*extProgId, kTorrentProgId)) {
+        return false;
+    }
+    const std::wstring cmdSubkey = std::wstring(kTorrentProgIdKey) + L"\\shell\\open\\command";
+    const auto cmd = ReadRegString(HKEY_CURRENT_USER, cmdSubkey.c_str(), nullptr);
+    return cmd.has_value() && ContainsInsensitive(*cmd, targetExe.wstring());
 }
 
 namespace {

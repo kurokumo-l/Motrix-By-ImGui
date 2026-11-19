@@ -25,6 +25,7 @@ TEST_CASE("motrix.domain UserPreferences M4 fields JSON roundtrip and nested pro
     prefs.protocolMagnet = false;
     prefs.protocolThunder = true;
     prefs.protocolMotrix = false;
+    prefs.protocolTorrent = true;
     prefs.windowX = -120;
     prefs.windowY = 48;
     prefs.windowWidth = 1280;
@@ -42,6 +43,7 @@ TEST_CASE("motrix.domain UserPreferences M4 fields JSON roundtrip and nested pro
     CHECK(parsed->protocolMagnet == false);
     CHECK(parsed->protocolThunder == true);
     CHECK(parsed->protocolMotrix == false);
+    CHECK(parsed->protocolTorrent == true);
     REQUIRE(parsed->windowX.has_value());
     REQUIRE(parsed->windowY.has_value());
     CHECK(*parsed->windowX == -120);
@@ -67,18 +69,20 @@ TEST_CASE("motrix.domain UserPreferences M4 fields JSON roundtrip and nested pro
     CHECK(parsedEmptyTrackers->trackerSource.empty());
 
     const auto parsedFlatProtocols = ParseUserPreferencesJson(
-        R"({"protocolMagnet":false,"protocolThunder":false,"protocolMotrix":true})");
+        R"({"protocolMagnet":false,"protocolThunder":false,"protocolMotrix":true,"protocolTorrent":true})");
     REQUIRE(parsedFlatProtocols.has_value());
     CHECK(parsedFlatProtocols->protocolMagnet == false);
     CHECK(parsedFlatProtocols->protocolThunder == false);
     CHECK(parsedFlatProtocols->protocolMotrix == true);
+    CHECK(parsedFlatProtocols->protocolTorrent == true);
 
-    const auto parsedNestedProtocols =
-        ParseUserPreferencesJson(R"({"protocols":{"magnet":false,"thunder":true,"motrix":false}})");
+    const auto parsedNestedProtocols = ParseUserPreferencesJson(
+        R"({"protocols":{"magnet":false,"thunder":true,"motrix":false,"torrent":true}})");
     REQUIRE(parsedNestedProtocols.has_value());
     CHECK(parsedNestedProtocols->protocolMagnet == false);
     CHECK(parsedNestedProtocols->protocolThunder == true);
     CHECK(parsedNestedProtocols->protocolMotrix == false);
+    CHECK(parsedNestedProtocols->protocolTorrent == true);
 }
 
 TEST_CASE("motrix.domain tracker presets, normalization, boundary reduction, and auto-sync",

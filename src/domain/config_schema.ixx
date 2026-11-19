@@ -49,9 +49,10 @@ export struct UserPreferences {
     std::vector<std::string> historyDirectories;
     std::vector<std::string> trackerSource;
     std::int64_t lastSyncTrackerTime = 0;
-    bool protocolMagnet = true;
-    bool protocolThunder = true;
-    bool protocolMotrix = true;
+    bool protocolMagnet = false;
+    bool protocolThunder = false;
+    bool protocolMotrix = false;
+    bool protocolTorrent = false;
     std::optional<int> windowX;
     std::optional<int> windowY;
     int windowWidth = 1024;

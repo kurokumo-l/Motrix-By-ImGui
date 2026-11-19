@@ -103,11 +103,13 @@ void AppCoordinator::ApplyDesktopIntegration(const AppStateSnapshot& state) {
     if (auto res = motrix::platform::SetOpenAtLoginEnabled(state.prefs.openAtLogin, exePath); !res) {
         logger_.Warn("desktop", "Failed updating openAtLogin registry: {}", res.error().message);
     }
-    if (auto res = motrix::platform::ApplyProtocolAssociations(exePath,
-                                                               state.prefs.protocolMotrix,
-                                                               state.prefs.protocolMagnet,
-                                                               state.prefs.protocolThunder);
-        !res) {
+    const motrix::platform::ProtocolAssociationOptions protoOpts{
+        .enableMotrix = state.prefs.protocolMotrix,
+        .enableMagnet = state.prefs.protocolMagnet,
+        .enableThunder = state.prefs.protocolThunder,
+        .enableTorrent = state.prefs.protocolTorrent,
+    };
+    if (auto res = motrix::platform::ApplyProtocolAssociations(exePath, protoOpts); !res) {
         logger_.Warn("desktop", "Failed updating protocol associations: {}", res.error().message);
     }
 }

@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 4.1)
 
+# Statically link MSVC CRT (/MT in Release, /MTd in Debug) so Release builds are fully portable
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 # Must be set BEFORE project() for CMake experimental C++23 `import std;` support
 if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.4.0")
     set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "f35a9ac6-8463-4d38-8eec-5d6008153e7d")
@@ -7,7 +10,7 @@ elseif(CMAKE_VERSION VERSION_GREATER_EQUAL "4.3.0")
     set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
 endif()
 
-project(motrix_native VERSION 0.1.1 LANGUAGES C CXX)
+project(motrix_native VERSION 0.1.2 LANGUAGES C CXX)
 
 if(NOT CMAKE_GENERATOR STREQUAL "Ninja")
     message(FATAL_ERROR "Motrix Native requires the Ninja generator for C++23 import std; support.")

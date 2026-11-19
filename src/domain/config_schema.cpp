@@ -176,6 +176,7 @@ std::string SerializeUserPreferencesJson(const UserPreferences& prefs) {
              {"magnet", prefs.protocolMagnet},
              {"thunder", prefs.protocolThunder},
              {"motrix", prefs.protocolMotrix},
+             {"torrent", prefs.protocolTorrent},
          }},
         {"windowState", windowState},
     };
@@ -247,10 +248,12 @@ motrix::core::Result<UserPreferences> ParseUserPreferencesJson(std::string_view 
     ReadBool(parsed, "protocolMagnet", prefs.protocolMagnet);
     ReadBool(parsed, "protocolThunder", prefs.protocolThunder);
     ReadBool(parsed, "protocolMotrix", prefs.protocolMotrix);
+    ReadBool(parsed, "protocolTorrent", prefs.protocolTorrent);
     if (const auto protoIt = parsed.find("protocols"); protoIt != parsed.end() && protoIt->is_object()) {
         ReadBool(*protoIt, "magnet", prefs.protocolMagnet);
         ReadBool(*protoIt, "thunder", prefs.protocolThunder);
         ReadBool(*protoIt, "motrix", prefs.protocolMotrix);
+        ReadBool(*protoIt, "torrent", prefs.protocolTorrent);
     }
 
     if (const auto winIt = parsed.find("windowState"); winIt != parsed.end() && winIt->is_object()) {

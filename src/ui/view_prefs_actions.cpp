@@ -92,7 +92,8 @@ bool IsUserPrefsDraftDirty(const motrix::domain::UserPreferences& pr, const Pref
         || ps.deleteFilesWhenDeleteTask != pr.deleteFilesWhenDeleteTask || ps.enableUpnp != pr.enableUpnp
         || ps.autoSyncTracker != pr.autoSyncTracker || ps.useProxy != pr.useProxy
         || ps.keepSeeding != pr.keepSeeding || ps.protocolMagnet != pr.protocolMagnet
-        || ps.protocolThunder != pr.protocolThunder || ps.protocolMotrix != pr.protocolMotrix) {
+        || ps.protocolThunder != pr.protocolThunder || ps.protocolMotrix != pr.protocolMotrix
+        || ps.protocolTorrent != pr.protocolTorrent) {
         return true;
     }
     if (std::string_view(ps.enginePathBuffer.data()) != pr.engineBinPath

@@ -50,9 +50,10 @@ export struct PrefsFormState {
     bool deleteFilesWhenDeleteTask = false;
     bool autoSyncTracker = true;
     std::vector<bool> trackerSourceSelected;
-    bool protocolMagnet = true;
-    bool protocolThunder = true;
-    bool protocolMotrix = true;
+    bool protocolMagnet = false;
+    bool protocolThunder = false;
+    bool protocolMotrix = false;
+    bool protocolTorrent = false;
     std::int64_t loadedSyncTrackerTime = -1;
     int lastSnapTheme = 1;
     int lastSnapLocale = 0;

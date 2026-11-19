@@ -226,6 +226,7 @@ constexpr TranslationEntry kEntries[] = {
     {"prefs.proto_motrix", "Motrix [ motrix:// ]", "Motrix 链接 [ motrix:// ]"},
     {"prefs.proto_magnet", "Magnet [ magnet:// ]", "磁力链接 [ magnet:// ]"},
     {"prefs.proto_thunder", "Thunder [ thunder:// ]", "迅雷链接 [ thunder:// ]"},
+    {"prefs.proto_torrent", "Torrent File [ .torrent ]", "种子文件 [ .torrent ]"},
     {"prefs.user_agent", "User-Agent:", "User-Agent:"},
     {"prefs.mock_user_agent", "Mock User-Agent", "模拟用户代理（UA）"},
     {"prefs.developer", "Developer:", "开发者:"},

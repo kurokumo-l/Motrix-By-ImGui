@@ -119,10 +119,18 @@ export [[nodiscard]] std::filesystem::path CurrentExecutablePath();
 export [[nodiscard]] motrix::core::Result<void>
 SetOpenAtLoginEnabled(bool enabled, const std::filesystem::path& exePath);
 export [[nodiscard]] bool IsOpenAtLoginEnabled();
-export [[nodiscard]] motrix::core::Result<void> ApplyProtocolAssociations(
-    const std::filesystem::path& exePath, bool enableMotrix, bool enableMagnet, bool enableThunder);
+export struct ProtocolAssociationOptions {
+    bool enableMotrix = false;
+    bool enableMagnet = false;
+    bool enableThunder = false;
+    bool enableTorrent = false;
+};
+export [[nodiscard]] motrix::core::Result<void>
+ApplyProtocolAssociations(const std::filesystem::path& exePath,
+                          const ProtocolAssociationOptions& options);
 export [[nodiscard]] bool IsProtocolRegisteredForSelf(std::string_view scheme,
                                                       const std::filesystem::path& exePath);
+export [[nodiscard]] bool IsTorrentAssociationRegisteredForSelf(const std::filesystem::path& exePath);
 export enum class MotrixIconKind {
     TrayIdle,
     TrayActive,

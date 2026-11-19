@@ -193,6 +193,7 @@ void LoadPrefsFromSnapshot(const motrix::app::AppStateSnapshot& st, PrefsFormSta
     ps.protocolMagnet = pr.protocolMagnet;
     ps.protocolThunder = pr.protocolThunder;
     ps.protocolMotrix = pr.protocolMotrix;
+    ps.protocolTorrent = pr.protocolTorrent;
     ps.logLevelIndex = FindOptIndex(kLogLevels, (pr.logLevel == "notice") ? "warn" : pr.logLevel, 2);
     CopyUtf8ToBuffer(pr.engineBinPath, ps.enginePathBuffer.data(), ps.enginePathBuffer.size());
     CopyUtf8ToBuffer(pr.aria2NextUpdateUrl, ps.aria2NextUrlBuffer.data(), ps.aria2NextUrlBuffer.size());
@@ -247,6 +248,7 @@ bool ApplyPrefsDraft(const motrix::app::AppStateSnapshot& st,
     pr.protocolMagnet = ps.protocolMagnet;
     pr.protocolThunder = ps.protocolThunder;
     pr.protocolMotrix = ps.protocolMotrix;
+    pr.protocolTorrent = ps.protocolTorrent;
     pr.engineBinPath = ps.enginePathBuffer.data();
     pr.aria2NextUpdateUrl = ps.aria2NextUrlBuffer.data();
     pr.aria2NextMirrorPrefix = ps.aria2NextMirrorBuffer.data();

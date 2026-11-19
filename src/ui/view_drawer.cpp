@@ -173,20 +173,18 @@ void RenderDrawerPill(UiFrameContext& ctx,
     const float iconSz = 14.0f * s;
     const float pillW = padX * 2.0f + static_cast<float>(actions.size()) * slotW;
     const ImVec2 pillMax(pillMin.x + pillW, pillMin.y + pillH);
-    const bool pillHovered = ImGui::IsMouseHoveringRect(pillMin, pillMax);
+    const bool pillHovered = ImGui::IsMouseHoveringRect(pillMin, pillMax, false);
+    const float pillHovT =
+        AnimStep(&ctx.anim, {HashId("drawer.pill.hover"), pillHovered ? 1.0f : 0.0f, 18.0f, 0.0f});
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(pillMin,
-                      pillMax,
-                      ToAbgrU32(pillHovered ? ctx.palette.pillHoverBg : ctx.palette.pillBg),
-                      pillH * 0.5f);
-    dl->AddRect(pillMin,
-                pillMax,
-                ToAbgrU32(pillHovered ? ctx.palette.pillHoverBorder : ctx.palette.pillBorder),
-                pillH * 0.5f,
-                0,
-                1.0f);
+    const RgbaColor pillBg = LerpColor(ctx.palette.pillBg, ctx.palette.pillHoverBg, pillHovT);
+    const RgbaColor pillBorder =
+        LerpColor(ctx.palette.pillBorder, ctx.palette.pillHoverBorder, pillHovT);
+    dl->AddRectFilled(pillMin, pillMax, ToAbgrU32(pillBg), pillH * 0.5f);
+    dl->AddRect(pillMin, pillMax, ToAbgrU32(pillBorder), pillH * 0.5f, 0, 1.0f);
 
+    const RgbaColor iconCol = LerpColor(ctx.palette.pillIcon, ctx.palette.pillHoverIcon, pillHovT);
     for (std::size_t i = 0; i < actions.size(); ++i) {
         IdGuard id(static_cast<int>(i));
         const float sx = pillMin.x + padX + static_cast<float>(i) * slotW;
@@ -201,16 +199,22 @@ void RenderDrawerPill(UiFrameContext& ctx,
                           {ctx.tr.Tr(actions[i].tipKey), ElTooltipPlacement::Top});
         }
         const float t =
-            AnimStep(&ctx.anim, {ImGui::GetItemID() ^ 0xD201u, hovered ? 1.0f : 0.0f, 20.0f, 0.0f});
-        const RgbaColor baseIcon = pillHovered ? ctx.palette.pillHoverIcon : ctx.palette.pillIcon;
-        const RgbaColor fg = LerpColor(baseIcon, ctx.palette.primary, t);
+            AnimStep(&ctx.anim, {ImGui::GetItemID() ^ 0xD201u, hovered ? 1.0f : 0.0f, 22.0f, 0.0f});
+        if (t > 0.01f) {
+            const float ringPad = 3.0f * s;
+            dl->AddRectFilled(ImVec2(sx + ringPad, pillMin.y + ringPad),
+                              ImVec2(sx + slotW - ringPad, pillMin.y + pillH - ringPad),
+                              ToAbgrU32(WithAlpha(ctx.palette.pillHoverIcon, 0.18f * t)),
+                              (pillH - ringPad * 2.0f) * 0.5f);
+        }
+        const float drawSz = iconSz * (1.0f + 0.12f * t);
         DrawMotrixIcon(IconSpec{
             actions[i].icon,
-            sx + (slotW - iconSz) * 0.5f,
-            pillMin.y + (pillH - iconSz) * 0.5f,
-            iconSz,
-            iconSz,
-            fg,
+            sx + (slotW - drawSz) * 0.5f,
+            pillMin.y + (pillH - drawSz) * 0.5f,
+            drawSz,
+            drawSz,
+            iconCol,
             s,
         });
     }

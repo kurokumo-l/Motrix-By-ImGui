@@ -126,6 +126,9 @@ void RenderAdvProtocolRow(UiFrameContext& ctx, PrefsFormState& ps) {
         cy += 34.0f * s;
         ImGui::SetCursorScreenPos(ImVec2(bx, cy));
         ElSwitch(elSt, "##proto_mx", ctx.tr.Tr("prefs.proto_motrix"), &ps.protocolMotrix);
+        cy += 34.0f * s;
+        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
+        ElSwitch(elSt, "##proto_tor", ctx.tr.Tr("prefs.proto_torrent"), &ps.protocolTorrent);
         ImGui::SetCursorScreenPos(ImVec2(bx, cy + 28.0f * s));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     });
