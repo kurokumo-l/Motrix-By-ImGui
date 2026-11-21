@@ -10,7 +10,7 @@ elseif(CMAKE_VERSION VERSION_GREATER_EQUAL "4.3.0")
     set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
 endif()
 
-project(motrix_native VERSION 0.1.3 LANGUAGES C CXX)
+project(motrix_native VERSION 0.1.4 LANGUAGES C CXX)
 
 if(NOT CMAKE_GENERATOR STREQUAL "Ninja")
     message(FATAL_ERROR "Motrix Native requires the Ninja generator for C++23 import std; support.")
