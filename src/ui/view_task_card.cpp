@@ -306,9 +306,11 @@ void RenderTaskCardMeta(UiFrameContext& ctx,
     const float s = ctx.dpiScale;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     FontGuard metaFont(ctx.fonts, FontRole::Regular, 13.0f);
-    const std::string sizeText = std::format("{} / {}",
-                                             motrix::domain::FormatBytes(task.completedLength),
-                                             motrix::domain::FormatBytes(task.totalLength));
+    const std::string sizeText = (task.totalLength == 0 && task.completedLength > 0)
+                                     ? motrix::domain::FormatBytes(task.completedLength)
+                                     : std::format("{} / {}",
+                                                   motrix::domain::FormatBytes(task.completedLength),
+                                                   motrix::domain::FormatBytes(task.totalLength));
     dl->AddText(
         ImVec2(g.cardPos.x + g.padX, g.metaY), ToAbgrU32(ctx.palette.taskMetaText), sizeText.c_str());
     const float minRightX = g.cardPos.x + g.padX + ImGui::CalcTextSize(sizeText.c_str()).x + 12.0f * s;

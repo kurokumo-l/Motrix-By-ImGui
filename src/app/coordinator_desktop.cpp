@@ -127,10 +127,18 @@ void AppCoordinator::UpdateLivePlatformStatus(const AppStateSnapshot& state) {
     int activeTransferCount = 0;
     if (connected) {
         for (const auto& t : state.downloadingTasks) {
-            if (ShouldTreatAsTaskbarActive(t)) {
-                ++activeTransferCount;
+            if (!ShouldTreatAsTaskbarActive(t)) {
+                continue;
+            }
+            ++activeTransferCount;
+            if (t.totalLength > 0) {
                 totalBytes += t.totalLength;
-                completedBytes += t.completedLength;
+                completedBytes += std::min(t.completedLength, t.totalLength);
+            } else if (t.mediaProgress >= 0.0f) {
+                constexpr std::uint64_t kMediaWeight = 1'000'000ull;
+                totalBytes += kMediaWeight;
+                const float clamped = std::clamp(t.mediaProgress, 0.0f, 1.0f);
+                completedBytes += static_cast<std::uint64_t>(clamped * static_cast<float>(kMediaWeight));
             }
         }
     }

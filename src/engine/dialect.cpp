@@ -63,6 +63,17 @@ namespace {
         "detach-share-only",
         "media",
         "media-format",
+        "media-video",
+        "media-audio",
+        "media-subtitles",
+        "media-pause-after-probe",
+        "media-request-contexts",
+        "media-input",
+        "media-start-time",
+        "media-end-time",
+        "media-record-time",
+        "filename-hint",
+        "filename-hint-source",
         "rpc-save-upload-metadata",
     };
     return std::ranges::find(kNextOnly, key) != std::end(kNextOnly);

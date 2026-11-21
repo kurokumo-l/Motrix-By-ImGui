@@ -18,7 +18,13 @@ TaskCategory CategoryOf(TaskStatus status) noexcept {
 }
 
 float ProgressOf(const DownloadTaskView& task) noexcept {
+    if (task.status == TaskStatus::Complete) {
+        return 1.0f;
+    }
     if (task.totalLength == 0) {
+        if (task.mediaProgress >= 0.0f) {
+            return std::clamp(task.mediaProgress, 0.0f, 1.0f);
+        }
         return 0.0f;
     }
     if (task.completedLength >= task.totalLength) {

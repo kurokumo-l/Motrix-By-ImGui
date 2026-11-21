@@ -78,6 +78,7 @@ export struct DownloadTaskView {
     std::string bitfieldHex;
     std::uint32_t numPieces = 0;
     std::uint64_t pieceLength = 0;
+    float mediaProgress = -1.0f;
     int errorCode = 0;
     std::string errorMessage;
     std::size_t filesTotal = 0;

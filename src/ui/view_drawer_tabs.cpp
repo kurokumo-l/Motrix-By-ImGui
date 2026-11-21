@@ -40,17 +40,19 @@ enum class TriCheckState {
     return ext;
 }
 
-[[nodiscard]] std::string FormatFilePercent(std::uint64_t completed, std::uint64_t total) {
-    if (total == 0) {
-        return "0";
-    }
-    const double pct =
-        std::clamp(static_cast<double>(completed) * 100.0 / static_cast<double>(total), 0.0, 100.0);
-    std::string text = std::format("{:.1f}", pct);
+[[nodiscard]] std::string FormatPercentValue(double pct) {
+    std::string text = std::format("{:.1f}", std::clamp(pct, 0.0, 100.0));
     if (text.size() >= 2 && text.ends_with(".0")) {
         text.resize(text.size() - 2);
     }
     return text;
+}
+
+[[nodiscard]] std::string FormatFilePercent(std::uint64_t completed, std::uint64_t total) {
+    if (total == 0) {
+        return "0";
+    }
+    return FormatPercentValue(static_cast<double>(completed) * 100.0 / static_cast<double>(total));
 }
 
 [[nodiscard]] bool
@@ -404,16 +406,26 @@ void DrawFileDataRow(UiFrameContext& ctx,
     const std::string ext = ExtractExtNoDot(f.path);
     DrawCellAlignedText(ext.empty() ? "-" : ext, false, ctx.palette.subLabelText);
 
+    const bool singleUnknownFile = (task.files.size() == 1 && f.length == 0);
+    const std::uint64_t doneBytes =
+        (singleUnknownFile && f.completedLength == 0) ? task.completedLength : f.completedLength;
+
     ImGui::TableSetColumnIndex(3);
-    const std::string pctStr = FormatFilePercent(f.completedLength, f.length);
+    const std::string pctStr =
+        (singleUnknownFile
+         && (task.mediaProgress >= 0.0f || task.status == motrix::domain::TaskStatus::Complete))
+            ? FormatPercentValue(static_cast<double>(motrix::domain::ProgressOf(task)) * 100.0)
+            : FormatFilePercent(doneBytes, f.length);
     DrawCellAlignedText(pctStr, true, ctx.palette.subLabelText);
 
     ImGui::TableSetColumnIndex(4);
-    const std::string doneStr = motrix::domain::FormatBytesFixed(f.completedLength, 1, true);
+    const std::string doneStr = motrix::domain::FormatBytesFixed(doneBytes, 1, true);
     DrawCellAlignedText(doneStr, true, ctx.palette.subLabelText);
 
     ImGui::TableSetColumnIndex(5);
-    const std::string totalStr = motrix::domain::FormatBytesFixed(f.length, 1, true);
+    const std::string totalStr = (f.length == 0 && doneBytes > 0)
+                                     ? std::string("-")
+                                     : motrix::domain::FormatBytesFixed(f.length, 1, true);
     DrawCellAlignedText(totalStr, true, ctx.palette.subLabelText);
 }
 

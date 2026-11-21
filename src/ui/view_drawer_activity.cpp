@@ -382,11 +382,7 @@ void DrawActivityProgressBlock(UiFrameContext& ctx, const motrix::domain::Downlo
 
     DrawColonLabel(ctx, {origin, labelW, rowH, ctx.tr.Tr("detail.progress_info")});
 
-    const double frac = (task.totalLength > 0) ? std::clamp(static_cast<double>(task.completedLength)
-                                                                / static_cast<double>(task.totalLength),
-                                                            0.0,
-                                                            1.0)
-                                               : 0.0;
+    const double frac = static_cast<double>(motrix::domain::ProgressOf(task));
     const std::string pctStr = FormatTrimmedPercent(frac);
 
     FontGuard pf(ctx.fonts, FontRole::Regular, 13.5f);
@@ -413,9 +409,12 @@ void DrawActivityProgressBlock(UiFrameContext& ctx, const motrix::domain::Downlo
         ImVec2(barX + barW + 14.0f * s, pctTextY), ToAbgrU32(ctx.palette.panelTitle), pctStr.c_str());
 
     const float sizeRowY = origin.y + rowH + 6.0f * s;
-    const std::string sizeText = std::format("{} / {}",
-                                             motrix::domain::FormatBytesFixed(task.completedLength, 2),
-                                             motrix::domain::FormatBytesFixed(task.totalLength, 2));
+    const std::string sizeText =
+        (task.totalLength == 0 && task.completedLength > 0)
+            ? motrix::domain::FormatBytesFixed(task.completedLength, 2)
+            : std::format("{} / {}",
+                          motrix::domain::FormatBytesFixed(task.completedLength, 2),
+                          motrix::domain::FormatBytesFixed(task.totalLength, 2));
     dl->AddText(ImVec2(barX, sizeRowY), ToAbgrU32(ctx.palette.subLabelText), sizeText.c_str());
 
     if (task.status == motrix::domain::TaskStatus::Active && !task.isSeeding) {

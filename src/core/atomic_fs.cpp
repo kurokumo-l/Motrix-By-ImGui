@@ -94,7 +94,8 @@ Result<void> WriteFileAtomic(const std::filesystem::path& path, std::span<const 
 
     std::filesystem::rename(tmpPath, path, ec);
     if (ec) {
-        std::filesystem::remove(tmpPath, ec);
+        std::error_code rmEc;
+        std::filesystem::remove(tmpPath, rmEc);
         return std::unexpected(
             MakeError(ErrorDomain::Core, ErrorCode::IoFailure, "Failed atomic rename", ec.message()));
     }

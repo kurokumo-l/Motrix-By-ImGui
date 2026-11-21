@@ -252,6 +252,42 @@ void PopulateTaskFiles(const nlohmann::json& obj,
     }
 }
 
+void PopulateMediaMetadata(const nlohmann::json& obj, motrix::domain::DownloadTaskView& task) {
+    const auto mediaIt = obj.find("media");
+    if (mediaIt == obj.end() || !mediaIt->is_object()) {
+        return;
+    }
+    const auto& mediaObj = *mediaIt;
+    if (task.completedLength == 0) {
+        task.completedLength = ParseUInt64Field(mediaObj, "downloadedLength");
+    }
+    if (task.errorMessage.empty()) {
+        task.errorMessage = ReadStr(mediaObj, "error");
+    }
+    if (const auto progIt = mediaObj.find("progress"); progIt != mediaObj.end()) {
+        double p = -1.0;
+        if (progIt->is_number()) {
+            p = progIt->get<double>();
+        } else if (progIt->is_string()) {
+            const auto& s = progIt->get_ref<const std::string&>();
+            const auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), p);
+            if (ec != std::errc{} || ptr != s.data() + s.size()) {
+                p = -1.0;
+            }
+        }
+        if (p >= 0.0) {
+            task.mediaProgress = static_cast<float>(std::clamp(p, 0.0, 1.0));
+        }
+    } else if (!ReadBoolStrOrBool(mediaObj, "live", false)) {
+        const std::uint64_t dur = ParseUInt64Field(mediaObj, "duration");
+        const std::uint64_t doneDur = ParseUInt64Field(mediaObj, "completedDuration");
+        if (dur > 0) {
+            task.mediaProgress = static_cast<float>(
+                std::clamp(static_cast<double>(doneDur) / static_cast<double>(dur), 0.0, 1.0));
+        }
+    }
+}
+
 [[nodiscard]] motrix::domain::DownloadTaskView ParseTaskObject(const nlohmann::json& obj,
                                                                bool truncateFiles) {
     using namespace motrix::domain;
@@ -274,6 +310,7 @@ void PopulateTaskFiles(const nlohmann::json& obj,
     task.errorMessage = ReadStr(obj, "errorMessage");
 
     const std::string infoHash = ReadStr(obj, "infoHash");
+    PopulateMediaMetadata(obj, task);
     PopulateBtMetadata(obj, infoHash, task);
     PopulateTaskFiles(obj, truncateFiles, task);
 
