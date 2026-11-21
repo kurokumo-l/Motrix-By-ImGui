@@ -197,13 +197,42 @@ TEST_CASE("Task list parser parses HTTP/BT tasks and truncates files over 64 pri
             "error":"DRM-protected media is not supported",
             "errorCode":"protected-media"
         }
+    },{
+        "gid":"00000000000000dd",
+        "status":"active",
+        "totalLength":"0",
+        "completedLength":"30900000",
+        "downloadSpeed":"3565158",
+        "connections":"1",
+        "dir":"C:/dl",
+        "files":[{"index":"1","path":"C:/dl/collection.mp4","length":"0","completedLength":"0","selected":"true"}],
+        "media":{
+            "state":"downloading",
+            "protocol":"collection",
+            "live":"false",
+            "duration":"374016",
+            "completedDuration":"0",
+            "downloadedLength":"30900000",
+            "lengthKnown":"false",
+            "progress":"0.000000",
+            "tracks":[
+                {"id":"captured-0","type":"video","bandwidth":"692711","selected":"true"},
+                {"id":"captured-1","type":"audio","bandwidth":"209128","selected":"true"},
+                {"id":"captured-2","type":"video","bandwidth":"5000000","selected":"false"}
+            ]
+        }
     }])");
     REQUIRE(mediaTasks.has_value());
-    REQUIRE(mediaTasks->size() == 2);
+    REQUIRE(mediaTasks->size() == 3);
     CHECK((*mediaTasks)[0].completedLength == 15728640);
     CHECK(ProgressOf((*mediaTasks)[0]) > 0.424f);
     CHECK(ProgressOf((*mediaTasks)[0]) < 0.426f);
     CHECK((*mediaTasks)[1].errorMessage == "DRM-protected media is not supported");
+    // media=collection computes totalLength & live progress from selected tracks' bandwidth * duration
+    CHECK((*mediaTasks)[2].totalLength > 42000000);
+    CHECK((*mediaTasks)[2].totalLength < 42300000);
+    CHECK(ProgressOf((*mediaTasks)[2]) > 0.73f);
+    CHECK(ProgressOf((*mediaTasks)[2]) < 0.74f);
 }
 
 TEST_CASE("Live engine process spawn and WebSocket JSON-RPC smoke test", "[engine][live]") {

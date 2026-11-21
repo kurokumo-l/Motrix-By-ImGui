@@ -252,6 +252,53 @@ void PopulateTaskFiles(const nlohmann::json& obj,
     }
 }
 
+[[nodiscard]] double ReadMediaProgressField(const nlohmann::json& mediaObj) {
+    if (const auto progIt = mediaObj.find("progress"); progIt != mediaObj.end()) {
+        double p = -1.0;
+        if (progIt->is_number()) {
+            p = progIt->get<double>();
+        } else if (progIt->is_string()) {
+            const auto& s = progIt->get_ref<const std::string&>();
+            const auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), p);
+            if (ec != std::errc{} || ptr != s.data() + s.size()) {
+                p = -1.0;
+            }
+        }
+        return p;
+    }
+    if (ReadBoolStrOrBool(mediaObj, "live", false)) {
+        return -1.0;
+    }
+    const std::uint64_t dur = ParseUInt64Field(mediaObj, "duration");
+    if (dur == 0) {
+        return -1.0;
+    }
+    const std::uint64_t doneDur = ParseUInt64Field(mediaObj, "completedDuration");
+    return static_cast<double>(doneDur) / static_cast<double>(dur);
+}
+
+[[nodiscard]] std::uint64_t EstimateSelectedMediaBytes(const nlohmann::json& mediaObj) {
+    if (ReadBoolStrOrBool(mediaObj, "live", false)) {
+        return 0;
+    }
+    const std::uint64_t durationMs = ParseUInt64Field(mediaObj, "duration");
+    const auto tracksIt = mediaObj.find("tracks");
+    if (durationMs == 0 || tracksIt == mediaObj.end() || !tracksIt->is_array()) {
+        return 0;
+    }
+    std::uint64_t totalBandwidth = 0;
+    for (const auto& tr : *tracksIt) {
+        if (tr.is_object() && ReadBoolStrOrBool(tr, "selected", false)) {
+            totalBandwidth += ParseUInt64Field(tr, "bandwidth");
+        }
+    }
+    if (totalBandwidth == 0) {
+        return 0;
+    }
+    const double bytes = static_cast<double>(totalBandwidth) * static_cast<double>(durationMs) / 8000.0;
+    return bytes > 0.0 ? static_cast<std::uint64_t>(bytes) : 0;
+}
+
 void PopulateMediaMetadata(const nlohmann::json& obj, motrix::domain::DownloadTaskView& task) {
     const auto mediaIt = obj.find("media");
     if (mediaIt == obj.end() || !mediaIt->is_object()) {
@@ -264,27 +311,26 @@ void PopulateMediaMetadata(const nlohmann::json& obj, motrix::domain::DownloadTa
     if (task.errorMessage.empty()) {
         task.errorMessage = ReadStr(mediaObj, "error");
     }
-    if (const auto progIt = mediaObj.find("progress"); progIt != mediaObj.end()) {
-        double p = -1.0;
-        if (progIt->is_number()) {
-            p = progIt->get<double>();
-        } else if (progIt->is_string()) {
-            const auto& s = progIt->get_ref<const std::string&>();
-            const auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), p);
-            if (ec != std::errc{} || ptr != s.data() + s.size()) {
-                p = -1.0;
-            }
-        }
-        if (p >= 0.0) {
-            task.mediaProgress = static_cast<float>(std::clamp(p, 0.0, 1.0));
-        }
-    } else if (!ReadBoolStrOrBool(mediaObj, "live", false)) {
-        const std::uint64_t dur = ParseUInt64Field(mediaObj, "duration");
-        const std::uint64_t doneDur = ParseUInt64Field(mediaObj, "completedDuration");
-        if (dur > 0) {
-            task.mediaProgress = static_cast<float>(
-                std::clamp(static_cast<double>(doneDur) / static_cast<double>(dur), 0.0, 1.0));
-        }
+
+    const std::string protocol = ReadStr(mediaObj, "protocol");
+    const std::uint64_t estimatedBytes = EstimateSelectedMediaBytes(mediaObj);
+    if (task.totalLength == 0 && protocol == "collection" && estimatedBytes > 0) {
+        task.totalLength = std::max(estimatedBytes, task.completedLength);
+    }
+
+    const double reported = ReadMediaProgressField(mediaObj);
+    if (reported > 0.0) {
+        task.mediaProgress = static_cast<float>(std::clamp(reported, 0.0, 1.0));
+        return;
+    }
+    if (task.completedLength > 0 && estimatedBytes > 0) {
+        const double estRatio =
+            static_cast<double>(task.completedLength) / static_cast<double>(estimatedBytes);
+        task.mediaProgress = static_cast<float>(std::clamp(estRatio, 0.0, 0.99));
+        return;
+    }
+    if (reported == 0.0 && task.completedLength == 0) {
+        task.mediaProgress = 0.0f;
     }
 }
 

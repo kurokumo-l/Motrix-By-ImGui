@@ -294,7 +294,9 @@ void RenderFilesMediaGroupAndSummary(UiFrameContext& ctx,
     for (std::size_t i = 0; i < n; ++i) {
         if (ds.draftSelected[i]) {
             ++selCount;
-            selBytes += task.files[i].length;
+            const bool singleUnknown = (task.files.size() == 1 && task.files[i].length == 0);
+            selBytes +=
+                (singleUnknown && task.totalLength > 0) ? task.totalLength : task.files[i].length;
         }
     }
     const std::string summary = FormatFilesSummary(ctx, selCount, selBytes);
@@ -409,13 +411,15 @@ void DrawFileDataRow(UiFrameContext& ctx,
     const bool singleUnknownFile = (task.files.size() == 1 && f.length == 0);
     const std::uint64_t doneBytes =
         (singleUnknownFile && f.completedLength == 0) ? task.completedLength : f.completedLength;
+    const std::uint64_t totalBytes =
+        (singleUnknownFile && task.totalLength > 0) ? task.totalLength : f.length;
 
     ImGui::TableSetColumnIndex(3);
     const std::string pctStr =
         (singleUnknownFile
          && (task.mediaProgress >= 0.0f || task.status == motrix::domain::TaskStatus::Complete))
             ? FormatPercentValue(static_cast<double>(motrix::domain::ProgressOf(task)) * 100.0)
-            : FormatFilePercent(doneBytes, f.length);
+            : FormatFilePercent(doneBytes, totalBytes);
     DrawCellAlignedText(pctStr, true, ctx.palette.subLabelText);
 
     ImGui::TableSetColumnIndex(4);
@@ -423,9 +427,9 @@ void DrawFileDataRow(UiFrameContext& ctx,
     DrawCellAlignedText(doneStr, true, ctx.palette.subLabelText);
 
     ImGui::TableSetColumnIndex(5);
-    const std::string totalStr = (f.length == 0 && doneBytes > 0)
+    const std::string totalStr = (totalBytes == 0 && doneBytes > 0)
                                      ? std::string("-")
-                                     : motrix::domain::FormatBytesFixed(f.length, 1, true);
+                                     : motrix::domain::FormatBytesFixed(totalBytes, 1, true);
     DrawCellAlignedText(totalStr, true, ctx.palette.subLabelText);
 }
 
