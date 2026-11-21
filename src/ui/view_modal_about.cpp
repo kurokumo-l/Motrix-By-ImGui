@@ -64,10 +64,10 @@ void RenderAboutTopSection(UiFrameContext& ctx, const AboutCardMetrics& m, float
     const RgbaColor verCol = ctx.palette.isDark ? HexColor(0xA2A3A4) : HexColor(0x606266);
     {
         FontGuard verF(ctx.fonts, FontRole::Regular, 18.0f);
-        const ImVec2 vsz = ImGui::CalcTextSize("By ImGui  v0.1.2");
+        const ImVec2 vsz = ImGui::CalcTextSize("By ImGui  v0.1.3");
         dl->AddText(ImVec2(m.x0 + logoW + 20.0f * m.s, curY + logoH - vsz.y + 2.0f * m.s),
                     ToAbgrU32(verCol),
-                    "By ImGui  v0.1.2");
+                    "By ImGui  v0.1.3");
     }
     curY += logoH + 50.0f * m.s;
 }
