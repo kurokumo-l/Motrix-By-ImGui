@@ -95,6 +95,132 @@ void ApplyFactoryResetDefaults(AppStateSnapshot& state, std::string secret) {
     state.sysConfig.rpcSecret = std::move(secret);
 }
 
+[[nodiscard]] const std::vector<motrix::domain::DownloadTaskView>&
+ActiveTaskListRef(const AppStateSnapshot& state) noexcept {
+    switch (state.activeCategory) {
+        case motrix::domain::TaskCategory::Downloading: return state.downloadingTasks;
+        case motrix::domain::TaskCategory::Waiting: return state.waitingTasks;
+        case motrix::domain::TaskCategory::Stopped: return state.stoppedTasks;
+    }
+    return state.downloadingTasks;
+}
+
+[[nodiscard]] bool ContainsTaskGid(const std::vector<motrix::domain::DownloadTaskView>& list,
+                                   std::string_view gid) noexcept {
+    return std::any_of(list.begin(), list.end(), [&](const auto& t) { return t.gid == gid; });
+}
+
+[[nodiscard]] std::optional<std::size_t>
+FindGidIndex(const std::vector<motrix::domain::DownloadTaskView>& list, std::string_view gid) noexcept {
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        if (list[i].gid == gid) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::string ExtractOutName(const motrix::domain::DownloadTaskView& t) {
+    if (t.taskType == motrix::domain::TaskType::BitTorrent || t.files.empty()
+        || t.files[0].path.empty()) {
+        return {};
+    }
+    const std::string_view p = t.files[0].path;
+    const std::size_t slash = p.find_last_of("/\\");
+    return std::string((slash == std::string_view::npos) ? p : p.substr(slash + 1));
+}
+
+[[nodiscard]] std::vector<std::string> CollectFiles(const motrix::domain::DownloadTaskView& t) {
+    std::vector<std::string> out;
+    out.reserve(t.files.size());
+    for (const auto& f : t.files) {
+        if (!f.path.empty()) {
+            out.push_back(f.path);
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] EngineWorkCommand BuildRemoveCommand(const AppStateSnapshot& state,
+                                                   const motrix::domain::DownloadTaskView* task,
+                                                   std::string_view gid,
+                                                   bool deleteFiles) {
+    const bool allowDeleteFiles =
+        deleteFiles && (!task || task->status != motrix::domain::TaskStatus::Complete);
+    std::vector<std::string> toDelete;
+    std::string taskDir;
+    if (task) {
+        taskDir = task->dir;
+        if (allowDeleteFiles) {
+            toDelete = CollectFiles(*task);
+        }
+    }
+    return EngineWorkCommand{
+        .kind = EngineWorkCommand::Kind::Remove,
+        .gid = std::string(gid),
+        .dir = std::move(taskDir),
+        .taskInStopped = ContainsTaskGid(state.stoppedTasks, gid),
+        .deleteFiles = allowDeleteFiles,
+        .filesToDelete = std::move(toDelete),
+    };
+}
+
+[[nodiscard]] std::vector<EngineWorkCommand>
+BuildLiveTaskWorks(AppStateSnapshot& state, const Command& cmd, bool& clearDetail) {
+    std::vector<EngineWorkCommand> works;
+    auto enqueueRemoveOne = [&](std::string_view gid, bool deleteFiles) {
+        works.push_back(BuildRemoveCommand(state, FindTaskByGid(state, gid), gid, deleteFiles));
+        std::erase(state.selectedTaskGids, gid);
+        if (state.detailedTaskGid == gid) {
+            state.detailedTaskGid.clear();
+            ClearTaskDetailFields(state, true);
+            clearDetail = true;
+        }
+    };
+
+    if (const auto* pauseCmd = std::get_if<PauseTaskCmd>(&cmd)) {
+        works.push_back(EngineWorkCommand{.kind = EngineWorkCommand::Kind::Pause, .gid = pauseCmd->gid});
+    } else if (const auto* resumeCmd = std::get_if<ResumeTaskCmd>(&cmd)) {
+        works.push_back(
+            EngineWorkCommand{.kind = EngineWorkCommand::Kind::Resume, .gid = resumeCmd->gid});
+    } else if (const auto* removeCmd = std::get_if<RemoveTaskCmd>(&cmd)) {
+        enqueueRemoveOne(removeCmd->gid, removeCmd->deleteFiles);
+    } else if (const auto* batchRemoveCmd = std::get_if<RemoveTasksCmd>(&cmd)) {
+        for (const auto& g : batchRemoveCmd->gids) {
+            enqueueRemoveOne(g, batchRemoveCmd->deleteFiles);
+        }
+    } else if (const auto* restartCmd = std::get_if<RestartTaskCmd>(&cmd)) {
+        if (const auto* t = FindTaskByGid(state, restartCmd->gid); t && !t->uri.empty()) {
+            const bool isStopped = (t->status == motrix::domain::TaskStatus::Complete
+                                    || t->status == motrix::domain::TaskStatus::Error
+                                    || t->status == motrix::domain::TaskStatus::Removed);
+            works.push_back(EngineWorkCommand{.kind = EngineWorkCommand::Kind::Restart,
+                                              .gid = restartCmd->gid,
+                                              .uris = {t->uri},
+                                              .outName = ExtractOutName(*t),
+                                              .dir = t->dir,
+                                              .split = state.sysConfig.split,
+                                              .taskInStopped = isStopped});
+        }
+    } else if (std::holds_alternative<RefreshTasksCmd>(cmd)) {
+        works.push_back(EngineWorkCommand{.kind = EngineWorkCommand::Kind::Sync});
+    } else if (std::holds_alternative<PauseAllCmd>(cmd)) {
+        works.push_back(EngineWorkCommand{.kind = EngineWorkCommand::Kind::PauseAll});
+    } else if (std::holds_alternative<ResumeAllCmd>(cmd)) {
+        works.push_back(EngineWorkCommand{.kind = EngineWorkCommand::Kind::ResumeAll});
+    } else if (std::holds_alternative<PurgeStoppedCmd>(cmd)) {
+        works.push_back(EngineWorkCommand{.kind = EngineWorkCommand::Kind::PurgeStopped});
+    } else if (std::holds_alternative<ResetSessionCmd>(cmd)) {
+        state.selectedTaskGid.clear();
+        state.selectedTaskGids.clear();
+        state.detailedTaskGid.clear();
+        ClearTaskDetailFields(state, true);
+        clearDetail = true;
+        works.push_back(EngineWorkCommand{.kind = EngineWorkCommand::Kind::ResetSession});
+    }
+    return works;
+}
+
 }  // namespace
 
 struct AppCoordinator::DispatchOutcome {
@@ -397,10 +523,65 @@ bool AppCoordinator::TryHandleImmediateCommand(const Command& cmd) {
     return false;
 }
 
+void AppCoordinator::ApplySelectionCommand(AppStateSnapshot& state, const Command& cmd) {
+    if (std::holds_alternative<SelectAllTasksCmd>(cmd)) {
+        const auto& list = ActiveTaskListRef(state);
+        state.selectedTaskGids.clear();
+        state.selectedTaskGids.reserve(list.size());
+        for (const auto& t : list) {
+            state.selectedTaskGids.push_back(t.gid);
+        }
+        if (!state.selectedTaskGids.empty()
+            && std::ranges::find(state.selectedTaskGids, state.selectedTaskGid)
+                   == state.selectedTaskGids.end()) {
+            state.selectedTaskGid = state.selectedTaskGids.front();
+        }
+        return;
+    }
+
+    const auto* c = std::get_if<SelectTaskCmd>(&cmd);
+    if (!c) {
+        return;
+    }
+    if (c->gid.empty()) {
+        state.selectedTaskGid.clear();
+        state.selectedTaskGids.clear();
+        return;
+    }
+    if (c->range && !state.selectedTaskGid.empty()) {
+        const auto& list = ActiveTaskListRef(state);
+        const auto a = FindGidIndex(list, state.selectedTaskGid);
+        const auto b = FindGidIndex(list, c->gid);
+        if (a && b) {
+            const std::size_t lo = std::min(*a, *b);
+            const std::size_t hi = std::max(*a, *b);
+            state.selectedTaskGids.clear();
+            for (std::size_t i = lo; i <= hi; ++i) {
+                state.selectedTaskGids.push_back(list[i].gid);
+            }
+            return;
+        }
+    }
+    if (c->toggle) {
+        auto it = std::ranges::find(state.selectedTaskGids, c->gid);
+        if (it != state.selectedTaskGids.end()) {
+            state.selectedTaskGids.erase(it);
+            state.selectedTaskGid =
+                state.selectedTaskGids.empty() ? std::string{} : state.selectedTaskGids.back();
+        } else {
+            state.selectedTaskGids.push_back(c->gid);
+            state.selectedTaskGid = c->gid;
+        }
+        return;
+    }
+    state.selectedTaskGid = c->gid;
+    state.selectedTaskGids = {c->gid};
+}
+
 bool AppCoordinator::ApplyDesktopActionCommand(AppStateSnapshot& state, const Command& cmd) {
     if (const auto* dropCmd = std::get_if<QueueDroppedFilesCmd>(&cmd)) {
         for (const auto& path : dropCmd->paths) {
-            if (motrix::core::AsciiLower(path).ends_with(".torrent")) {
+            if (motrix::core::EndsWithAsciiInsensitive(path, ".torrent")) {
                 state.pendingDroppedTorrentPath = path;
                 ++state.dropSeq;
                 state.activeModal = ActiveModal::AddTask;

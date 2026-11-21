@@ -415,11 +415,9 @@ add_library(motrix_ui STATIC
     src/ui/view_drawer_activity.cpp
     src/ui/view_drawer_tabs.cpp
     src/ui/view_prefs.cpp
-    src/ui/view_prefs_actions.cpp
     src/ui/view_prefs_basic.cpp
     src/ui/view_prefs_advanced.cpp
     src/ui/view_prefs_lab.cpp
-    src/ui/view_prefs_updater.cpp
     src/ui/view_add_torrent.cpp
     src/ui/view_modals.cpp
     src/ui/view_modal_about.cpp

@@ -122,10 +122,16 @@ TEST_CASE("motrix.core ParseStrictInt validates integer strings strictly", "[cor
 
 TEST_CASE("motrix.core shared ASCII and OS path/handle helpers behave consistently", "[core][os]") {
     using namespace motrix::core;
+    CHECK(EqualsAsciiInsensitive("Aria2-Next", "aria2-next"));
+    CHECK_FALSE(EqualsAsciiInsensitive("aria2", "aria2-next"));
     CHECK(StartsWithAsciiInsensitive("MOTRIX://task-list", "motrix://"));
     CHECK_FALSE(StartsWithAsciiInsensitive("http://a", "https://"));
     CHECK(EndsWithAsciiInsensitive("Ubuntu.TORRENT", ".torrent"));
     CHECK_FALSE(EndsWithAsciiInsensitive("a.iso", ".torrent"));
+    CHECK(ContainsAsciiInsensitive("aria2-next-Windows-x86_64.exe", "windows"));
+    CHECK(ContainsAsciiInsensitive("Aria2-Next 3.1.0", "ARIA2-NEXT"));
+    CHECK_FALSE(ContainsAsciiInsensitive("aria2 1.37", "aria2-next"));
+    CHECK_FALSE(ContainsAsciiInsensitive("abc", ""));
     CHECK(TrimQuotedArg("  \"'C:\\Downloads\\a.torrent'\"  ") == "C:\\Downloads\\a.torrent");
 
     const auto selfExe = CurrentExecutablePath();
@@ -134,4 +140,28 @@ TEST_CASE("motrix.core shared ASCII and OS path/handle helpers behave consistent
 
     UniqueHandle invalid;
     CHECK_FALSE(invalid.IsValid());
+}
+
+TEST_CASE("motrix.core logger rotates cleanly when maxBackups is zero", "[core][logger]") {
+    using namespace motrix::core;
+    const auto logPath =
+        std::filesystem::temp_directory_path() / "motrix_native_test_logs_zero" / "zero.log";
+    std::error_code ec;
+    std::filesystem::remove_all(logPath.parent_path(), ec);
+    {
+        Logger logger(LoggerOptions{
+            .logFilePath = logPath,
+            .minLevel = LogLevel::Info,
+            .maxFileBytes = 64,
+            .maxBackups = 0,
+        });
+        logger.Info("rot", "first-long-log-line-exceeding-sixty-four-bytes-1234567890");
+        logger.Info("rot", "second-entry");
+        logger.Flush();
+    }
+    auto logged = ReadFileUtf8(logPath);
+    REQUIRE(logged.has_value());
+    CHECK(logged->find("second-entry") != std::string::npos);
+    CHECK(logged->find("first-long-log-line") == std::string::npos);
+    std::filesystem::remove_all(logPath.parent_path(), ec);
 }

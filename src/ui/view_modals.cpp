@@ -19,10 +19,13 @@ namespace motrix::ui {
 
 namespace {
 
-struct AlignLabelPos {
-    float x = 0.0f;
-    float y = 0.0f;
-    float h = 0.0f;
+constexpr std::string_view kAddProxyTipsUrl =
+    "https://aria2.github.io/manual/en/html/aria2c.html#cmdoption-all-proxy";
+
+struct ModalFlowPos {
+    float x0 = 0.0f;
+    float bodyW = 0.0f;
+    float curY = 0.0f;
 };
 
 struct AddModalTabSpec {
@@ -40,15 +43,6 @@ struct AddModalFooterBox {
     float x0 = 0.0f;
     float curY = 0.0f;
 };
-
-void DrawAlignedLabel(const UiFrameContext& ctx, const AlignLabelPos& pos, std::string_view text) {
-    FontGuard fnt(ctx.fonts, FontRole::Regular, 13.5f);
-    const ImVec2 sz = ImGui::CalcTextSize(text.data(), text.data() + text.size());
-    ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x, pos.y + (pos.h - sz.y) * 0.5f),
-                                        ToAbgrU32(ctx.palette.subLabelText),
-                                        text.data(),
-                                        text.data() + text.size());
-}
 
 void ResetAddFormFields(const UiFrameContext& ctx, AddTaskFormState& form) {
     const std::string defaultDir =
@@ -311,7 +305,7 @@ void RenderAddTaskPrimaryInputs(UiFrameContext& ctx, AddTaskFormState& form, Mod
     const float colGap = 16.0f * s;
     const float renameW = std::max(120.0f * s, flow.bodyW - lblW - colGap - rightColW);
 
-    DrawAlignedLabel(ctx, {flow.x0, flow.curY, rowH}, ctx.tr.Tr("task.rename_label"));
+    DrawAlignedCaption(ctx, flow.x0, flow.curY, rowH, ctx.tr.Tr("task.rename_label"), 13.5f);
     ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
     ElInputText(elSt,
                 {"##add_rename",
@@ -322,12 +316,12 @@ void RenderAddTaskPrimaryInputs(UiFrameContext& ctx, AddTaskFormState& form, Mod
 
     const float splitsX = flow.x0 + lblW + renameW + colGap;
     const float splitsLblW = 60.0f * s;
-    DrawAlignedLabel(ctx, {splitsX, flow.curY, rowH}, ctx.tr.Tr("task.splits"));
+    DrawAlignedCaption(ctx, splitsX, flow.curY, rowH, ctx.tr.Tr("task.splits"), 13.5f);
     ImGui::SetCursorScreenPos(ImVec2(splitsX + splitsLblW, flow.curY));
     ElInputNumberInt(elSt, "##add_splits", {&form.splitCount, 1, 128, 1, rightColW - splitsLblW});
     flow.curY += rowH + 14.0f * s;
 
-    DrawAlignedLabel(ctx, {flow.x0, flow.curY, rowH}, ctx.tr.Tr("task.save_to"));
+    DrawAlignedCaption(ctx, flow.x0, flow.curY, rowH, ctx.tr.Tr("task.save_to"), 13.5f);
     ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
     ElDirectoryInput(elSt,
                      {"##add_dir",
@@ -338,6 +332,79 @@ void RenderAddTaskPrimaryInputs(UiFrameContext& ctx, AddTaskFormState& form, Mod
                       ctx.state.prefs.favoriteDirectories,
                       [&ctx](std::string_view cur) { return ctx.host.PickFolder(cur); }});
     flow.curY += rowH + 16.0f * s;
+}
+
+void RenderAddTaskAdvancedFields(UiFrameContext& ctx, AddTaskFormState& form, ModalFlowPos& flow) {
+    const float s = ctx.dpiScale;
+    const float rowH = 30.0f * s;
+    const float gapY = 12.0f * s;
+    const float lblW = 92.0f * s;
+    const float fieldW = flow.bodyW - lblW;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
+
+    DrawAlignedCaption(ctx, flow.x0, flow.curY, rowH, ctx.tr.Tr("task.ua_label"), 13.5f);
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElInputText(elSt,
+                {"##add_ua",
+                 form.userAgentBuffer.data(),
+                 form.userAgentBuffer.size(),
+                 fieldW,
+                 ctx.tr.Tr("task.ua_placeholder")});
+    flow.curY += rowH + gapY;
+
+    const float halfGap = 14.0f * s;
+    const float halfColW = (flow.bodyW - halfGap) * 0.5f;
+    DrawAlignedCaption(ctx, flow.x0, flow.curY, rowH, ctx.tr.Tr("task.auth_label"), 13.5f);
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElInputText(elSt,
+                {"##add_auth",
+                 form.authBuffer.data(),
+                 form.authBuffer.size(),
+                 halfColW - lblW,
+                 ctx.tr.Tr("task.auth_placeholder")});
+
+    const float rightX = flow.x0 + halfColW + halfGap;
+    const float refLblW = 66.0f * s;
+    DrawAlignedCaption(ctx, rightX, flow.curY, rowH, ctx.tr.Tr("task.referer_label"), 13.5f);
+    ImGui::SetCursorScreenPos(ImVec2(rightX + refLblW, flow.curY));
+    ElInputText(elSt,
+                {"##add_referer",
+                 form.refererBuffer.data(),
+                 form.refererBuffer.size(),
+                 halfColW - refLblW,
+                 ctx.tr.Tr("task.referer_placeholder")});
+    flow.curY += rowH + gapY;
+
+    DrawAlignedCaption(ctx, flow.x0, flow.curY, rowH, ctx.tr.Tr("task.cookie_label"), 13.5f);
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElInputText(elSt,
+                {"##add_cookie",
+                 form.cookieBuffer.data(),
+                 form.cookieBuffer.size(),
+                 fieldW,
+                 ctx.tr.Tr("task.cookie_placeholder")});
+    flow.curY += rowH + gapY;
+
+    DrawAlignedCaption(ctx, flow.x0, flow.curY, rowH, ctx.tr.Tr("task.proxy_label"), 13.5f);
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElInputText(elSt,
+                {"##add_proxy",
+                 form.proxyBuffer.data(),
+                 form.proxyBuffer.size(),
+                 fieldW,
+                 "[http://][USER:PASSWORD@]HOST[:PORT]"});
+    flow.curY += rowH + 4.0f * s;
+
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElDrawLinkText(elSt, {ctx.tr.Tr("task.proxy_tips"), [&ctx]() {
+                              ctx.host.OpenPathInExplorer(kAddProxyTipsUrl);
+                          }});
+    flow.curY += 20.0f * s;
+
+    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
+    ElCheckbox(
+        elSt, "##add_nav_dl", ctx.tr.Tr("task.navigate_to_downloading"), &form.navigateToDownloading);
+    flow.curY += 22.0f * s;
 }
 
 void RenderAddTaskFooter(UiFrameContext& ctx, AddTaskFormState& form, const AddModalFooterBox& box) {
@@ -424,7 +491,7 @@ void RenderAddTaskModal(UiFrameContext& ctx, AddTaskFormState& form, bool justOp
     if (!hadOpenChildPopup && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)
         && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
         CloseAddModalAndReset(ctx, form);
-    } else if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+    } else if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
         SubmitAddTaskForm(ctx, form);
     }
 }

@@ -103,28 +103,23 @@ struct IconSample {
     bool darkTaskbar = true;
 };
 
-[[nodiscard]] HICON TryLoadMotrixNativeIcon(int sizePx, MotrixIconKind kind) noexcept {
-    try {
-        const NativeIconResource spec = ResolveMotrixIconResource(kind);
-        const auto load = [&](HINSTANCE mod, LPCWSTR name, UINT flags) noexcept {
-            return static_cast<HICON>(::LoadImageW(mod, name, IMAGE_ICON, sizePx, sizePx, flags));
-        };
-        if (HICON res =
-                load(::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(spec.resourceId), LR_DEFAULTCOLOR)) {
-            return res;
-        }
-        const auto exePath = motrix::core::CurrentExecutablePath();
-        if (exePath.empty()) {
-            return nullptr;
-        }
-        const auto p = exePath.parent_path() / L"assets" / L"icons" / spec.fileName;
-        std::error_code ec;
-        return std::filesystem::exists(p, ec)
-                   ? load(nullptr, p.c_str(), LR_LOADFROMFILE | LR_DEFAULTCOLOR)
-                   : nullptr;
-    } catch (...) {
+[[nodiscard]] HICON TryLoadMotrixNativeIcon(int sizePx, MotrixIconKind kind) {
+    const NativeIconResource spec = ResolveMotrixIconResource(kind);
+    const auto load = [&](HINSTANCE mod, LPCWSTR name, UINT flags) noexcept {
+        return static_cast<HICON>(::LoadImageW(mod, name, IMAGE_ICON, sizePx, sizePx, flags));
+    };
+    if (HICON res =
+            load(::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(spec.resourceId), LR_DEFAULTCOLOR)) {
+        return res;
+    }
+    const auto exePath = motrix::core::CurrentExecutablePath();
+    if (exePath.empty()) {
         return nullptr;
     }
+    const auto p = exePath.parent_path() / L"assets" / L"icons" / spec.fileName;
+    std::error_code ec;
+    return std::filesystem::exists(p, ec) ? load(nullptr, p.c_str(), LR_LOADFROMFILE | LR_DEFAULTCOLOR)
+                                          : nullptr;
 }
 
 [[nodiscard]] FloatRgba EvaluateMotrixIconPixel(const IconSample& s, MotrixIconKind kind) noexcept {
@@ -154,51 +149,45 @@ struct IconSample {
     return out;
 }
 
-[[nodiscard]] HICON CreateMotrixHicon(int sizePx, MotrixIconKind kind, bool darkTaskbar) noexcept {
+[[nodiscard]] HICON CreateMotrixHicon(int sizePx, MotrixIconKind kind, bool darkTaskbar) {
     if (sizePx <= 0) {
         return nullptr;
     }
     if (HICON nativeIcon = TryLoadMotrixNativeIcon(sizePx, kind)) {
         return nativeIcon;
     }
-    try {
-        UniqueScreenDc screenDc;
-        if (!screenDc.Get())
-            return nullptr;
-
-        BITMAPV5HEADER bi{.bV5Size = sizeof(BITMAPV5HEADER),
-                          .bV5Width = sizePx,
-                          .bV5Height = -sizePx,
-                          .bV5Planes = 1,
-                          .bV5BitCount = 32,
-                          .bV5Compression = BI_BITFIELDS,
-                          .bV5RedMask = 0x00FF0000u,
-                          .bV5GreenMask = 0x0000FF00u,
-                          .bV5BlueMask = 0x000000FFu,
-                          .bV5AlphaMask = 0xFF000000u};
-
-        void* rawBits = nullptr;
-        UniqueGdiBitmap colorBmp(::CreateDIBSection(screenDc.Get(),
-                                                    reinterpret_cast<const BITMAPINFO*>(&bi),
-                                                    DIB_RGB_COLORS,
-                                                    &rawBits,
-                                                    nullptr,
-                                                    0));
-        const int strideBytes = ((sizePx + 15) / 16) * 2;
-        std::vector<std::uint8_t> maskBits(
-            static_cast<std::size_t>(strideBytes) * static_cast<std::size_t>(sizePx), 0u);
-        UniqueGdiBitmap maskBmp(::CreateBitmap(sizePx, sizePx, 1, 1, maskBits.data()));
-        if (!colorBmp.Get() || !rawBits || !maskBmp.Get())
-            return nullptr;
-
-        const std::vector<std::uint32_t> bgra = RenderMotrixIconBgra(kind, sizePx, darkTaskbar);
-        std::memcpy(rawBits, bgra.data(), bgra.size() * sizeof(std::uint32_t));
-
-        ICONINFO ii{TRUE, 0, 0, maskBmp.Get(), colorBmp.Get()};
-        return ::CreateIconIndirect(&ii);
-    } catch (...) {
+    UniqueScreenDc screenDc;
+    if (!screenDc.Get()) {
         return nullptr;
     }
+
+    BITMAPV5HEADER bi{.bV5Size = sizeof(BITMAPV5HEADER),
+                      .bV5Width = sizePx,
+                      .bV5Height = -sizePx,
+                      .bV5Planes = 1,
+                      .bV5BitCount = 32,
+                      .bV5Compression = BI_BITFIELDS,
+                      .bV5RedMask = 0x00FF0000u,
+                      .bV5GreenMask = 0x0000FF00u,
+                      .bV5BlueMask = 0x000000FFu,
+                      .bV5AlphaMask = 0xFF000000u};
+
+    void* rawBits = nullptr;
+    UniqueGdiBitmap colorBmp(::CreateDIBSection(
+        screenDc.Get(), reinterpret_cast<const BITMAPINFO*>(&bi), DIB_RGB_COLORS, &rawBits, nullptr, 0));
+    const int strideBytes = ((sizePx + 15) / 16) * 2;
+    std::vector<std::uint8_t> maskBits(
+        static_cast<std::size_t>(strideBytes) * static_cast<std::size_t>(sizePx), 0u);
+    UniqueGdiBitmap maskBmp(::CreateBitmap(sizePx, sizePx, 1, 1, maskBits.data()));
+    if (!colorBmp.Get() || !rawBits || !maskBmp.Get()) {
+        return nullptr;
+    }
+
+    const std::vector<std::uint32_t> bgra = RenderMotrixIconBgra(kind, sizePx, darkTaskbar);
+    std::memcpy(rawBits, bgra.data(), bgra.size() * sizeof(std::uint32_t));
+
+    ICONINFO ii{TRUE, 0, 0, maskBmp.Get(), colorBmp.Get()};
+    return ::CreateIconIndirect(&ii);
 }
 
 void ReleaseTrayCachedIcons(Win32WindowState& state) noexcept {
@@ -212,7 +201,7 @@ void ReleaseTrayCachedIcons(Win32WindowState& state) noexcept {
     }
 }
 
-void EnsureTrayIconsCreated(Win32WindowState& state) noexcept {
+void EnsureTrayIconsCreated(Win32WindowState& state) {
     const UINT dpi = state.hwnd ? ::GetDpiForWindow(static_cast<HWND>(state.hwnd)) : 96u;
     if (state.trayDpi != dpi) {
         ReleaseTrayCachedIcons(state);
@@ -269,7 +258,7 @@ void ShowTrayContextMenu(Win32WindowState& state, HWND hwnd) {
 
 }  // namespace
 
-void Win32SetWindowIcons(Win32WindowState& state) noexcept {
+void Win32SetWindowIcons(Win32WindowState& state) {
     if (!state.hwnd) {
         return;
     }
@@ -290,7 +279,7 @@ void Win32SetWindowIcons(Win32WindowState& state) noexcept {
     }
 }
 
-void Win32RefreshIconsOnThemeOrDpi(Win32WindowState& state) noexcept {
+void Win32RefreshIconsOnThemeOrDpi(Win32WindowState& state) {
     const bool nextTaskbarDark = QueryTaskbarDarkMode();
     if (nextTaskbarDark != state.trayDarkTaskbar) {
         state.trayDarkTaskbar = nextTaskbarDark;
@@ -328,7 +317,7 @@ void Win32DestroyTrayIcons(Win32WindowState& state) noexcept {
     ReleaseTrayCachedIcons(state);
 }
 
-void Win32InstallOrUpdateTray(Win32WindowState& state) noexcept {
+void Win32InstallOrUpdateTray(Win32WindowState& state) {
     if (!state.hwnd) {
         return;
     }

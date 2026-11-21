@@ -6,34 +6,37 @@ import motrix.core;
 namespace motrix::domain {
 namespace {
 
-std::string LowerAscii(std::string_view s) {
-    std::string out(s);
-    for (char& ch : out) {
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    }
-    return out;
-}
-
-std::string NormalizedExtensionCore(std::string_view extOrPath) {
+[[nodiscard]] std::string_view NormalizedExtensionView(std::string_view extOrPath) noexcept {
     const std::size_t slash = extOrPath.find_last_of("/\\");
     const std::string_view name =
         (slash == std::string_view::npos) ? extOrPath : extOrPath.substr(slash + 1);
     const std::size_t dot = name.find_last_of('.');
     if (dot == std::string_view::npos) {
-        return LowerAscii(name);
+        return name;
     }
     if (dot == 0) {
         return {};
     }
-    return LowerAscii(name.substr(dot + 1));
+    return name.substr(dot + 1);
 }
 
-std::string MatchExtensionCore(std::string_view extOrPath) {
+[[nodiscard]] std::string_view MatchExtensionView(std::string_view extOrPath) noexcept {
     if (extOrPath.find_last_of("/\\") == std::string_view::npos && extOrPath.size() > 1
         && extOrPath.front() == '.') {
-        return LowerAscii(extOrPath.substr(1));
+        return extOrPath.substr(1);
     }
-    return NormalizedExtensionCore(extOrPath);
+    return NormalizedExtensionView(extOrPath);
+}
+
+[[nodiscard]] bool ContainsExtension(std::span<const std::string_view> table,
+                                     std::string_view extOrPath) noexcept {
+    const std::string_view ext = MatchExtensionView(extOrPath);
+    if (ext.empty()) {
+        return false;
+    }
+    return std::ranges::any_of(table, [ext](std::string_view item) noexcept {
+        return motrix::core::EqualsAsciiInsensitive(item, ext);
+    });
 }
 
 int HexDigitValue(char ch) noexcept {
@@ -185,15 +188,14 @@ std::string DecodePeerId(std::string_view rawOrPercentEncoded) {
 }
 
 std::string ExtractFileExtension(std::string_view path) {
-    const std::string ext = NormalizedExtensionCore(path);
+    const std::string_view ext = NormalizedExtensionView(path);
     if (ext.empty()) {
         return {};
     }
-    return "." + ext;
+    return "." + motrix::core::AsciiLower(ext);
 }
 
 bool IsVideoExtension(std::string_view extOrPath) noexcept {
-    const std::string ext = MatchExtensionCore(extOrPath);
     static constexpr std::array<std::string_view, 16> kVideoExts{{
         "mp4",
         "mkv",
@@ -212,11 +214,10 @@ bool IsVideoExtension(std::string_view extOrPath) noexcept {
         "ogv",
         "vob",
     }};
-    return std::ranges::find(kVideoExts, ext) != kVideoExts.end();
+    return ContainsExtension(kVideoExts, extOrPath);
 }
 
 bool IsAudioExtension(std::string_view extOrPath) noexcept {
-    const std::string ext = MatchExtensionCore(extOrPath);
     static constexpr std::array<std::string_view, 13> kAudioExts{{
         "mp3",
         "flac",
@@ -232,11 +233,10 @@ bool IsAudioExtension(std::string_view extOrPath) noexcept {
         "dts",
         "ac3",
     }};
-    return std::ranges::find(kAudioExts, ext) != kAudioExts.end();
+    return ContainsExtension(kAudioExts, extOrPath);
 }
 
 bool IsImageExtension(std::string_view extOrPath) noexcept {
-    const std::string ext = MatchExtensionCore(extOrPath);
     static constexpr std::array<std::string_view, 12> kImageExts{{
         "jpg",
         "jpeg",
@@ -251,7 +251,7 @@ bool IsImageExtension(std::string_view extOrPath) noexcept {
         "avif",
         "heic",
     }};
-    return std::ranges::find(kImageExts, ext) != kImageExts.end();
+    return ContainsExtension(kImageExts, extOrPath);
 }
 
 std::string FormatUnixTimestampUtc(std::int64_t unixSeconds) {

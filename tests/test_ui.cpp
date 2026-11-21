@@ -284,6 +284,16 @@ TEST_CASE("motrix.ui PrefsFormState tracks dirty state, discard, feedback, and A
     CHECK(ps.dlLimitKbps == 2);
     CHECK_FALSE(IsPrefsDraftDirty(*snap, ps));
 
+    // Font family whitespace trimming stays consistent between dirty check and save.
+    CopyUtf8ToBuffer("  Microsoft YaHei UI  ", ps.fontFamilyBuffer.data(), ps.fontFamilyBuffer.size());
+    CHECK_FALSE(IsPrefsDraftDirty(*snap, ps));
+    CopyUtf8ToBuffer("   ", ps.fontFamilyBuffer.data(), ps.fontFamilyBuffer.size());
+    CHECK_FALSE(IsPrefsDraftDirty(*snap, ps));
+    CopyUtf8ToBuffer("Segoe UI", ps.fontFamilyBuffer.data(), ps.fontFamilyBuffer.size());
+    CHECK(IsPrefsDraftDirty(*snap, ps));
+    LoadPrefsFromSnapshot(*snap, ps);
+    CHECK_FALSE(IsPrefsDraftDirty(*snap, ps));
+
     // Editing fields flips dirty; discarding restores clean snapshot and sets feedback.
     ps.maxConnPerServer = 32;
     CHECK(IsPrefsDraftDirty(*snap, ps));

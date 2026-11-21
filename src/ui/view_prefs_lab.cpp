@@ -18,218 +18,149 @@ namespace motrix::ui {
 
 namespace {
 
-void DrawLabCaption(const UiFrameContext& ctx, float x, float y, std::string_view txt) {
-    FontGuard fg(ctx.fonts, FontRole::Regular, 14.5f);
-    ImGui::GetWindowDrawList()->AddText(
-        ImVec2(x, y), ToAbgrU32(ctx.palette.subLabelText), txt.data(), txt.data() + txt.size());
+[[nodiscard]] bool IsAria2UpdateBusy(motrix::app::EngineUpdateStatus st) noexcept {
+    using S = motrix::app::EngineUpdateStatus;
+    return st == S::Checking || st == S::Downloading || st == S::Verifying || st == S::Restarting;
 }
 
-void RenderUserAgentButtons(const UiFrameContext& ctx, PrefsFormState& ps, float x, float y) {
-    struct Preset {
-        std::string_view label;
-        std::string_view ua;
-    };
-    static constexpr std::array<Preset, 4> kPresets{{
-        {"Aria2", "aria2/1.36.0"},
-        {"Transmission", "Transmission/3.00"},
-        {"Chrome",
-         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-         "(KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36"},
-        {"du", "netdisk;6.0.0.12;PC;PC-Windows;10.0.16299;WindowsBaiduYunGuanJia"},
-    }};
-
-    const float s = ctx.dpiScale;
-    const float h = 32.0f * s;
-    FontGuard fg(ctx.fonts, FontRole::Medium, 13.5f);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    float curX = x;
-
-    for (std::size_t i = 0; i < kPresets.size(); ++i) {
-        const ImVec2 tSz = ImGui::CalcTextSize(kPresets[i].label.data());
-        const float w = tSz.x + 28.0f * s;
-        const ImVec2 p0(curX, y);
-        const ImVec2 p1(curX + w, y + h);
-        ImGui::SetCursorScreenPos(p0);
-        if (ImGui::InvisibleButton(std::format("##ua_preset_{}", i).c_str(), ImVec2(w, h))) {
-            CopyUtf8ToBuffer(kPresets[i].ua, ps.userAgentBuffer.data(), ps.userAgentBuffer.size());
-        }
-        const bool hov = ImGui::IsItemHovered();
-        if (hov) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        }
-        ImDrawFlags roundFlags = ImDrawFlags_RoundCornersNone;
-        if (i == 0) {
-            roundFlags = ImDrawFlags_RoundCornersLeft;
-        } else if (i + 1 == kPresets.size()) {
-            roundFlags = ImDrawFlags_RoundCornersRight;
-        }
-        dl->AddRectFilled(
-            p0,
-            p1,
-            ToAbgrU32(hov ? WithAlpha(ctx.palette.primary, ctx.palette.isDark ? 0.14f : 0.08f)
-                          : ctx.palette.inputBg),
-            4.0f * s,
-            roundFlags);
-        dl->AddRect(p0,
-                    p1,
-                    ToAbgrU32(hov ? ctx.palette.primary : ctx.palette.inputBorder),
-                    4.0f * s,
-                    roundFlags,
-                    1.0f);
-        dl->AddText(ImVec2(p0.x + (w - tSz.x) * 0.5f, p0.y + (h - tSz.y) * 0.5f),
-                    ToAbgrU32(hov ? ctx.palette.primary : ctx.palette.panelTitle),
-                    kPresets[i].label.data());
-        curX += w - 1.0f;
+float DrawAria2UpdateStatus(const UiFrameContext& ctx, float x, float y, float wrapW) {
+    using S = motrix::app::EngineUpdateStatus;
+    const S st = ctx.state.engineUpdateStatus;
+    if (st == S::Idle) {
+        return y;
     }
-}
-
-struct ReadonlyPathSpec {
-    const char* id = nullptr;
-    std::string_view caption{};
-    std::string_view path{};
-    float x = 0.0f;
-    float y = 0.0f;
-    float width = 0.0f;
-};
-
-float DrawReadonlyPathRow(UiFrameContext& ctx, const ReadonlyPathSpec& spec) {
-    const float s = ctx.dpiScale;
-    DrawLabCaption(ctx, spec.x, spec.y, spec.caption);
-    const float fieldY = spec.y + 24.0f * s;
-    std::array<char, 512> buf{};
-    CopyUtf8ToBuffer(spec.path, buf.data(), buf.size());
-    ImGui::SetCursorScreenPos(ImVec2(spec.x, fieldY));
-    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
-    const ElCompositeResult res = ElCompositeInput(
-        elSt,
-        ElCompositeSpec{
-            spec.id, buf.data(), buf.size(), spec.width, std::nullopt, MotrixIcon::Folder, {}, true});
-    if (res.rightClicked && !spec.path.empty()) {
-        ctx.host.OpenPathInExplorer(spec.path);
+    std::string msg;
+    RgbaColor col = ctx.palette.primary;
+    if (st == S::Checking) {
+        msg = std::string(ctx.tr.Tr("prefs.aria2_next_status_checking"));
+    } else if (st == S::Downloading) {
+        msg = std::string(ctx.tr.Tr("prefs.aria2_next_status_downloading"));
+    } else if (st == S::Verifying || st == S::Restarting) {
+        msg = std::string(ctx.tr.Tr("prefs.aria2_next_status_verifying"));
+    } else if (st == S::Succeeded) {
+        col = ctx.palette.progressComplete;
+        msg = ctx.state.engineUpdateMessage.empty()
+                  ? std::string(ctx.tr.Tr("prefs.aria2_next_status_uptodate"))
+                  : std::format("{} ({})",
+                                ctx.tr.Tr("prefs.aria2_next_status_updated"),
+                                ctx.state.engineUpdateMessage);
+    } else if (st == S::Failed) {
+        col = ctx.palette.progressError;
+        msg = ctx.state.engineUpdateMessage;
     }
-    return fieldY + 42.0f * s;
+    FontGuard sf(ctx.fonts, FontRole::Regular, 13.5f);
+    ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(),
+                                        ImGui::GetFontSize(),
+                                        ImVec2(x, y),
+                                        ToAbgrU32(col),
+                                        msg.c_str(),
+                                        nullptr,
+                                        wrapW);
+    const ImVec2 sz = ImGui::CalcTextSize(msg.c_str(), nullptr, false, wrapW);
+    return y + std::max(22.0f * ctx.dpiScale, sz.y + 8.0f * ctx.dpiScale);
 }
 
-void RenderAdvProtocolRow(UiFrameContext& ctx, PrefsFormState& ps) {
-    const float s = ctx.dpiScale;
-    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
-
-    DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.download_protocol"), 24.0f * s, [&](float bx, float) {
-        float cy = ImGui::GetCursorScreenPos().y;
-        DrawLabCaption(ctx, bx, cy, ctx.tr.Tr("prefs.protocols_default_client"));
-        cy += 28.0f * s;
-        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        ElSwitch(elSt, "##proto_mag", ctx.tr.Tr("prefs.proto_magnet"), &ps.protocolMagnet);
-        cy += 34.0f * s;
-        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        ElSwitch(elSt, "##proto_th", ctx.tr.Tr("prefs.proto_thunder"), &ps.protocolThunder);
-        cy += 34.0f * s;
-        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        ElSwitch(elSt, "##proto_mx", ctx.tr.Tr("prefs.proto_motrix"), &ps.protocolMotrix);
-        cy += 34.0f * s;
-        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        ElSwitch(elSt, "##proto_tor", ctx.tr.Tr("prefs.proto_torrent"), &ps.protocolTorrent);
-        ImGui::SetCursorScreenPos(ImVec2(bx, cy + 28.0f * s));
-        ImGui::Dummy(ImVec2(0.0f, 0.0f));
-    });
+void TriggerAria2NextUpdate(UiFrameContext& ctx, const PrefsFormState& ps) {
+    const std::string_view url = ps.aria2NextUrlBuffer.data();
+    const std::string_view mir = ps.aria2NextMirrorBuffer.data();
+    if (url != ctx.state.prefs.aria2NextUpdateUrl || mir != ctx.state.prefs.aria2NextMirrorPrefix) {
+        auto pr = ctx.state.prefs;
+        pr.aria2NextUpdateUrl = std::string(url);
+        pr.aria2NextMirrorPrefix = std::string(mir);
+        ctx.sink.Dispatch(motrix::app::SavePreferencesCmd{std::move(pr), ctx.state.sysConfig, false});
+    }
+    ctx.sink.Dispatch(motrix::app::StartAria2NextUpdateCmd{false});
 }
 
-void RenderAdvUserAgentRow(UiFrameContext& ctx, PrefsFormState& ps) {
+void RenderUpdaterSourceFields(UiFrameContext& ctx, PrefsFormState& ps, ImVec2& pos, float fieldW) {
     const float s = ctx.dpiScale;
     const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
-
-    DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.user_agent"), 24.0f * s, [&](float bx, float bw) {
-        float cy = ImGui::GetCursorScreenPos().y;
-        const float fieldW = std::min(bw, 490.0f * s);
-        DrawLabCaption(ctx, bx, cy, ctx.tr.Tr("prefs.mock_user_agent"));
-        cy += 26.0f * s;
-        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        ElInputTextMultiline(elSt,
-                             ElTextInputSpec{"##adv_ua",
-                                             ps.userAgentBuffer.data(),
-                                             ps.userAgentBuffer.size(),
-                                             fieldW,
-                                             {},
-                                             0,
-                                             60.0f * s});
-        cy += 68.0f * s;
-        RenderUserAgentButtons(ctx, ps, bx, cy);
-        ImGui::SetCursorScreenPos(ImVec2(bx, cy + 34.0f * s));
-        ImGui::Dummy(ImVec2(0.0f, 0.0f));
-    });
+    DrawSubCaption(ctx, pos.x, pos.y, ctx.tr.Tr("prefs.aria2_next_source"));
+    pos.y += 24.0f * s;
+    const std::string_view rstLbl = ctx.tr.Tr("prefs.aria2_next_reset_source");
+    float rstW = 96.0f * s;
+    {
+        FontGuard bf(ctx.fonts, FontRole::Regular, 14.5f);
+        rstW = ImGui::CalcTextSize(rstLbl.data(), rstLbl.data() + rstLbl.size()).x + 24.0f * s;
+    }
+    const float urlW = std::max(140.0f * s, fieldW - rstW - 8.0f * s);
+    ImGui::SetCursorScreenPos(pos);
+    ElInputText(elSt,
+                ElTextInputSpec{"##lab_a2_url",
+                                ps.aria2NextUrlBuffer.data(),
+                                ps.aria2NextUrlBuffer.size(),
+                                urlW,
+                                motrix::domain::kDefaultAria2NextUpdateUrl});
+    ImGui::SetCursorScreenPos(ImVec2(pos.x + urlW + 8.0f * s, pos.y - 1.0f * s));
+    if (ElSecondaryButton(elSt, ElButtonSpec{"##lab_a2_rst", rstLbl, rstW, 34.0f * s})) {
+        CopyUtf8ToBuffer(motrix::domain::kDefaultAria2NextUpdateUrl,
+                         ps.aria2NextUrlBuffer.data(),
+                         ps.aria2NextUrlBuffer.size());
+    }
+    pos.y += 42.0f * s;
+    DrawSubCaption(ctx, pos.x, pos.y, ctx.tr.Tr("prefs.aria2_next_mirror"));
+    pos.y += 24.0f * s;
+    ImGui::SetCursorScreenPos(pos);
+    ElInputText(elSt,
+                ElTextInputSpec{"##lab_a2_mir",
+                                ps.aria2NextMirrorBuffer.data(),
+                                ps.aria2NextMirrorBuffer.size(),
+                                fieldW,
+                                "https://ghproxy.net/"});
+    pos.y += 42.0f * s;
 }
 
-void RenderAdvDeveloperRow(UiFrameContext& ctx, PrefsFormState& ps) {
-    const float s = ctx.dpiScale;
-    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
+void RenderLabAria2NextUpdateRow(UiFrameContext& ctx, PrefsFormState& ps) {
+    DrawPrefsFormRow(
+        ctx, ctx.tr.Tr("prefs.aria2_next_group"), 24.0f * ctx.dpiScale, [&](float bx, float bw) {
+            const float s = ctx.dpiScale;
+            const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
+            const float fieldW = std::min(bw, 460.0f * s);
+            ImVec2 pos(bx, ImGui::GetCursorScreenPos().y);
 
-    DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.developer"), 24.0f * s, [&](float bx, float bw) {
-        float cy = ImGui::GetCursorScreenPos().y;
-        const float fieldW = std::min(bw, 460.0f * s);
+            const std::string curVer =
+                ctx.state.engineInfo.version.empty()
+                    ? std::string(ctx.tr.Tr("prefs.aria2_next_not_connected"))
+                    : std::format("{} v{}", ctx.state.engineInfo.product, ctx.state.engineInfo.version);
+            DrawSubCaption(
+                ctx, pos.x, pos.y, std::format("{}: {}", ctx.tr.Tr("prefs.aria2_next_current"), curVer));
+            pos.y += 26.0f * s;
 
-        DrawLabCaption(ctx, bx, cy, ctx.tr.Tr("prefs.log_level"));
-        cy += 24.0f * s;
-        const std::array<const char*, 4> logItems{
-            ctx.tr.Tr("prefs.log_debug").data(),
-            ctx.tr.Tr("prefs.log_info").data(),
-            ctx.tr.Tr("prefs.log_warn").data(),
-            ctx.tr.Tr("prefs.log_error").data(),
-        };
-        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        ElSelectCombo(
-            elSt,
-            ElSelectSpec{"##dev_log_level", &ps.logLevelIndex, logItems, std::min(bw, 220.0f * s)});
-        cy += 44.0f * s;
+            RenderUpdaterSourceFields(ctx, ps, pos, fieldW);
 
-        cy = DrawReadonlyPathRow(ctx,
-                                 ReadonlyPathSpec{"##dev_conf",
-                                                  ctx.tr.Tr("prefs.aria2_conf_path"),
-                                                  ctx.state.engineConfPath,
-                                                  bx,
-                                                  cy,
-                                                  fieldW});
-        cy = DrawReadonlyPathRow(ctx,
-                                 ReadonlyPathSpec{"##dev_sess",
-                                                  ctx.tr.Tr("prefs.session_path"),
-                                                  ctx.state.sessionFilePath,
-                                                  bx,
-                                                  cy,
-                                                  fieldW});
-        cy = DrawReadonlyPathRow(
-            ctx,
-            ReadonlyPathSpec{
-                "##dev_log", ctx.tr.Tr("prefs.log_path"), ctx.state.appLogPath, bx, cy, fieldW});
-
-        cy += 6.0f * s;
-        float btn1W = 148.0f * s;
-        float btn2W = 128.0f * s;
-        {
-            FontGuard bf(ctx.fonts, FontRole::Regular, 14.5f);
-            const std::string_view l1 = ctx.tr.Tr("prefs.session_reset");
-            const std::string_view l2 = ctx.tr.Tr("prefs.factory_reset");
-            btn1W = ImGui::CalcTextSize(l1.data(), l1.data() + l1.size()).x + 30.0f * s;
-            btn2W = ImGui::CalcTextSize(l2.data(), l2.data() + l2.size()).x + 30.0f * s;
-        }
-        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        if (ElSecondaryButton(
-                elSt,
-                ElButtonSpec{"##dev_rst_sess", ctx.tr.Tr("prefs.session_reset"), btn1W, 34.0f * s})) {
-            ctx.sink.Dispatch(motrix::app::ResetSessionCmd{});
-            SetPrefsFeedback(ps, 3, true);
-            ctx.host.NotifyAnimationActive();
-        }
-        ImGui::SetCursorScreenPos(ImVec2(bx + btn1W + 12.0f * s, cy));
-        if (ElSecondaryButton(
-                elSt,
-                ElButtonSpec{"##dev_fact_rst", ctx.tr.Tr("prefs.factory_reset"), btn2W, 34.0f * s})) {
-            ctx.sink.Dispatch(motrix::app::FactoryResetCmd{});
-            ps.initialized = false;
-            SetPrefsFeedback(ps, 4, true);
-            ctx.host.NotifyAnimationActive();
-        }
-        ImGui::SetCursorScreenPos(ImVec2(bx, cy + 36.0f * s));
-        ImGui::Dummy(ImVec2(0.0f, 0.0f));
-    });
+            const bool busy = IsAria2UpdateBusy(ctx.state.engineUpdateStatus);
+            const std::string_view updLbl =
+                ctx.tr.Tr(busy ? "prefs.aria2_next_updating" : "prefs.aria2_next_check_update");
+            float updW = 160.0f * s;
+            {
+                FontGuard bf(ctx.fonts, FontRole::Medium, 14.5f);
+                updW = ImGui::CalcTextSize(updLbl.data(), updLbl.data() + updLbl.size()).x + 28.0f * s;
+            }
+            ImGui::SetCursorScreenPos(pos);
+            if (ElPrimaryButton(elSt, ElButtonSpec{"##lab_a2_upd", updLbl, updW, 34.0f * s, busy})
+                && !busy) {
+                TriggerAria2NextUpdate(ctx, ps);
+            }
+            pos.y += 42.0f * s;
+            pos.y = DrawAria2UpdateStatus(ctx, pos.x, pos.y, fieldW);
+            float noteH = 26.0f * s;
+            {
+                FontGuard nf(ctx.fonts, FontRole::Regular, 13.0f);
+                const std::string_view note = ctx.tr.Tr("prefs.aria2_next_managed_note");
+                ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(),
+                                                    ImGui::GetFontSize(),
+                                                    pos,
+                                                    ToAbgrU32(ctx.palette.taskMetaText),
+                                                    note.data(),
+                                                    note.data() + note.size(),
+                                                    fieldW);
+                const ImVec2 noteSz =
+                    ImGui::CalcTextSize(note.data(), note.data() + note.size(), false, fieldW);
+                noteH = std::max(22.0f * s, noteSz.y + 8.0f * s);
+            }
+            ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + noteH));
+            ImGui::Dummy(ImVec2(0.0f, 0.0f));
+        });
 }
 
 void RenderLabWarningBanner(UiFrameContext& ctx) {
@@ -284,7 +215,7 @@ void RenderLabMediaRow(UiFrameContext& ctx, PrefsFormState& ps) {
         float cy = ImGui::GetCursorScreenPos().y;
         const float comboW = std::min(bw, 260.0f * s);
 
-        DrawLabCaption(ctx, bx, cy, ctx.tr.Tr("prefs.lab_media_mode"));
+        DrawSubCaption(ctx, bx, cy, ctx.tr.Tr("prefs.lab_media_mode"));
         cy += 24.0f * s;
         const std::array<const char*, 2> modeOpts{
             ctx.tr.Tr("prefs.lab_media_auto").data(),
@@ -294,7 +225,7 @@ void RenderLabMediaRow(UiFrameContext& ctx, PrefsFormState& ps) {
         ElSelectCombo(elSt, ElSelectSpec{"##lab_media_mode", &ps.mediaModeIdx, modeOpts, comboW});
         cy += 42.0f * s;
 
-        DrawLabCaption(ctx, bx, cy, ctx.tr.Tr("prefs.lab_media_format"));
+        DrawSubCaption(ctx, bx, cy, ctx.tr.Tr("prefs.lab_media_format"));
         cy += 24.0f * s;
         static constexpr std::array<const char*, 2> kFormats{"MP4 (.mp4)", "Matroska (.mkv)"};
         ImGui::SetCursorScreenPos(ImVec2(bx, cy));
@@ -318,7 +249,7 @@ void RenderLabBtTweaksRow(UiFrameContext& ctx, PrefsFormState& ps) {
         ElCheckbox(elSt, "##lab_detach_share", ctx.tr.Tr("prefs.lab_detach_share"), &ps.detachShareOnly);
         cy += 34.0f * s;
 
-        DrawLabCaption(ctx, bx, cy, ctx.tr.Tr("prefs.lab_max_peers"));
+        DrawSubCaption(ctx, bx, cy, ctx.tr.Tr("prefs.lab_max_peers"));
         cy += 24.0f * s;
         ImGui::SetCursorScreenPos(ImVec2(bx, cy));
         ElInputNumberInt(elSt, "##lab_max_peers", ElIntSpec{&ps.btMaxPeers, 0, 1000, 5, 140.0f * s});
@@ -361,12 +292,6 @@ void RenderLabEngineRow(UiFrameContext& ctx, PrefsFormState& ps) {
 }
 
 }  // namespace
-
-void RenderPrefsAdvancedTail(UiFrameContext& ctx, PrefsFormState& ps) {
-    RenderAdvProtocolRow(ctx, ps);
-    RenderAdvUserAgentRow(ctx, ps);
-    RenderAdvDeveloperRow(ctx, ps);
-}
 
 void RenderPrefsLabTab(UiFrameContext& ctx, PrefsFormState& ps) {
     RenderLabWarningBanner(ctx);

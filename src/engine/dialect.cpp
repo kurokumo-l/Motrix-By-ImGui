@@ -384,7 +384,7 @@ public:
                                               : rawBypass.substr(pos, sep - pos);
             const std::string_view trimmed = motrix::core::TrimAscii(part);
             if (!trimmed.empty()) {
-                if (motrix::core::AsciiLower(trimmed) == "<local>") {
+                if (motrix::core::EqualsAsciiInsensitive(trimmed, "<local>")) {
                     AppendUniqueToken(tokens, "localhost");
                     AppendUniqueToken(tokens, "127.0.0.1");
                     AppendUniqueToken(tokens, "::1");
@@ -411,15 +411,6 @@ std::unique_ptr<IEngineDialect> CreateDialect(EngineKind kind) {
 }
 
 namespace {
-
-[[nodiscard]] bool ContainsIgnoreCase(std::string_view haystack, std::string_view needle) noexcept {
-    if (needle.empty() || haystack.size() < needle.size()) {
-        return false;
-    }
-    const std::string h = motrix::core::AsciiLower(haystack);
-    const std::string n = motrix::core::AsciiLower(needle);
-    return h.find(n) != std::string::npos;
-}
 
 void AppendCsvFeatures(std::string_view rest, std::vector<std::string>& out) {
     std::size_t fp = 0;
@@ -469,7 +460,8 @@ void ParseCliHeaderLine(std::string_view line, EngineVersionInfo& info) {
 }  // namespace
 
 EngineKind DetectEngineKind(std::string_view product, std::string_view versionString) noexcept {
-    if (ContainsIgnoreCase(product, "aria2-next") || ContainsIgnoreCase(versionString, "aria2-next")) {
+    if (motrix::core::ContainsAsciiInsensitive(product, "aria2-next")
+        || motrix::core::ContainsAsciiInsensitive(versionString, "aria2-next")) {
         return EngineKind::Aria2Next;
     }
     if (!versionString.empty() || !product.empty()) {

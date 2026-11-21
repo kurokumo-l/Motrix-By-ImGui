@@ -10,10 +10,13 @@ export [[nodiscard]] std::string PathToUtf8(const std::filesystem::path& path);
 export [[nodiscard]] std::filesystem::path PathFromUtf8(std::string_view utf8);
 export [[nodiscard]] std::string AsciiLower(std::string_view text);
 export [[nodiscard]] std::string_view TrimAscii(std::string_view text) noexcept;
+export [[nodiscard]] bool EqualsAsciiInsensitive(std::string_view a, std::string_view b) noexcept;
 export [[nodiscard]] bool StartsWithAsciiInsensitive(std::string_view text,
                                                      std::string_view prefix) noexcept;
 export [[nodiscard]] bool EndsWithAsciiInsensitive(std::string_view text,
                                                    std::string_view suffix) noexcept;
+export [[nodiscard]] bool ContainsAsciiInsensitive(std::string_view haystack,
+                                                   std::string_view needle) noexcept;
 export [[nodiscard]] std::string_view TrimQuotedArg(std::string_view text) noexcept;
 export [[nodiscard]] std::optional<int> ParseStrictInt(std::string_view text) noexcept;
 export [[nodiscard]] std::filesystem::path CurrentExecutablePath();

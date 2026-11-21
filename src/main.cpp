@@ -32,14 +32,7 @@ struct CliOptions {
 [[nodiscard]] std::vector<std::string> ReadProcessArgsUtf8() {
     int wargc = 0;
     LPWSTR* rawArgv = ::CommandLineToArgvW(::GetCommandLineW(), &wargc);
-    struct LocalFreeDeleter {
-        void operator()(LPWSTR* p) const noexcept {
-            if (p) {
-                ::LocalFree(p);
-            }
-        }
-    };
-    const std::unique_ptr<LPWSTR[], LocalFreeDeleter> guard(rawArgv);
+    const std::unique_ptr<LPWSTR[], motrix::core::LocalFreeDeleter> guard(rawArgv);
     std::vector<std::string> args;
     if (!guard || wargc <= 0) {
         return args;
@@ -52,17 +45,17 @@ struct CliOptions {
 }
 
 [[nodiscard]] int ParseDetailTabValue(std::string_view rawVal) noexcept {
-    const std::string val = motrix::core::AsciiLower(rawVal);
-    if (val == "activity" || val == "1") {
+    using motrix::core::EqualsAsciiInsensitive;
+    if (EqualsAsciiInsensitive(rawVal, "activity") || rawVal == "1") {
         return 1;
     }
-    if (val == "trackers" || val == "2") {
+    if (EqualsAsciiInsensitive(rawVal, "trackers") || rawVal == "2") {
         return 2;
     }
-    if (val == "peers" || val == "3") {
+    if (EqualsAsciiInsensitive(rawVal, "peers") || rawVal == "3") {
         return 3;
     }
-    if (val == "files" || val == "4") {
+    if (EqualsAsciiInsensitive(rawVal, "files") || rawVal == "4") {
         return 4;
     }
     return 0;
@@ -252,13 +245,9 @@ struct EarlyIpcBuffer {
 }
 
 [[nodiscard]] std::unique_ptr<motrix::ipc::ISingleInstanceChannel>
-TryAcquireSingleInstance(const CliOptions& cli,
-                         const motrix::ipc::StartupPayload& forwardPayload,
+TryAcquireSingleInstance(const motrix::ipc::StartupPayload& forwardPayload,
                          motrix::core::Logger& logger,
                          EarlyIpcBuffer& earlyBuf) {
-    if (!cli.host.screenshotPath.empty() || cli.disableSingleInstance || cli.app.rpcPortOverride != 0) {
-        return nullptr;
-    }
     auto ipcChannel = motrix::ipc::CreateNamedPipeChannel(logger);
     const auto acquired = ipcChannel->TryAcquirePrimary([&](const motrix::ipc::StartupPayload& remote) {
         std::scoped_lock lk(earlyBuf.mu);
@@ -420,7 +409,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     EarlyIpcBuffer earlyBuf;
     const bool useSingleInstance =
         !isScreenshotMode && !cli.disableSingleInstance && cli.app.rpcPortOverride == 0;
-    auto ipcChannel = TryAcquireSingleInstance(cli, forwardPayload, logger, earlyBuf);
+    auto ipcChannel =
+        useSingleInstance ? TryAcquireSingleInstance(forwardPayload, logger, earlyBuf) : nullptr;
     if (useSingleInstance && !ipcChannel) {
         return 0;
     }

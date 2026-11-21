@@ -17,12 +17,50 @@ namespace motrix::ui {
 
 namespace {
 
-template <typename T> void SafeRelease(T*& ptr) noexcept {
-    if (ptr) {
-        ptr->Release();
-        ptr = nullptr;
+template <typename T> class ComRef {
+public:
+    ComRef() noexcept = default;
+    ~ComRef() { Reset(); }
+
+    ComRef(const ComRef&) = delete;
+    ComRef& operator=(const ComRef&) = delete;
+
+    ComRef(ComRef&& other) noexcept : ptr_(other.Detach()) {}
+    ComRef& operator=(ComRef&& other) noexcept {
+        if (this != &other) {
+            Adopt(other.Detach());
+        }
+        return *this;
     }
-}
+
+    [[nodiscard]] T* Get() const noexcept { return ptr_; }
+    [[nodiscard]] T** Put() noexcept {
+        Reset();
+        return &ptr_;
+    }
+    [[nodiscard]] T* Detach() noexcept {
+        T* out = ptr_;
+        ptr_ = nullptr;
+        return out;
+    }
+    T* operator->() const noexcept { return ptr_; }
+    explicit operator bool() const noexcept { return ptr_ != nullptr; }
+
+    void Adopt(T* ptr) noexcept {
+        Reset();
+        ptr_ = ptr;
+    }
+
+    void Reset() noexcept {
+        if (ptr_) {
+            ptr_->Release();
+            ptr_ = nullptr;
+        }
+    }
+
+private:
+    T* ptr_ = nullptr;
+};
 
 struct FontMemoryKey {
     const void* data = nullptr;
@@ -128,15 +166,40 @@ public:
     }
 };
 
-struct DWriteFaceBuilder {
-    IDWriteFactory* factory = nullptr;
-    IDWriteFontCollection* sysFonts = nullptr;
-    MemoryFontFileLoader* loader = nullptr;
+struct DWriteAtlasState {
+    ComRef<IDWriteFactory> factory;
+    ComRef<IDWriteFactory2> factory2;
+    ComRef<IDWriteFontCollection> sysFonts;
+    ComRef<MemoryFontFileLoader> loader;
+    bool loaderRegistered = false;
+    std::array<std::uint8_t, 256> contrastLut{};
+    std::vector<BYTE> rawScratch;
+    std::vector<unsigned char> alphaScratch;
+
+    ~DWriteAtlasState() {
+        if (factory && loader && loaderRegistered) {
+            (void)factory->UnregisterFontFileLoader(loader.Get());
+        }
+    }
+};
+
+struct DWriteFontSrcData {
+    ComRef<IDWriteFontFace> face;
+    DWRITE_FONT_METRICS metrics{};
+    float scalePerUnit = 0.0f;
+    float capRatio = 0.0f;
+    UINT16 glyphCount = 0;
 };
 
 struct ParsedSysFontSpec {
     DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL;
     std::string_view familyUtf8;
+};
+
+struct RasterMetrics {
+    float fontEmSize = 0.0f;
+    float advanceX = 0.0f;
+    float rasterizerDensity = 1.0f;
 };
 
 [[nodiscard]] bool ParseSysFontSpec(std::string_view spec, ParsedSysFontSpec& out) noexcept {
@@ -159,162 +222,65 @@ struct ParsedSysFontSpec {
     return !out.familyUtf8.empty();
 }
 
-void* CreateDWriteFaceBuilder() {
-    auto b = std::make_unique<DWriteFaceBuilder>();
-    if (FAILED(::DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
-                                     __uuidof(IDWriteFactory),
-                                     reinterpret_cast<IUnknown**>(&b->factory)))) {
-        return nullptr;
-    }
-    b->loader = new MemoryFontFileLoader();
-    if (FAILED(b->factory->RegisterFontFileLoader(b->loader))) {
-        SafeRelease(b->loader);
-        SafeRelease(b->factory);
-        return nullptr;
-    }
-    (void)b->factory->GetSystemFontCollection(&b->sysFonts, FALSE);
-    return b.release();
-}
-
-void DestroyDWriteFaceBuilder(void* builderRaw) noexcept {
-    auto* b = static_cast<DWriteFaceBuilder*>(builderRaw);
-    if (!b) {
-        return;
-    }
-    if (b->factory && b->loader) {
-        b->factory->UnregisterFontFileLoader(b->loader);
-    }
-    SafeRelease(b->loader);
-    SafeRelease(b->sysFonts);
-    SafeRelease(b->factory);
-    delete b;
-}
-
-void* CreateDWriteMemoryFontFace(void* builderRaw,
-                                 const void* data,
-                                 std::uint64_t size,
-                                 std::uint32_t fontNo) {
-    auto* b = static_cast<DWriteFaceBuilder*>(builderRaw);
-    if (!b || !b->factory || !b->loader || !data || size == 0) {
-        return nullptr;
+[[nodiscard]] ComRef<IDWriteFontFace> CreateMemoryFontFace(const DWriteAtlasState& state,
+                                                           const void* data,
+                                                           std::uint64_t size,
+                                                           std::uint32_t fontNo) {
+    ComRef<IDWriteFontFace> face;
+    if (!state.factory || !state.loader || !data || size == 0) {
+        return face;
     }
     const FontMemoryKey key{data, size};
-    IDWriteFontFile* fontFile = nullptr;
-    if (FAILED(b->factory->CreateCustomFontFileReference(&key, sizeof(key), b->loader, &fontFile))) {
-        return nullptr;
+    ComRef<IDWriteFontFile> fontFile;
+    if (FAILED(state.factory->CreateCustomFontFileReference(
+            &key, sizeof(key), state.loader.Get(), fontFile.Put()))) {
+        return face;
     }
 
     BOOL supported = FALSE;
     DWRITE_FONT_FILE_TYPE fileType = DWRITE_FONT_FILE_TYPE_UNKNOWN;
     DWRITE_FONT_FACE_TYPE faceType = DWRITE_FONT_FACE_TYPE_UNKNOWN;
     UINT32 numFaces = 0;
-    const HRESULT analyzeHr = fontFile->Analyze(&supported, &fileType, &faceType, &numFaces);
-    if (FAILED(analyzeHr) || !supported || faceType == DWRITE_FONT_FACE_TYPE_UNKNOWN
-        || fontNo >= numFaces) {
-        SafeRelease(fontFile);
-        return nullptr;
+    if (FAILED(fontFile->Analyze(&supported, &fileType, &faceType, &numFaces)) || !supported
+        || faceType == DWRITE_FONT_FACE_TYPE_UNKNOWN || fontNo >= numFaces) {
+        return face;
     }
 
-    IDWriteFontFace* face = nullptr;
-    IDWriteFontFile* files[] = {fontFile};
-    const HRESULT faceHr =
-        b->factory->CreateFontFace(faceType, 1, files, fontNo, DWRITE_FONT_SIMULATIONS_NONE, &face);
-    SafeRelease(fontFile);
-    return SUCCEEDED(faceHr) ? face : nullptr;
+    IDWriteFontFile* files[] = {fontFile.Get()};
+    (void)state.factory->CreateFontFace(
+        faceType, 1, files, fontNo, DWRITE_FONT_SIMULATIONS_NONE, face.Put());
+    return face;
 }
 
-void* CreateDWriteSystemFontFace(void* builderRaw, std::string_view specUtf8) {
-    auto* b = static_cast<DWriteFaceBuilder*>(builderRaw);
+[[nodiscard]] ComRef<IDWriteFontFace> CreateSystemFontFace(const DWriteAtlasState& state,
+                                                           std::string_view specUtf8) {
+    ComRef<IDWriteFontFace> face;
     ParsedSysFontSpec parsed{};
-    if (!b || !b->sysFonts || !ParseSysFontSpec(specUtf8, parsed)) {
-        return nullptr;
+    if (!state.sysFonts || !ParseSysFontSpec(specUtf8, parsed)) {
+        return face;
     }
 
-    const std::wstring wideName = motrix::core::PathFromUtf8(parsed.familyUtf8).wstring();
+    const std::wstring wideName = motrix::core::Utf8ToWide(parsed.familyUtf8);
     UINT32 familyIndex = 0;
     BOOL exists = FALSE;
-    if (FAILED(b->sysFonts->FindFamilyName(wideName.c_str(), &familyIndex, &exists)) || !exists) {
-        return nullptr;
+    if (FAILED(state.sysFonts->FindFamilyName(wideName.c_str(), &familyIndex, &exists)) || !exists) {
+        return face;
     }
 
-    IDWriteFontFamily* family = nullptr;
-    if (FAILED(b->sysFonts->GetFontFamily(familyIndex, &family)) || !family) {
-        return nullptr;
+    ComRef<IDWriteFontFamily> family;
+    if (FAILED(state.sysFonts->GetFontFamily(familyIndex, family.Put())) || !family) {
+        return face;
     }
-    IDWriteFont* font = nullptr;
-    const HRESULT matchHr = family->GetFirstMatchingFont(
-        parsed.weight, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, &font);
-    SafeRelease(family);
-    if (FAILED(matchHr) || !font) {
-        SafeRelease(font);
-        return nullptr;
+    ComRef<IDWriteFont> font;
+    if (FAILED(family->GetFirstMatchingFont(
+            parsed.weight, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, font.Put()))
+        || !font) {
+        return face;
     }
 
-    IDWriteFontFace* face = nullptr;
-    const HRESULT faceHr = font->CreateFontFace(&face);
-    SafeRelease(font);
-    return SUCCEEDED(faceHr) ? face : nullptr;
+    (void)font->CreateFontFace(face.Put());
+    return face;
 }
-
-template <typename T> class ComRef {
-public:
-    ComRef() noexcept = default;
-    ~ComRef() { Reset(); }
-
-    ComRef(const ComRef&) = delete;
-    ComRef& operator=(const ComRef&) = delete;
-
-    [[nodiscard]] T* Get() const noexcept { return ptr_; }
-    [[nodiscard]] T** Put() noexcept {
-        Reset();
-        return &ptr_;
-    }
-    [[nodiscard]] T* Detach() noexcept {
-        T* out = ptr_;
-        ptr_ = nullptr;
-        return out;
-    }
-    T* operator->() const noexcept { return ptr_; }
-    explicit operator bool() const noexcept { return ptr_ != nullptr; }
-
-    void Adopt(T* ptr) noexcept {
-        Reset();
-        ptr_ = ptr;
-    }
-
-    void Reset() noexcept {
-        if (ptr_) {
-            ptr_->Release();
-            ptr_ = nullptr;
-        }
-    }
-
-private:
-    T* ptr_ = nullptr;
-};
-
-struct DWriteAtlasState {
-    void* faceBuilder = nullptr;
-    IDWriteFactory* factory = nullptr;
-    IDWriteFactory2* factory2 = nullptr;
-    std::array<std::uint8_t, 256> contrastLut{};
-    std::vector<BYTE> rawScratch;
-    std::vector<unsigned char> alphaScratch;
-};
-
-struct DWriteFontSrcData {
-    IDWriteFontFace* face = nullptr;
-    DWRITE_FONT_METRICS metrics{};
-    float scalePerUnit = 0.0f;
-    float capRatio = 0.0f;
-    UINT16 glyphCount = 0;
-};
-
-struct RasterMetrics {
-    float fontEmSize = 0.0f;
-    float advanceX = 0.0f;
-    float rasterizerDensity = 1.0f;
-};
 
 void InitContrastLut(std::array<std::uint8_t, 256>& lut) noexcept {
     constexpr float kUnormContrastGamma = 0.82f;
@@ -372,7 +338,7 @@ void InitContrastLut(std::array<std::uint8_t, 256>& lut) noexcept {
                                           DWriteAtlasState& state,
                                           RECT& bounds,
                                           DWRITE_TEXTURE_TYPE& texType) {
-    const bool useGrayscale = state.factory2 != nullptr;
+    const bool useGrayscale = static_cast<bool>(state.factory2);
     texType = useGrayscale ? DWRITE_TEXTURE_ALIASED_1x1 : DWRITE_TEXTURE_CLEARTYPE_3x1;
     if (FAILED(analysis->GetAlphaTextureBounds(texType, &bounds))) {
         return false;
@@ -423,18 +389,19 @@ bool DWriteLoaderInit(ImFontAtlas* atlas) {
     }
     auto state = std::make_unique<DWriteAtlasState>();
     InitContrastLut(state->contrastLut);
-    state->faceBuilder = CreateDWriteFaceBuilder();
-    if (!state->faceBuilder) {
-        return false;
-    }
     if (FAILED(::DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
                                      __uuidof(IDWriteFactory),
-                                     reinterpret_cast<IUnknown**>(&state->factory)))) {
-        DestroyDWriteFaceBuilder(state->faceBuilder);
+                                     reinterpret_cast<IUnknown**>(state->factory.Put())))) {
         return false;
     }
+    state->loader.Adopt(new MemoryFontFileLoader());
+    if (FAILED(state->factory->RegisterFontFileLoader(state->loader.Get()))) {
+        return false;
+    }
+    state->loaderRegistered = true;
+    (void)state->factory->GetSystemFontCollection(state->sysFonts.Put(), FALSE);
     (void)state->factory->QueryInterface(__uuidof(IDWriteFactory2),
-                                         reinterpret_cast<void**>(&state->factory2));
+                                         reinterpret_cast<void**>(state->factory2.Put()));
     atlas->FontLoaderData = state.release();
     return true;
 }
@@ -444,16 +411,6 @@ void DWriteLoaderShutdown(ImFontAtlas* atlas) {
     if (!state) {
         return;
     }
-    if (state->factory2) {
-        state->factory2->Release();
-        state->factory2 = nullptr;
-    }
-    if (state->factory) {
-        state->factory->Release();
-        state->factory = nullptr;
-    }
-    DestroyDWriteFaceBuilder(state->faceBuilder);
-    state->faceBuilder = nullptr;
     delete state;
     atlas->FontLoaderData = nullptr;
 }
@@ -466,19 +423,17 @@ bool DWriteFontSrcInit(ImFontAtlas* atlas, ImFontConfig* src) {
         return false;
     }
     auto* state = static_cast<DWriteAtlasState*>(atlas->FontLoaderData);
-    void* rawFace = nullptr;
+    ComRef<IDWriteFontFace> face;
     if (src->FontDataSize > 11 && std::memcmp(src->FontData, "MOTRIX_SYS:", 11) == 0) {
         const std::string_view spec(static_cast<const char*>(src->FontData),
                                     static_cast<std::size_t>(src->FontDataSize));
-        rawFace = CreateDWriteSystemFontFace(state->faceBuilder, spec);
+        face = CreateSystemFontFace(*state, spec);
     } else {
-        rawFace = CreateDWriteMemoryFontFace(state->faceBuilder,
-                                             src->FontData,
-                                             static_cast<std::uint64_t>(src->FontDataSize),
-                                             static_cast<std::uint32_t>(src->FontNo));
+        face = CreateMemoryFontFace(*state,
+                                    src->FontData,
+                                    static_cast<std::uint64_t>(src->FontDataSize),
+                                    static_cast<std::uint32_t>(src->FontNo));
     }
-    ComRef<IDWriteFontFace> face;
-    face.Adopt(static_cast<IDWriteFontFace*>(rawFace));
     if (!face) {
         return false;
     }
@@ -502,7 +457,7 @@ bool DWriteFontSrcInit(ImFontAtlas* atlas, ImFontConfig* src) {
     srcData->scalePerUnit = visualNorm / static_cast<float>(totalUnits);
     srcData->capRatio = rawCapRatio * visualNorm;
     srcData->glyphCount = face->GetGlyphCount();
-    srcData->face = face.Detach();
+    srcData->face = std::move(face);
     src->FontLoaderData = srcData.release();
 
     if (src->MergeMode && src->SizePixels == 0.0f && src->DstFont && !src->DstFont->Sources.empty()) {
@@ -515,9 +470,6 @@ void DWriteFontSrcDestroy(ImFontAtlas* /*atlas*/, ImFontConfig* src) {
     auto* srcData = static_cast<DWriteFontSrcData*>(src ? src->FontLoaderData : nullptr);
     if (!srcData) {
         return;
-    }
-    if (srcData->face) {
-        srcData->face->Release();
     }
     delete srcData;
     src->FontLoaderData = nullptr;
@@ -584,27 +536,19 @@ bool DWriteFontBakedInit(ImFontAtlas* /*atlas*/,
     return true;
 }
 
-struct GlyphLoadArgs {
-    ImFontAtlas* atlas = nullptr;
-    ImFontConfig* src = nullptr;
-    ImFontBaked* baked = nullptr;
-    int glyphIndex = 0;
-    ImFontGlyph* outGlyph = nullptr;
-    float* outAdvanceX = nullptr;
-};
-
-bool LoadDWriteGlyphImpl(const GlyphLoadArgs& args) {
-    ImFontAtlas* atlas = args.atlas;
-    ImFontConfig* src = args.src;
-    ImFontBaked* baked = args.baked;
-    ImFontGlyph* outGlyph = args.outGlyph;
-    float* outAdvanceX = args.outAdvanceX;
+bool DWriteFontBakedLoadGlyph(ImFontAtlas* atlas,
+                              ImFontConfig* src,
+                              ImFontBaked* baked,
+                              void* /*loaderData*/,
+                              int glyphIndex,
+                              ImFontGlyph* outGlyph,
+                              float* outAdvanceX) {
     auto* state = static_cast<DWriteAtlasState*>(atlas ? atlas->FontLoaderData : nullptr);
     const auto* srcData = static_cast<const DWriteFontSrcData*>(src ? src->FontLoaderData : nullptr);
-    if (!state || !srcData || !srcData->face || !baked || args.glyphIndex < 0) {
+    if (!state || !srcData || !srcData->face || !baked || glyphIndex < 0) {
         return false;
     }
-    const UINT16 gid = static_cast<UINT16>(args.glyphIndex);
+    const UINT16 gid = static_cast<UINT16>(glyphIndex);
     RasterMetrics rm{};
     if (!ComputeRasterMetrics(*srcData, src, baked, gid, rm)) {
         return false;
@@ -623,7 +567,7 @@ bool LoadDWriteGlyphImpl(const GlyphLoadArgs& args) {
     ComRef<IDWriteGlyphRunAnalysis> analysis;
     RECT bounds{};
     DWRITE_TEXTURE_TYPE texType = DWRITE_TEXTURE_CLEARTYPE_3x1;
-    if (!CreateGlyphAnalysis(*state, srcData->face, gid, rm.fontEmSize, analysis)
+    if (!CreateGlyphAnalysis(*state, srcData->face.Get(), gid, rm.fontEmSize, analysis)
         || !RasterizeAnalysisAlpha(analysis.Get(), *state, bounds, texType)) {
         return false;
     }
@@ -666,15 +610,7 @@ bool LoadDWriteGlyphImpl(const GlyphLoadArgs& args) {
     loader.FontSrcGetGlyphIndexFromCodepoint = DWriteGetGlyphIndex;
     loader.FontSrcContainsGlyph = DWriteContainsGlyph;
     loader.FontBakedInit = DWriteFontBakedInit;
-    loader.FontBakedLoadGlyph = [](ImFontAtlas* atlas,
-                                   ImFontConfig* src,
-                                   ImFontBaked* baked,
-                                   void* /*loaderData*/,
-                                   int glyphIndex,
-                                   ImFontGlyph* outGlyph,
-                                   float* outAdvanceX) -> bool {
-        return LoadDWriteGlyphImpl({atlas, src, baked, glyphIndex, outGlyph, outAdvanceX});
-    };
+    loader.FontBakedLoadGlyph = DWriteFontBakedLoadGlyph;
     return loader;
 }
 
@@ -690,22 +626,20 @@ bool HasDWriteSystemFontFamily(std::string_view familyUtf8) {
     if (trimmed.empty()) {
         return false;
     }
-    IDWriteFactory* factory = nullptr;
+    ComRef<IDWriteFactory> factory;
     if (FAILED(::DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
                                      __uuidof(IDWriteFactory),
-                                     reinterpret_cast<IUnknown**>(&factory)))) {
+                                     reinterpret_cast<IUnknown**>(factory.Put())))) {
         return false;
     }
-    IDWriteFontCollection* sysFonts = nullptr;
-    const HRESULT colHr = factory->GetSystemFontCollection(&sysFonts, FALSE);
+    ComRef<IDWriteFontCollection> sysFonts;
+    if (FAILED(factory->GetSystemFontCollection(sysFonts.Put(), FALSE)) || !sysFonts) {
+        return false;
+    }
     UINT32 index = 0;
     BOOL exists = FALSE;
-    if (SUCCEEDED(colHr) && sysFonts) {
-        const std::wstring wideName = motrix::core::PathFromUtf8(trimmed).wstring();
-        (void)sysFonts->FindFamilyName(wideName.c_str(), &index, &exists);
-    }
-    SafeRelease(sysFonts);
-    SafeRelease(factory);
+    const std::wstring wideName = motrix::core::Utf8ToWide(trimmed);
+    (void)sysFonts->FindFamilyName(wideName.c_str(), &index, &exists);
     return exists == TRUE;
 }
 

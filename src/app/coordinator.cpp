@@ -291,4 +291,94 @@ std::vector<CompletedTaskNotice> UpdateTaskCompletionTracker(TaskCompletionTrack
     return notices;
 }
 
+const motrix::domain::DownloadTaskView* FindTaskByGid(const AppStateSnapshot& state,
+                                                      std::string_view gid) noexcept {
+    for (const auto* list : {&state.downloadingTasks, &state.waitingTasks, &state.stoppedTasks}) {
+        for (const auto& t : *list) {
+            if (t.gid == gid) {
+                return &t;
+            }
+        }
+    }
+    return nullptr;
+}
+
+void AppCoordinator::PruneSelectionGids(AppStateSnapshot& state) {
+    std::erase_if(state.selectedTaskGids,
+                  [&](const std::string& g) { return FindTaskByGid(state, g) == nullptr; });
+    if (!state.selectedTaskGid.empty()
+        && std::ranges::find(state.selectedTaskGids, state.selectedTaskGid)
+               == state.selectedTaskGids.end()) {
+        state.selectedTaskGid =
+            state.selectedTaskGids.empty() ? std::string{} : state.selectedTaskGids.front();
+    }
+}
+
+void AppCoordinator::RecordHistoryDirectory(motrix::domain::UserPreferences& prefs,
+                                            std::string_view dir) {
+    if (dir.empty()) {
+        return;
+    }
+    auto& hist = prefs.historyDirectories;
+    hist.erase(std::remove(hist.begin(), hist.end(), dir), hist.end());
+    hist.insert(hist.begin(), std::string(dir));
+    if (hist.size() > 5) {
+        hist.resize(5);
+    }
+}
+
+void AppCoordinator::PersistConfigs(const AppStateSnapshot& state,
+                                    bool saveUser,
+                                    bool saveSys,
+                                    bool overwrite) {
+    if (appDataDir_.empty()) {
+        return;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(appDataDir_, ec);
+    const auto userPath = appDataDir_ / "user.json";
+    const auto sysPath = appDataDir_ / "system.json";
+    if (saveUser && (overwrite || !std::filesystem::exists(userPath, ec))) {
+        (void)motrix::core::WriteTextAtomic(userPath,
+                                            motrix::domain::SerializeUserPreferencesJson(state.prefs));
+    }
+    if (saveSys && (overwrite || !std::filesystem::exists(sysPath, ec))) {
+        (void)motrix::core::WriteTextAtomic(sysPath,
+                                            motrix::domain::SerializeSystemConfigJson(state.sysConfig));
+    }
+    const auto confPath = appDataDir_ / "aria2.conf";
+    if (saveSys && (overwrite || !std::filesystem::exists(confPath, ec))) {
+        const auto eff = motrix::domain::BuildEffectiveSystemConfig(state.sysConfig, state.prefs);
+        const auto rawPairs = motrix::domain::SystemConfigToOptionPairs(eff);
+        std::vector<motrix::engine::EngineOptionPair> engPairs;
+        engPairs.reserve(rawPairs.size() + 1);
+        for (const auto& [k, v] : rawPairs) {
+            engPairs.push_back({k, v});
+        }
+        engPairs.push_back({"bt-port-mapping", state.prefs.enableUpnp ? "true" : "false"});
+        const auto kind = (state.engineInfo.kind == motrix::engine::EngineKind::Unknown)
+                              ? motrix::engine::EngineKind::Aria2Next
+                              : state.engineInfo.kind;
+        auto dialect = motrix::engine::CreateDialect(kind);
+        const auto filtered = dialect->FilterGlobalOptions(engPairs);
+        (void)motrix::core::WriteTextAtomic(confPath, motrix::engine::FormatAria2Conf(filtered));
+    }
+}
+
+void AppCoordinator::RecomputeStats(AppStateSnapshot& state) {
+    std::uint64_t down = 0;
+    std::uint64_t up = 0;
+    for (const auto& t : state.downloadingTasks) {
+        down += t.downloadSpeed;
+        up += t.uploadSpeed;
+    }
+    state.globalStat = GlobalStatSnapshot{
+        .downloadSpeed = down,
+        .uploadSpeed = up,
+        .numActive = static_cast<int>(state.downloadingTasks.size()),
+        .numWaiting = static_cast<int>(state.waitingTasks.size()),
+        .numStopped = static_cast<int>(state.stoppedTasks.size()),
+    };
+}
+
 }  // namespace motrix::app

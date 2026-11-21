@@ -55,7 +55,9 @@ RunOpenItemDialog(void* ownerHwnd, bool folderMode, std::string_view initialDir)
     }
 
     if (!initialDir.empty()) {
-        const std::wstring wideDir = motrix::core::Utf8ToWide(initialDir);
+        std::filesystem::path initPath = motrix::core::PathFromUtf8(initialDir);
+        initPath.make_preferred();
+        const std::wstring wideDir = initPath.wstring();
         ComPtr<IShellItem> folderItem;
         if (SUCCEEDED(::SHCreateItemFromParsingName(
                 wideDir.c_str(), nullptr, IID_PPV_ARGS(folderItem.ReleaseAndGetAddressOf())))
@@ -132,19 +134,22 @@ void Win32OpenPathInExplorer(std::string_view utf8Path) {
     if (utf8Path.empty()) {
         return;
     }
-    if (utf8Path.starts_with("http://") || utf8Path.starts_with("https://")) {
+    if (motrix::core::StartsWithAsciiInsensitive(utf8Path, "http://")
+        || motrix::core::StartsWithAsciiInsensitive(utf8Path, "https://")) {
         const std::wstring wide = motrix::core::Utf8ToWide(utf8Path);
         ::ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         return;
     }
-    const std::filesystem::path p = motrix::core::PathFromUtf8(utf8Path);
+    std::filesystem::path p = motrix::core::PathFromUtf8(utf8Path);
+    p.make_preferred();
     std::error_code ec;
     if (std::filesystem::is_regular_file(p, ec)) {
         const std::wstring arg = L"/select,\"" + p.wstring() + L"\"";
         ::ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(), nullptr, SW_SHOWNORMAL);
         return;
     }
-    const std::filesystem::path target = std::filesystem::exists(p, ec) ? p : p.parent_path();
+    std::filesystem::path target = std::filesystem::exists(p, ec) ? p : p.parent_path();
+    target.make_preferred();
     const std::wstring wide = target.empty() ? motrix::core::Utf8ToWide(utf8Path) : target.wstring();
     ::ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }

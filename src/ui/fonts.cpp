@@ -33,20 +33,6 @@ struct ResolvedFontSource {
     std::string sysFamily;
 };
 
-[[nodiscard]] bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept {
-    if (a.size() != b.size()) {
-        return false;
-    }
-    for (std::size_t i = 0; i < a.size(); ++i) {
-        const auto ca = static_cast<unsigned char>(a[i]);
-        const auto cb = static_cast<unsigned char>(b[i]);
-        if (std::tolower(ca) != std::tolower(cb)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 [[nodiscard]] std::optional<std::filesystem::path> FindGenericFontFile(const std::filesystem::path& dir,
                                                                        std::string_view stem) {
     if (dir.empty()) {
@@ -189,7 +175,7 @@ AddSystemFont(ImFontAtlas& atlas, int weight, std::string_view familyUtf8, ImFon
         return nullptr;
     }
     const bool needsCjkFallback =
-        filePath.has_value() || !EqualsIgnoreCaseAscii(sysFamily, kDefaultUiFamily);
+        filePath.has_value() || !motrix::core::EqualsAsciiInsensitive(sysFamily, kDefaultUiFamily);
     if (needsCjkFallback && HasDWriteSystemFontFamily(kDefaultUiFamily)) {
         (void)AddSystemFont(
             atlas, weight, kDefaultUiFamily, MakeBaseFontConfig(true, font, "YaHeiUI-CJK"));
@@ -219,7 +205,7 @@ AddSystemFont(ImFontAtlas& atlas, int weight, std::string_view familyUtf8, ImFon
             atlas, 400, uiFallback.sysFamily, MakeBaseFontConfig(true, mono, uiFallback.sysFamily));
     }
     if ((uiFallback.filePath.has_value()
-         || !EqualsIgnoreCaseAscii(uiFallback.sysFamily, kDefaultUiFamily))
+         || !motrix::core::EqualsAsciiInsensitive(uiFallback.sysFamily, kDefaultUiFamily))
         && HasDWriteSystemFontFamily(kDefaultUiFamily)) {
         (void)AddSystemFont(atlas, 400, kDefaultUiFamily, MakeBaseFontConfig(true, mono, "YaHeiUI-CJK"));
     }

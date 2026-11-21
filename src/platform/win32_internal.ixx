@@ -68,10 +68,10 @@ export [[nodiscard]] std::optional<std::string> Win32PickTorrentFile(void* owner
 export [[nodiscard]] std::optional<std::string> Win32PickFolder(void* ownerHwnd,
                                                                 std::string_view initialDir);
 
-export void Win32SetWindowIcons(Win32WindowState& state) noexcept;
-export void Win32RefreshIconsOnThemeOrDpi(Win32WindowState& state) noexcept;
+export void Win32SetWindowIcons(Win32WindowState& state);
+export void Win32RefreshIconsOnThemeOrDpi(Win32WindowState& state);
 export void Win32DestroyTrayIcons(Win32WindowState& state) noexcept;
-export void Win32InstallOrUpdateTray(Win32WindowState& state) noexcept;
+export void Win32InstallOrUpdateTray(Win32WindowState& state);
 export void Win32RemoveTray(Win32WindowState& state) noexcept;
 export void Win32ShowTrayBalloon(Win32WindowState& state,
                                  std::string_view title,

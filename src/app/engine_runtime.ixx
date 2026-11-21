@@ -135,7 +135,4 @@ private:
     std::jthread worker_;
 };
 
-export [[nodiscard]] std::vector<EngineWorkCommand>
-BuildLiveTaskWorks(AppStateSnapshot& state, const Command& cmd, bool& clearDetail);
-
 }  // namespace motrix::app

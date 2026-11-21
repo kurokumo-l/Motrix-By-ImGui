@@ -53,19 +53,6 @@ enum class TriCheckState {
     return text;
 }
 
-[[nodiscard]] bool MatchesMediaKind(std::string_view path, int filter) noexcept {
-    if (filter == 1) {
-        return motrix::domain::IsVideoExtension(path);
-    }
-    if (filter == 2) {
-        return motrix::domain::IsAudioExtension(path);
-    }
-    if (filter == 3) {
-        return motrix::domain::IsImageExtension(path);
-    }
-    return true;
-}
-
 [[nodiscard]] bool
 DrawTriCheckboxCell(const ElStyle& st, const char* id, TriCheckState state, float colW) {
     const float s = st.dpiScale;
@@ -123,16 +110,8 @@ void DrawCellAlignedText(std::string_view text, bool rightAlign, RgbaColor col) 
     ImGui::TextUnformatted(text.data(), text.data() + text.size());
 }
 
-struct TableFrameSpec {
-    ImVec2 minPt{};
-    float width = 0.0f;
-    float height = 0.0f;
-    RgbaColor col{};
-};
-
-void DrawTableOuterFrame(ImDrawList* dl, const TableFrameSpec& f) {
-    dl->AddRect(
-        f.minPt, ImVec2(f.minPt.x + f.width, f.minPt.y + f.height), ToAbgrU32(f.col), 2.0f, 0, 1.0f);
+void DrawTableOuterFrame(ImDrawList* dl, ImVec2 minPt, float width, float height, RgbaColor col) {
+    dl->AddRect(minPt, ImVec2(minPt.x + width, minPt.y + height), ToAbgrU32(col), 2.0f, 0, 1.0f);
 }
 
 [[nodiscard]] bool MatchesPendingSelection(const motrix::domain::DownloadTaskView& task,
@@ -220,7 +199,7 @@ void ApplyMediaSelection(DrawerUiState& ds,
     bool anyMatchSelected = false;
     bool allMatchSelected = true;
     for (std::size_t i = 0; i < n; ++i) {
-        if (MatchesMediaKind(task.files[i].path, filterKind)) {
+        if (MatchesMediaFilter(task.files[i].path, filterKind)) {
             if (ds.draftSelected[i]) {
                 anyMatchSelected = true;
             } else {
@@ -232,7 +211,7 @@ void ApplyMediaSelection(DrawerUiState& ds,
     ds.fileFilter = selectTargets ? filterKind : 0;
     for (std::size_t i = 0; i < n; ++i) {
         if (selectTargets) {
-            ds.draftSelected[i] = MatchesMediaKind(task.files[i].path, filterKind);
+            ds.draftSelected[i] = MatchesMediaFilter(task.files[i].path, filterKind);
         } else {
             ds.draftSelected[i] = true;
         }
@@ -354,7 +333,7 @@ void DrawFilesHeaderRow(UiFrameContext& ctx,
         {ctx.tr.Tr("detail.file_name"), false},
         {ctx.tr.Tr("detail.file_ext"), false},
         {ctx.tr.Tr("detail.progress"), true},
-        {"\xE2\x9C\x93", true},
+        {{}, true},  // Drawn as vector checkmark icon below
         {ctx.tr.Tr("detail.file_size"), true},
     }};
     for (int c = 0; c < 5; ++c) {
@@ -550,8 +529,12 @@ void RenderPeersTab(UiFrameContext& ctx, std::span<const motrix::domain::TaskPee
                 for (const auto& peer : peers) {
                     ImGui::TableNextRow();
                     const std::string host = std::format("{}:{}", peer.ip, peer.port);
-                    const std::string dec = motrix::domain::DecodePeerId(peer.peerId);
-                    const std::string& clientStr = dec.empty() ? peer.client : dec;
+                    std::string decodedClient;
+                    std::string_view clientStr = peer.client;
+                    if (clientStr.empty() && !peer.peerId.empty()) {
+                        decodedClient = motrix::domain::DecodePeerId(peer.peerId);
+                        clientStr = decodedClient;
+                    }
                     const std::string pctStr =
                         std::format("{:.0f}%", std::clamp(peer.progress * 100.0f, 0.0f, 100.0f));
                     const std::string upStr = motrix::domain::FormatSpeed(peer.uploadSpeed);
@@ -572,8 +555,7 @@ void RenderPeersTab(UiFrameContext& ctx, std::span<const motrix::domain::TaskPee
             }
         }
     }
-    DrawTableOuterFrame(ImGui::GetWindowDrawList(),
-                        {tableMin, avail.x, tableH, ctx.palette.borderSubtle});
+    DrawTableOuterFrame(ImGui::GetWindowDrawList(), tableMin, avail.x, tableH, ctx.palette.borderSubtle);
 }
 
 void RenderFilesTab(UiFrameContext& ctx,
@@ -620,8 +602,7 @@ void RenderFilesTab(UiFrameContext& ctx,
         }
     }
 
-    DrawTableOuterFrame(ImGui::GetWindowDrawList(),
-                        {tableMin, avail.x, tableH, ctx.palette.borderSubtle});
+    DrawTableOuterFrame(ImGui::GetWindowDrawList(), tableMin, avail.x, tableH, ctx.palette.borderSubtle);
     ImGui::SetCursorScreenPos(ImVec2(tableMin.x, tableMin.y + tableH + bottomGap));
     RenderFilesMediaGroupAndSummary(ctx, ds, task, avail.x);
 }

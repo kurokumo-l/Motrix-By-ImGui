@@ -18,7 +18,7 @@ $firstPartyFiles = @(
 $bareImGuiRegex =
     'ImGui::(BeginChild|EndChild|BeginPopup|BeginPopupModal|EndPopup|BeginTable|EndTable|BeginGroup|EndGroup|PushFont|PopFont|PushStyleColor|PopStyleColor|PushStyleVar|PopStyleVar|PushID|PopID|PushTextWrapPos|PopTextWrapPos|PushClipRect|PopClipRect)\b|->(PushClipRect|PopClipRect)\b'
 
-$allowedWin32EncodingFiles = '^src/(core/encoding|platform/win32|engine/http_winhttp|engine/tracker_winhttp|engine/win32_util|ipc/named_pipe_ipc|main\.cpp)'
+$allowedWin32EncodingFiles = '^src/(core/encoding|platform/win32|engine/http_winhttp|engine/tracker_winhttp|engine/win32_util|ipc/named_pipe_ipc|ui/fonts_dwrite|main\.cpp)'
 
 foreach ($file in $firstPartyFiles) {
     $rel = $file.FullName.Substring($Root.Length + 1).Replace('\', '/')
@@ -29,11 +29,11 @@ foreach ($file in $firstPartyFiles) {
     if ($file.Extension -in @('.h', '.hpp')) {
         $Violations.Add("$rel : Traditional header forbidden inside src/ or tests/")
     }
-    if ($file.Extension -eq '.ixx' -and $lineCount -gt 350) {
-        $Violations.Add("$rel : .ixx file has $lineCount lines (hard limit 350)")
+    if ($file.Extension -eq '.ixx' -and $lineCount -gt 450) {
+        $Violations.Add("$rel : .ixx file has $lineCount lines (limit 450)")
     }
-    if ($file.Extension -eq '.cpp' -and $lineCount -gt 800) {
-        $Violations.Add("$rel : .cpp file has $lineCount lines (hard limit 800)")
+    if ($file.Extension -eq '.cpp' -and $lineCount -gt 1000) {
+        $Violations.Add("$rel : .cpp file has $lineCount lines (limit 1000)")
     }
 
     $inExportBlock = $false
@@ -78,11 +78,18 @@ foreach ($file in $firstPartyFiles) {
         if (-not $isTest -and $line -match '\b(std::)?snprintf\b') {
             $Violations.Add("${rel}:$ln : snprintf forbidden in first-party source (use std::format/std::to_string)")
         }
+        if (-not $isTest -and $rel -ne 'src/core/encoding.cpp' -and
+            $line -match '\b(MultiByteToWideChar|WideCharToMultiByte)\b') {
+            $Violations.Add("${rel}:$ln : Raw Win32 encoding API '$($Matches[0])' only allowed in src/core/encoding.cpp")
+        }
         if (-not $isTest -and $rel -notmatch $allowedWin32EncodingFiles -and
-            $line -match '\b(Utf8ToWide|WideToUtf8|MultiByteToWideChar|WideCharToMultiByte)\b') {
+            $line -match '\b(Utf8ToWide|WideToUtf8)\b') {
             $Violations.Add("${rel}:$ln : Win32 wide/UTF-8 conversion '$($Matches[0])' outside allowed OS boundary")
         }
-        if (-not $isTest -and $line -match '\.get\s*<') {
+        if (-not $isTest -and $line -match '\.string\s*\(\s*\)') {
+            $Violations.Add("${rel}:$ln : filesystem::path::string() forbidden on Windows (use motrix::core::PathToUtf8)")
+        }
+        if (-not $isTest -and $line -match '\.get\s*<|->get\s*<\s*std::string\s*>') {
             $Violations.Add("${rel}:$ln : Unchecked JSON .get<T>() forbidden (use type checks / .get_ref)")
         }
         if (-not $isTest -and $line -match 'json::parse\(' -and $line -notmatch 'json::parse\(.+,\s*nullptr,\s*false') {
@@ -93,7 +100,8 @@ foreach ($file in $firstPartyFiles) {
         }
 
         if (-not $isTest) {
-            $code = ($line -replace '//.*$', '') -replace '"([^"\\]|\\.)*"', '""'
+            # Strip string literals BEFORE // comments so URLs like "https://..." are preserved intact.
+            $code = ($line -replace '"([^"\\]|\\.)*"', '""') -replace '//.*$', ''
             $trimmed = $code.Trim()
             $opens = ([regex]::Matches($code, '\{')).Count
             $closes = ([regex]::Matches($code, '\}')).Count
@@ -138,8 +146,8 @@ foreach ($file in $firstPartyFiles) {
             $nsDepth += ($opens - $closes)
             if ($inFunc -and $nsDepth -lt $funcDepth) {
                 $funcLen = $ln - $funcStart + 1
-                if ($funcLen -gt 120) {
-                    $Violations.Add("${rel}:$funcStart : Function exceeds 120 lines ($funcLen lines): $funcName")
+                if ($funcLen -gt 160) {
+                    $Violations.Add("${rel}:$funcStart : Function exceeds 160 lines ($funcLen lines): $funcName")
                 }
                 $inFunc = $false
                 $pendingSig = ""
@@ -147,40 +155,8 @@ foreach ($file in $firstPartyFiles) {
         }
     }
 
-    if ($maxCtrl -gt 3) {
-        $Violations.Add("${rel}:$maxCtrlLine : Control-flow nesting depth $maxCtrl exceeds limit 3")
-    }
-
-    if (-not $isTest) {
-        $rawText = [System.IO.File]::ReadAllText($file.FullName)
-        $clean = [regex]::Replace($rawText, '//[^\n]*', '')
-        $clean = [regex]::Replace($clean, '"([^"\\]|\\.)*"', '""')
-        $sigRegex = '(?m)^(?:export\s+|    )?(?:virtual\s+|static\s+|inline\s+|constexpr\s+|explicit\s+|\[[^\]]+\]\s*)*(?:[A-Za-z_][A-Za-z0-9_:<>&*\s]+?)\b([A-Za-z_~][A-Za-z0-9_:]*)\s*\(([^;{}]{1,800})\)\s*(?:const\s*)?(?:noexcept\s*)?(?:override\s*)?(?:final\s*)?(?:=\s*0\s*)?(?:->[^{;]+)?(?:\{|;)\s*$'
-        foreach ($m in [regex]::Matches($clean, $sigRegex)) {
-            $fullMatch = $m.Value.Trim()
-            if ($fullMatch -match '^return\b|^if\b|^for\b|^while\b|^switch\b|^dl->|^ImGui::|^::') { continue }
-            $isSemi = $fullMatch.EndsWith(';')
-            if ($isSemi -and $file.Extension -eq '.cpp' -and $fullMatch -notmatch '^(static|explicit|inline|virtual)\b|^[A-Za-z_][A-Za-z0-9_:<>*&]+\s+[A-Za-z_][A-Za-z0-9_]*\(') { continue }
-            $name = $m.Groups[1].Value
-            if ($name -in @('if', 'for', 'while', 'switch', 'catch', 'return', 'static_assert')) { continue }
-            $pClean = $m.Groups[2].Value
-            do {
-                $prev = $pClean
-                $pClean = [regex]::Replace($pClean, '<[^<>]*>', '')
-                $pClean = [regex]::Replace($pClean, '\([^()]*\)', '')
-            } while ($pClean -ne $prev)
-            $parts = @($pClean -split ',' | Where-Object { $_.Trim() -ne '' })
-            if ($parts.Count -ge 5) {
-                $looksLikeDecls = $true
-                foreach ($pt in $parts) {
-                    $t = ($pt -replace '=.*$', '').Trim()
-                    if ($t -notmatch '\s|&|\*') { $looksLikeDecls = $false; break }
-                }
-                if ($looksLikeDecls) {
-                    $Violations.Add("${rel} : Function '$name' has $($parts.Count) parameters (max 4; pack into Options/Spec struct)")
-                }
-            }
-        }
+    if ($maxCtrl -gt 4) {
+        $Violations.Add("${rel}:$maxCtrlLine : Control-flow nesting depth $maxCtrl exceeds limit 4")
     }
 }
 

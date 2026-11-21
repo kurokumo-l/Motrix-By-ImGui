@@ -7,6 +7,7 @@ module motrix.ui;
 import std;
 import motrix.domain;
 import :el_widgets;
+import :prefs_model;
 import :theme;
 import :fonts;
 import :icons;
@@ -85,9 +86,7 @@ bool DrawDirEntryGroup(std::span<const std::string> list,
     bool changed = false;
     for (std::size_t i = 0; i < list.size(); ++i) {
         if (ImGui::Selectable(std::format("{}##{}{}", list[i], prefix, i).c_str())) {
-            const std::size_t n = std::min(list[i].size(), cap > 0 ? cap - 1 : 0);
-            std::memcpy(buf, list[i].data(), n);
-            buf[n] = '\0';
+            CopyUtf8ToBuffer(list[i], buf, cap);
             changed = true;
         }
     }
@@ -153,6 +152,9 @@ void DrawTrackerChipList(const ElStyle& st,
             selected[c.idx] = false;
             stOut.changed = true;
             stOut.closeClicked = true;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         }
     }
 }
@@ -255,9 +257,7 @@ bool ElDirectoryInput(const ElStyle& st, const ElDirInputSpec& spec) {
     bool changed = r.textChanged;
     if (r.rightClicked && spec.onBrowse) {
         if (auto chosen = spec.onBrowse(spec.buf)) {
-            const std::size_t n = std::min(chosen->size(), spec.cap > 0 ? spec.cap - 1 : 0);
-            std::memcpy(spec.buf, chosen->data(), n);
-            spec.buf[n] = '\0';
+            CopyUtf8ToBuffer(*chosen, spec.buf, spec.cap);
             changed = true;
         }
     }
@@ -308,6 +308,9 @@ bool ElTrackerTagSelect(const ElStyle& st, const char* id, std::vector<bool>& se
     ImGui::SetNextItemAllowOverlap();
     const bool boxClicked = ImGui::InvisibleButton(id, ImVec2(width, boxH));
     const bool hovered = ImGui::IsItemHovered();
+    if (hovered) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
 
     ChipDrawState drawState{id, rMin, tagH, false, false};
     DrawTrackerChipList(st, chips, selected, drawState);

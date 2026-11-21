@@ -39,6 +39,9 @@ void RenderAboutTopSection(UiFrameContext& ctx, const AboutCardMetrics& m, float
         ImGui::CloseCurrentPopup();
     }
     const bool closeHov = ImGui::IsItemHovered();
+    if (closeHov) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
     DrawMotrixIcon(IconSpec{MotrixIcon::WinClose,
                             closeX + (closeSize - 11.0f * m.s) * 0.5f,
                             closeY + (closeSize - 11.0f * m.s) * 0.5f,
@@ -129,10 +132,10 @@ void RenderAboutFooter(UiFrameContext& ctx, const AboutCardMetrics& m, float& cu
         const char* url;
     };
     constexpr std::array<FooterLink, 4> kLinks{{
-        {"##lnk_lic", "about.license", "https:\x2f\x2fmotrix.app/license"},
-        {"##lnk_abt", "about.about", "https:\x2f\x2fmotrix.app/about"},
-        {"##lnk_sup", "about.support", "https:\x2f\x2fmotrix.app/support"},
-        {"##lnk_rel", "about.release", "https:\x2f\x2fmotrix.app/release"},
+        {"##lnk_lic", "about.license", "https://motrix.app/license"},
+        {"##lnk_abt", "about.about", "https://motrix.app/about"},
+        {"##lnk_sup", "about.support", "https://motrix.app/support"},
+        {"##lnk_rel", "about.release", "https://motrix.app/release"},
     }};
 
     const ElStyle st{ctx.palette, ctx.fonts, m.s, &ctx.anim};
@@ -200,7 +203,7 @@ void RenderAboutModalDialog(UiFrameContext& ctx, bool justOpened) {
 
     ImGui::SetCursorScreenPos(ImVec2(winPos.x, curY));
     ImGui::Dummy(ImVec2(modalW, 0.0f));
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
         ctx.sink.Dispatch(motrix::app::CloseModalCmd{});
         ImGui::CloseCurrentPopup();
     }

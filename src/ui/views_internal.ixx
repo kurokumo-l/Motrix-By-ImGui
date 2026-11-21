@@ -81,11 +81,12 @@ export struct PanelRect {
     float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
 };
 
-export struct ModalFlowPos {
-    float x0 = 0.0f, bodyW = 0.0f, curY = 0.0f;
+export struct PrefsCheckboxItem {
+    const char* id = nullptr;
+    std::string_view key{};
+    bool* val = nullptr;
 };
 
-export inline constexpr float kPrefsActionsBarHeight = 70.0f;
 export using PrefsRowBodyFn = std::function<void(float, float)>;
 
 export void RenderTitlebarOverlay(UiFrameContext& ctx);
@@ -105,17 +106,21 @@ RenderFilesTab(UiFrameContext& ctx, DrawerUiState& ds, const motrix::domain::Dow
 export void RenderTaskDetailDrawer(UiFrameContext& ctx, DrawerUiState& drawerState);
 export void RenderAddTorrentTab(UiFrameContext& ctx, AddTaskFormState& form);
 export void LoadTorrentFileIntoForm(AddTaskFormState& form, std::string_view utf8Path);
-export void DrawPrefsFieldLabel(UiFrameContext& ctx, std::string_view text);
-export void DrawPrefsFormRow(UiFrameContext& ctx, std::string_view lbl, float rowY, PrefsRowBodyFn fn);
+export void DrawSubCaption(const UiFrameContext& ctx, float x, float y, std::string_view text);
+export void DrawAlignedCaption(const UiFrameContext& ctx,
+                               float x,
+                               float y,
+                               float rowH,
+                               std::string_view text,
+                               float fontSize = 14.5f);
 export void
-RenderPrefsActionsBar(UiFrameContext& ctx, const PanelRect& rect, float marginX, PrefsFormState& ps);
+DrawPrefsCheckboxStack(UiFrameContext& ctx, float x, float& y, std::span<const PrefsCheckboxItem> items);
+export [[nodiscard]] bool MatchesMediaFilter(std::string_view path, int filter) noexcept;
+export void DrawPrefsFormRow(UiFrameContext& ctx, std::string_view lbl, float rowY, PrefsRowBodyFn fn);
 export void RenderPrefsBasicTab(UiFrameContext& ctx, PrefsFormState& ps);
 export void RenderPrefsAdvancedTab(UiFrameContext& ctx, PrefsFormState& ps);
-export void RenderPrefsAdvancedTail(UiFrameContext& ctx, PrefsFormState& ps);
 export void RenderPrefsLabTab(UiFrameContext& ctx, PrefsFormState& ps);
-export void RenderLabAria2NextUpdateRow(UiFrameContext& ctx, PrefsFormState& ps);
 export void RenderPreferencesView(UiFrameContext& ctx, const PanelRect& r, int tab, PrefsFormState& ps);
-export void RenderAddTaskAdvancedFields(UiFrameContext& ctx, AddTaskFormState& form, ModalFlowPos& flow);
 export void RenderAboutModalDialog(UiFrameContext& ctx, bool justOpened = false);
 export void RenderModals(UiFrameContext& ctx, AddTaskFormState& addForm);
 export void RequestTaskRemoval(UiFrameContext& ctx, std::string_view gid, std::string_view taskName);

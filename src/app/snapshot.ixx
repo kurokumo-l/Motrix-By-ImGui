@@ -79,4 +79,7 @@ export struct AppStateSnapshot {
     std::string engineUpdateVersion;
 };
 
+export [[nodiscard]] const motrix::domain::DownloadTaskView*
+FindTaskByGid(const AppStateSnapshot& state, std::string_view gid) noexcept;
+
 }  // namespace motrix::app

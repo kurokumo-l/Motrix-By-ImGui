@@ -17,41 +17,19 @@ import :scope_guard;
 namespace motrix::ui {
 namespace {
 
-constexpr const char* kAddProxyTipsUrl = "https://motrix.app/release";
-
-struct DashedRectSpec {
-    ImVec2 min{};
-    ImVec2 max{};
-    ImU32 col = 0;
-    float s = 1.0f;
-};
-
-bool MatchesTorrentFilter(std::string_view path, int filter) noexcept {
-    if (filter == 1) {
-        return motrix::domain::IsVideoExtension(path);
-    }
-    if (filter == 2) {
-        return motrix::domain::IsAudioExtension(path);
-    }
-    if (filter == 3) {
-        return motrix::domain::IsImageExtension(path);
-    }
-    return true;
-}
-
-void DrawDashedRect(ImDrawList* dl, const DashedRectSpec& r) {
-    const float dash = 4.0f * r.s;
+void DrawDashedRect(ImDrawList* dl, ImVec2 minPt, ImVec2 maxPt, ImU32 col, float s) {
+    const float dash = 4.0f * s;
     const float step = dash * 2.0f;
-    const float rad = 4.0f * r.s;
-    for (float x = r.min.x + rad; x < r.max.x - rad; x += step) {
-        const float xEnd = std::min(r.max.x - rad, x + dash);
-        dl->AddLine(ImVec2(x, r.min.y), ImVec2(xEnd, r.min.y), r.col, 1.0f);
-        dl->AddLine(ImVec2(x, r.max.y), ImVec2(xEnd, r.max.y), r.col, 1.0f);
+    const float rad = 4.0f * s;
+    for (float x = minPt.x + rad; x < maxPt.x - rad; x += step) {
+        const float xEnd = std::min(maxPt.x - rad, x + dash);
+        dl->AddLine(ImVec2(x, minPt.y), ImVec2(xEnd, minPt.y), col, 1.0f);
+        dl->AddLine(ImVec2(x, maxPt.y), ImVec2(xEnd, maxPt.y), col, 1.0f);
     }
-    for (float y = r.min.y + rad; y < r.max.y - rad; y += step) {
-        const float yEnd = std::min(r.max.y - rad, y + dash);
-        dl->AddLine(ImVec2(r.min.x, y), ImVec2(r.min.x, yEnd), r.col, 1.0f);
-        dl->AddLine(ImVec2(r.max.x, y), ImVec2(r.max.x, yEnd), r.col, 1.0f);
+    for (float y = minPt.y + rad; y < maxPt.y - rad; y += step) {
+        const float yEnd = std::min(maxPt.y - rad, y + dash);
+        dl->AddLine(ImVec2(minPt.x, y), ImVec2(minPt.x, yEnd), col, 1.0f);
+        dl->AddLine(ImVec2(maxPt.x, y), ImVec2(maxPt.x, yEnd), col, 1.0f);
     }
 }
 
@@ -72,8 +50,8 @@ void RenderTorrentDropzone(UiFrameContext& ctx, AddTaskFormState& form, float fi
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(
         dMin, dMax, ToAbgrU32(hovered ? ctx.palette.subnavBg : ctx.palette.inputBg), 4.0f * s);
-    DrawDashedRect(dl,
-                   {dMin, dMax, ToAbgrU32(hovered ? ctx.palette.primary : ctx.palette.inputBorder), s});
+    DrawDashedRect(
+        dl, dMin, dMax, ToAbgrU32(hovered ? ctx.palette.primary : ctx.palette.inputBorder), s);
 
     const float iconSz = 30.0f * s;
     DrawMotrixIcon(IconSpec{
@@ -141,6 +119,9 @@ bool RenderTorrentHeaderBar(UiFrameContext& ctx,
         return false;
     }
     const bool clrHov = ImGui::IsItemHovered();
+    if (clrHov) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
     DrawMotrixIcon(IconSpec{
         MotrixIcon::Trash,
         clrPos.x + (clrSz - 14.0f * s) * 0.5f,
@@ -170,7 +151,7 @@ void ApplyTorrentFilterChoice(AddTaskFormState& form,
         return;
     }
     for (std::size_t i = 0; i < meta.files.size(); ++i) {
-        form.torrentFileSelected[i] = MatchesTorrentFilter(meta.files[i].path, form.torrentFileFilter);
+        form.torrentFileSelected[i] = MatchesMediaFilter(meta.files[i].path, form.torrentFileFilter);
     }
 }
 
@@ -194,6 +175,9 @@ void RenderTorrentFilterPills(UiFrameContext& ctx,
         FontGuard fnt(ctx.fonts, FontRole::Regular, 12.0f);
         if (ImGui::Button(pills[k].first.data(), ImVec2(66.0f * s, 24.0f * s))) {
             ApplyTorrentFilterChoice(form, meta, pills[k].second);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         }
     }
 }
@@ -221,7 +205,7 @@ void RenderTorrentFilesTable(UiFrameContext& ctx,
 
     for (std::size_t i = 0; i < meta.files.size(); ++i) {
         const auto& f = meta.files[i];
-        if (form.torrentFileFilter != 0 && !MatchesTorrentFilter(f.path, form.torrentFileFilter)) {
+        if (form.torrentFileFilter != 0 && !MatchesMediaFilter(f.path, form.torrentFileFilter)) {
             continue;
         }
         ImGui::TableNextRow();
@@ -241,61 +225,6 @@ void RenderTorrentFilesTable(UiFrameContext& ctx,
         const std::string szStr = motrix::domain::FormatBytes(f.length);
         ImGui::TextUnformatted(szStr.c_str());
     }
-}
-
-struct CaptionPos {
-    float x = 0.0f;
-    float y = 0.0f;
-    float h = 0.0f;
-};
-
-void DrawAlignedFieldCaption(const UiFrameContext& ctx, const CaptionPos& pos, std::string_view text) {
-    FontGuard fnt(ctx.fonts, FontRole::Regular, 13.5f);
-    const ImVec2 sz = ImGui::CalcTextSize(text.data(), text.data() + text.size());
-    ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x, pos.y + (pos.h - sz.y) * 0.5f),
-                                        ToAbgrU32(ctx.palette.subLabelText),
-                                        text.data(),
-                                        text.data() + text.size());
-}
-
-void RenderAddTaskExtraAdvancedRows(UiFrameContext& ctx, AddTaskFormState& form, ModalFlowPos& flow) {
-    const float s = ctx.dpiScale;
-    const float rowH = 30.0f * s;
-    const float gapY = 12.0f * s;
-    const float lblW = 92.0f * s;
-    const float fieldW = flow.bodyW - lblW;
-    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
-
-    DrawAlignedFieldCaption(ctx, {flow.x0, flow.curY, rowH}, ctx.tr.Tr("task.cookie_label"));
-    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
-    ElInputText(elSt,
-                {"##add_cookie",
-                 form.cookieBuffer.data(),
-                 form.cookieBuffer.size(),
-                 fieldW,
-                 ctx.tr.Tr("task.cookie_placeholder")});
-    flow.curY += rowH + gapY;
-
-    DrawAlignedFieldCaption(ctx, {flow.x0, flow.curY, rowH}, ctx.tr.Tr("task.proxy_label"));
-    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
-    ElInputText(elSt,
-                {"##add_proxy",
-                 form.proxyBuffer.data(),
-                 form.proxyBuffer.size(),
-                 fieldW,
-                 "[http://][USER:PASSWORD@]HOST[:PORT]"});
-    flow.curY += rowH + 4.0f * s;
-
-    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
-    ElDrawLinkText(elSt, {ctx.tr.Tr("task.proxy_tips"), [&ctx]() {
-                              ctx.host.OpenPathInExplorer(kAddProxyTipsUrl);
-                          }});
-    flow.curY += 20.0f * s;
-
-    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
-    ElCheckbox(
-        elSt, "##add_nav_dl", ctx.tr.Tr("task.navigate_to_downloading"), &form.navigateToDownloading);
-    flow.curY += 22.0f * s;
 }
 
 }  // namespace
@@ -344,57 +273,13 @@ void RenderAddTorrentTab(UiFrameContext& ctx, AddTaskFormState& form) {
         RenderTorrentDropzone(ctx, form, fieldW);
         return;
     }
-    const auto meta = *form.torrentMeta;
+    const auto& meta = *form.torrentMeta;
     if (!RenderTorrentHeaderBar(ctx, form, meta, fieldW)) {
         return;
     }
     RenderTorrentFilterPills(ctx, form, meta);
     ImGui::Dummy(ImVec2(0.0f, 4.0f * ctx.dpiScale));
     RenderTorrentFilesTable(ctx, form, meta, fieldW);
-}
-
-void RenderAddTaskAdvancedFields(UiFrameContext& ctx, AddTaskFormState& form, ModalFlowPos& flow) {
-    const float s = ctx.dpiScale;
-    const float rowH = 30.0f * s;
-    const float gapY = 12.0f * s;
-    const float lblW = 92.0f * s;
-    const float fieldW = flow.bodyW - lblW;
-    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
-
-    DrawAlignedFieldCaption(ctx, {flow.x0, flow.curY, rowH}, ctx.tr.Tr("task.ua_label"));
-    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
-    ElInputText(elSt,
-                {"##add_ua",
-                 form.userAgentBuffer.data(),
-                 form.userAgentBuffer.size(),
-                 fieldW,
-                 ctx.tr.Tr("task.ua_placeholder")});
-    flow.curY += rowH + gapY;
-
-    const float halfGap = 14.0f * s;
-    const float halfColW = (flow.bodyW - halfGap) * 0.5f;
-    DrawAlignedFieldCaption(ctx, {flow.x0, flow.curY, rowH}, ctx.tr.Tr("task.auth_label"));
-    ImGui::SetCursorScreenPos(ImVec2(flow.x0 + lblW, flow.curY));
-    ElInputText(elSt,
-                {"##add_auth",
-                 form.authBuffer.data(),
-                 form.authBuffer.size(),
-                 halfColW - lblW,
-                 ctx.tr.Tr("task.auth_placeholder")});
-
-    const float rightX = flow.x0 + halfColW + halfGap;
-    const float refLblW = 66.0f * s;
-    DrawAlignedFieldCaption(ctx, {rightX, flow.curY, rowH}, ctx.tr.Tr("task.referer_label"));
-    ImGui::SetCursorScreenPos(ImVec2(rightX + refLblW, flow.curY));
-    ElInputText(elSt,
-                {"##add_referer",
-                 form.refererBuffer.data(),
-                 form.refererBuffer.size(),
-                 halfColW - refLblW,
-                 ctx.tr.Tr("task.referer_placeholder")});
-    flow.curY += rowH + gapY;
-
-    RenderAddTaskExtraAdvancedRows(ctx, form, flow);
 }
 
 }  // namespace motrix::ui

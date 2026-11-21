@@ -16,20 +16,6 @@ namespace {
     return "INFO";
 }
 
-[[nodiscard]] bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept {
-    if (a.size() != b.size()) {
-        return false;
-    }
-    for (std::size_t i = 0; i < a.size(); ++i) {
-        const char ca = (a[i] >= 'A' && a[i] <= 'Z') ? static_cast<char>(a[i] + 32) : a[i];
-        const char cb = (b[i] >= 'A' && b[i] <= 'Z') ? static_cast<char>(b[i] + 32) : b[i];
-        if (ca != cb) {
-            return false;
-        }
-    }
-    return true;
-}
-
 [[nodiscard]] std::string FormatTimestamp() {
     const auto now = std::chrono::system_clock::now();
     const auto local = std::chrono::zoned_time{std::chrono::current_zone(), now};
@@ -40,13 +26,13 @@ namespace {
 }  // namespace
 
 LogLevel ParseLogLevel(std::string_view raw) noexcept {
-    if (EqualsIgnoreCaseAscii(raw, "debug")) {
+    if (EqualsAsciiInsensitive(raw, "debug")) {
         return LogLevel::Debug;
     }
-    if (EqualsIgnoreCaseAscii(raw, "warn") || EqualsIgnoreCaseAscii(raw, "notice")) {
+    if (EqualsAsciiInsensitive(raw, "warn") || EqualsAsciiInsensitive(raw, "notice")) {
         return LogLevel::Warn;
     }
-    if (EqualsIgnoreCaseAscii(raw, "error")) {
+    if (EqualsAsciiInsensitive(raw, "error")) {
         return LogLevel::Error;
     }
     return LogLevel::Info;
@@ -149,15 +135,19 @@ void Logger::RotateIfNeeded() {
     currentBytes_ = 0;
 
     std::error_code ec;
-    for (std::size_t idx = options_.maxBackups; idx >= 1; --idx) {
-        std::filesystem::path src = options_.logFilePath;
-        if (idx > 1) {
-            src += std::format(".{}", idx - 1);
-        }
-        std::filesystem::path dst = options_.logFilePath;
-        dst += std::format(".{}", idx);
-        if (std::filesystem::exists(src, ec)) {
-            std::filesystem::rename(src, dst, ec);
+    if (options_.maxBackups == 0) {
+        std::filesystem::remove(options_.logFilePath, ec);
+    } else {
+        for (std::size_t idx = options_.maxBackups; idx >= 1; --idx) {
+            std::filesystem::path src = options_.logFilePath;
+            if (idx > 1) {
+                src += std::format(".{}", idx - 1);
+            }
+            std::filesystem::path dst = options_.logFilePath;
+            dst += std::format(".{}", idx);
+            if (std::filesystem::exists(src, ec)) {
+                std::filesystem::rename(src, dst, ec);
+            }
         }
     }
     OpenLogStream();

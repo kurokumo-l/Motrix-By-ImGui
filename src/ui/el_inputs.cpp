@@ -115,6 +115,9 @@ RenderNumericSteppers(const ElStyle& st, const char* id, const NumericBoxLayout&
         res.delta = 1;
     }
     const bool upHov = ImGui::IsItemHovered();
+    if (upHov) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
     const float upT =
         AnimStep(st.anim, {ImGui::GetItemID() ^ 0x1A02u, upHov ? 1.0f : 0.0f, 22.0f, 0.0f});
     DrawMotrixIcon(IconSpec{
@@ -132,6 +135,9 @@ RenderNumericSteppers(const ElStyle& st, const char* id, const NumericBoxLayout&
         res.delta = -1;
     }
     const bool dnHov = ImGui::IsItemHovered();
+    if (dnHov) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
     const float dnT =
         AnimStep(st.anim, {ImGui::GetItemID() ^ 0x1A03u, dnHov ? 1.0f : 0.0f, 22.0f, 0.0f});
     DrawMotrixIcon(IconSpec{

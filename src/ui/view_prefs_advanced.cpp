@@ -43,28 +43,6 @@ std::string GenerateRandomSecret(std::size_t len) {
     return out;
 }
 
-void DrawSubCaption(const UiFrameContext& ctx, float x, float y, std::string_view txt) {
-    FontGuard fg(ctx.fonts, FontRole::Regular, 14.5f);
-    ImGui::GetWindowDrawList()->AddText(
-        ImVec2(x, y), ToAbgrU32(ctx.palette.subLabelText), txt.data(), txt.data() + txt.size());
-}
-
-struct AdvChkItem {
-    const char* id = nullptr;
-    std::string_view key{};
-    bool* val = nullptr;
-};
-
-void DrawAdvCheckboxStack(UiFrameContext& ctx, float x, float& y, std::span<const AdvChkItem> items) {
-    const float s = ctx.dpiScale;
-    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
-    for (const auto& item : items) {
-        ImGui::SetCursorScreenPos(ImVec2(x, y));
-        ElCheckbox(elSt, item.id, ctx.tr.Tr(item.key), item.val);
-        y += 30.0f * s;
-    }
-}
-
 struct PortFieldSpec {
     const char* id = nullptr;
     int& portVal;
@@ -122,11 +100,8 @@ void DrawPortCompositeField(UiFrameContext& ctx, const PortFieldSpec& spec) {
     }
     if (res.deactivated) {
         entry.active = false;
-        int parsed = spec.portVal;
-        const std::string_view sv(entry.buf.data());
-        auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), parsed);
-        if (ec == std::errc{} && ptr == sv.data() + sv.size()) {
-            spec.portVal = std::clamp(parsed, 1024, 65535);
+        if (const auto parsed = motrix::core::ParseStrictInt(entry.buf.data())) {
+            spec.portVal = std::clamp(*parsed, 1024, 65535);
         }
         CopyUtf8ToBuffer(std::to_string(spec.portVal), entry.buf.data(), entry.buf.size());
     }
@@ -369,13 +344,13 @@ void RenderAdvBtNetworkRow(UiFrameContext& ctx, PrefsFormState& ps) {
                                PortFieldSpec{"##adv_dht_port", ps.dhtPort, bx, cy, portW, 20000, 29999});
         cy += 44.0f * s;
 
-        const std::array<AdvChkItem, 4> netItems{{
+        const std::array<PrefsCheckboxItem, 4> netItems{{
             {"##adv_dht", "prefs.enable_dht", &ps.enableDht},
             {"##adv_pex", "prefs.enable_pex", &ps.enablePeerExchange},
             {"##adv_lpd", "prefs.enable_lpd", &ps.btEnableLpd},
             {"##adv_anon", "prefs.bt_anonymous", &ps.btAnonymousMode},
         }};
-        DrawAdvCheckboxStack(ctx, bx, cy, netItems);
+        DrawPrefsCheckboxStack(ctx, bx, cy, netItems);
         ImGui::SetCursorScreenPos(ImVec2(bx, cy - 6.0f * s));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     });
@@ -386,13 +361,217 @@ void RenderAdvSecurityRow(UiFrameContext& ctx, PrefsFormState& ps) {
 
     DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.security_network"), 24.0f * s, [&](float bx, float) {
         float cy = ImGui::GetCursorScreenPos().y;
-        const std::array<AdvChkItem, 3> secItems{{
+        const std::array<PrefsCheckboxItem, 3> secItems{{
             {"##adv_cert", "prefs.check_cert", &ps.checkCertificate},
             {"##adv_ipv6", "prefs.disable_ipv6", &ps.disableIpv6},
             {"##adv_rtime", "prefs.remote_time", &ps.remoteTime},
         }};
-        DrawAdvCheckboxStack(ctx, bx, cy, secItems);
+        DrawPrefsCheckboxStack(ctx, bx, cy, secItems);
         ImGui::SetCursorScreenPos(ImVec2(bx, cy - 6.0f * s));
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    });
+}
+
+void RenderUserAgentButtons(const UiFrameContext& ctx, PrefsFormState& ps, float x, float y) {
+    struct Preset {
+        std::string_view label;
+        std::string_view ua;
+    };
+    static constexpr std::array<Preset, 4> kPresets{{
+        {"Aria2", "aria2/1.36.0"},
+        {"Transmission", "Transmission/3.00"},
+        {"Chrome",
+         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+         "(KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36"},
+        {"du", "netdisk;6.0.0.12;PC;PC-Windows;10.0.16299;WindowsBaiduYunGuanJia"},
+    }};
+
+    const float s = ctx.dpiScale;
+    const float h = 32.0f * s;
+    FontGuard fg(ctx.fonts, FontRole::Medium, 13.5f);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float curX = x;
+
+    for (std::size_t i = 0; i < kPresets.size(); ++i) {
+        const auto lbl = kPresets[i].label;
+        const ImVec2 tSz = ImGui::CalcTextSize(lbl.data(), lbl.data() + lbl.size());
+        const float w = tSz.x + 28.0f * s;
+        const ImVec2 p0(curX, y);
+        const ImVec2 p1(curX + w, y + h);
+        ImGui::SetCursorScreenPos(p0);
+        if (ImGui::InvisibleButton(std::format("##ua_preset_{}", i).c_str(), ImVec2(w, h))) {
+            CopyUtf8ToBuffer(kPresets[i].ua, ps.userAgentBuffer.data(), ps.userAgentBuffer.size());
+        }
+        const bool hov = ImGui::IsItemHovered();
+        if (hov) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+        ImDrawFlags roundFlags = ImDrawFlags_RoundCornersNone;
+        if (i == 0) {
+            roundFlags = ImDrawFlags_RoundCornersLeft;
+        } else if (i + 1 == kPresets.size()) {
+            roundFlags = ImDrawFlags_RoundCornersRight;
+        }
+        dl->AddRectFilled(
+            p0,
+            p1,
+            ToAbgrU32(hov ? WithAlpha(ctx.palette.primary, ctx.palette.isDark ? 0.14f : 0.08f)
+                          : ctx.palette.inputBg),
+            4.0f * s,
+            roundFlags);
+        dl->AddRect(p0,
+                    p1,
+                    ToAbgrU32(hov ? ctx.palette.primary : ctx.palette.inputBorder),
+                    4.0f * s,
+                    roundFlags,
+                    1.0f);
+        dl->AddText(ImVec2(p0.x + (w - tSz.x) * 0.5f, p0.y + (h - tSz.y) * 0.5f),
+                    ToAbgrU32(hov ? ctx.palette.primary : ctx.palette.panelTitle),
+                    lbl.data(),
+                    lbl.data() + lbl.size());
+        curX += w - 1.0f;
+    }
+}
+
+float DrawReadonlyPathRow(UiFrameContext& ctx,
+                          const char* id,
+                          std::string_view caption,
+                          std::string_view path,
+                          float x,
+                          float y,
+                          float width) {
+    const float s = ctx.dpiScale;
+    DrawSubCaption(ctx, x, y, caption);
+    const float fieldY = y + 24.0f * s;
+    std::array<char, 512> buf{};
+    CopyUtf8ToBuffer(path, buf.data(), buf.size());
+    ImGui::SetCursorScreenPos(ImVec2(x, fieldY));
+    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
+    const ElCompositeResult res = ElCompositeInput(
+        elSt,
+        ElCompositeSpec{id, buf.data(), buf.size(), width, std::nullopt, MotrixIcon::Folder, {}, true});
+    if (res.rightClicked && !path.empty()) {
+        ctx.host.OpenPathInExplorer(path);
+    }
+    return fieldY + 42.0f * s;
+}
+
+void RenderAdvProtocolRow(UiFrameContext& ctx, PrefsFormState& ps) {
+    const float s = ctx.dpiScale;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
+
+    DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.download_protocol"), 24.0f * s, [&](float bx, float) {
+        float cy = ImGui::GetCursorScreenPos().y;
+        DrawSubCaption(ctx, bx, cy, ctx.tr.Tr("prefs.protocols_default_client"));
+        cy += 28.0f * s;
+        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
+        ElSwitch(elSt, "##proto_mag", ctx.tr.Tr("prefs.proto_magnet"), &ps.protocolMagnet);
+        cy += 34.0f * s;
+        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
+        ElSwitch(elSt, "##proto_th", ctx.tr.Tr("prefs.proto_thunder"), &ps.protocolThunder);
+        cy += 34.0f * s;
+        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
+        ElSwitch(elSt, "##proto_mx", ctx.tr.Tr("prefs.proto_motrix"), &ps.protocolMotrix);
+        cy += 34.0f * s;
+        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
+        ElSwitch(elSt, "##proto_tor", ctx.tr.Tr("prefs.proto_torrent"), &ps.protocolTorrent);
+        ImGui::SetCursorScreenPos(ImVec2(bx, cy + 28.0f * s));
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    });
+}
+
+void RenderAdvUserAgentRow(UiFrameContext& ctx, PrefsFormState& ps) {
+    const float s = ctx.dpiScale;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
+
+    DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.user_agent"), 24.0f * s, [&](float bx, float bw) {
+        float cy = ImGui::GetCursorScreenPos().y;
+        const float fieldW = std::min(bw, 490.0f * s);
+        DrawSubCaption(ctx, bx, cy, ctx.tr.Tr("prefs.mock_user_agent"));
+        cy += 26.0f * s;
+        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
+        ElInputTextMultiline(elSt,
+                             ElTextInputSpec{"##adv_ua",
+                                             ps.userAgentBuffer.data(),
+                                             ps.userAgentBuffer.size(),
+                                             fieldW,
+                                             {},
+                                             0,
+                                             60.0f * s});
+        cy += 68.0f * s;
+        RenderUserAgentButtons(ctx, ps, bx, cy);
+        ImGui::SetCursorScreenPos(ImVec2(bx, cy + 34.0f * s));
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    });
+}
+
+void RenderAdvDeveloperRow(UiFrameContext& ctx, PrefsFormState& ps) {
+    const float s = ctx.dpiScale;
+    const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
+
+    DrawPrefsFormRow(ctx, ctx.tr.Tr("prefs.developer"), 24.0f * s, [&](float bx, float bw) {
+        float cy = ImGui::GetCursorScreenPos().y;
+        const float fieldW = std::min(bw, 460.0f * s);
+
+        DrawSubCaption(ctx, bx, cy, ctx.tr.Tr("prefs.log_level"));
+        cy += 24.0f * s;
+        const std::array<const char*, 4> logItems{
+            ctx.tr.Tr("prefs.log_debug").data(),
+            ctx.tr.Tr("prefs.log_info").data(),
+            ctx.tr.Tr("prefs.log_warn").data(),
+            ctx.tr.Tr("prefs.log_error").data(),
+        };
+        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
+        ElSelectCombo(
+            elSt,
+            ElSelectSpec{"##dev_log_level", &ps.logLevelIndex, logItems, std::min(bw, 220.0f * s)});
+        cy += 44.0f * s;
+
+        cy = DrawReadonlyPathRow(ctx,
+                                 "##dev_conf",
+                                 ctx.tr.Tr("prefs.aria2_conf_path"),
+                                 ctx.state.engineConfPath,
+                                 bx,
+                                 cy,
+                                 fieldW);
+        cy = DrawReadonlyPathRow(ctx,
+                                 "##dev_sess",
+                                 ctx.tr.Tr("prefs.session_path"),
+                                 ctx.state.sessionFilePath,
+                                 bx,
+                                 cy,
+                                 fieldW);
+        cy = DrawReadonlyPathRow(
+            ctx, "##dev_log", ctx.tr.Tr("prefs.log_path"), ctx.state.appLogPath, bx, cy, fieldW);
+
+        cy += 6.0f * s;
+        float btn1W = 148.0f * s;
+        float btn2W = 128.0f * s;
+        {
+            FontGuard bf(ctx.fonts, FontRole::Regular, 14.5f);
+            const std::string_view l1 = ctx.tr.Tr("prefs.session_reset");
+            const std::string_view l2 = ctx.tr.Tr("prefs.factory_reset");
+            btn1W = ImGui::CalcTextSize(l1.data(), l1.data() + l1.size()).x + 30.0f * s;
+            btn2W = ImGui::CalcTextSize(l2.data(), l2.data() + l2.size()).x + 30.0f * s;
+        }
+        ImGui::SetCursorScreenPos(ImVec2(bx, cy));
+        if (ElSecondaryButton(
+                elSt,
+                ElButtonSpec{"##dev_rst_sess", ctx.tr.Tr("prefs.session_reset"), btn1W, 34.0f * s})) {
+            ctx.sink.Dispatch(motrix::app::ResetSessionCmd{});
+            SetPrefsFeedback(ps, 3, true);
+            ctx.host.NotifyAnimationActive();
+        }
+        ImGui::SetCursorScreenPos(ImVec2(bx + btn1W + 12.0f * s, cy));
+        if (ElSecondaryButton(
+                elSt,
+                ElButtonSpec{"##dev_fact_rst", ctx.tr.Tr("prefs.factory_reset"), btn2W, 34.0f * s})) {
+            ctx.sink.Dispatch(motrix::app::FactoryResetCmd{});
+            ps.initialized = false;
+            SetPrefsFeedback(ps, 4, true);
+            ctx.host.NotifyAnimationActive();
+        }
+        ImGui::SetCursorScreenPos(ImVec2(bx, cy + 36.0f * s));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     });
 }
@@ -405,7 +584,9 @@ void RenderPrefsAdvancedTab(UiFrameContext& ctx, PrefsFormState& ps) {
     RenderAdvRpcRow(ctx, ps);
     RenderAdvBtNetworkRow(ctx, ps);
     RenderAdvSecurityRow(ctx, ps);
-    RenderPrefsAdvancedTail(ctx, ps);
+    RenderAdvProtocolRow(ctx, ps);
+    RenderAdvUserAgentRow(ctx, ps);
+    RenderAdvDeveloperRow(ctx, ps);
 }
 
 }  // namespace motrix::ui

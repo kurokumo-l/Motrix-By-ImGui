@@ -34,6 +34,9 @@ bool AsideIconButton(UiFrameContext& ctx, const AsideBtnSpec& spec) {
     ImGui::SetCursorScreenPos(min);
     const bool clicked = ImGui::InvisibleButton(spec.id, ImVec2(btnSize, btnSize));
     const bool hovered = ImGui::IsItemHovered();
+    if (hovered) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
 
     const float targetAlpha = hovered ? 1.0f : (spec.active ? 0.65f : 0.0f);
     const float bgT = ctx.anim.Float(HashId(spec.id), targetAlpha, 18.0f, targetAlpha);
@@ -68,8 +71,11 @@ void RenderAsideLogo(UiFrameContext& ctx, float cx, float logoBoxY) {
     if (ImGui::InvisibleButton("##aside_logo", ImVec2(logoW, 28.0f * s))) {
         ctx.sink.Dispatch(motrix::app::OpenModalCmd{motrix::app::ActiveModal::About});
     }
-    const float logoHovT =
-        ctx.anim.Float(HashId("##aside_logo"), ImGui::IsItemHovered() ? 1.0f : 0.0f, 18.0f, 0.0f);
+    const bool logoHov = ImGui::IsItemHovered();
+    if (logoHov) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
+    const float logoHovT = ctx.anim.Float(HashId("##aside_logo"), logoHov ? 1.0f : 0.0f, 18.0f, 0.0f);
     if (logoHovT > 0.01f) {
         const RgbaColor halo =
             WithAlpha(ctx.palette.asideHoverBg, ctx.palette.asideHoverBg.a * 0.6f * logoHovT);

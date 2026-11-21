@@ -43,6 +43,9 @@ bool SubnavItemButton(UiFrameContext& ctx, const SubnavBtnSpec& spec) {
     ImGui::SetCursorScreenPos(min);
     const bool clicked = ImGui::InvisibleButton(spec.id, ImVec2(spec.w, h));
     const bool hovered = ImGui::IsItemHovered();
+    if (hovered) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
 
     const float targetHighlight = (spec.active || hovered) ? 1.0f : 0.0f;
     const float hlT = ctx.anim.Float(HashId(spec.id), targetHighlight, 20.0f, targetHighlight);

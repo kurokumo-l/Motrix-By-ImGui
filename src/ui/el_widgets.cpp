@@ -17,20 +17,13 @@ namespace motrix::ui {
 
 namespace {
 
-struct CheckGlyphSpec {
-    ImVec2 minPt{};
-    float size = 0.0f;
-    ImU32 col = 0;
-    float s = 1.0f;
-};
-
-void DrawCheckmarkGlyph(ImDrawList* dl, const CheckGlyphSpec& g) {
-    const ImVec2 p0(g.minPt.x + g.size * 0.22f, g.minPt.y + g.size * 0.52f);
-    const ImVec2 p1(g.minPt.x + g.size * 0.43f, g.minPt.y + g.size * 0.74f);
-    const ImVec2 p2(g.minPt.x + g.size * 0.79f, g.minPt.y + g.size * 0.29f);
-    const float w = std::max(1.4f * g.s, 1.5f);
-    dl->AddLine(p0, p1, g.col, w);
-    dl->AddLine(p1, p2, g.col, w);
+void DrawCheckmarkGlyph(ImDrawList* dl, ImVec2 minPt, float size, ImU32 col, float s) {
+    const ImVec2 p0(minPt.x + size * 0.22f, minPt.y + size * 0.52f);
+    const ImVec2 p1(minPt.x + size * 0.43f, minPt.y + size * 0.74f);
+    const ImVec2 p2(minPt.x + size * 0.79f, minPt.y + size * 0.29f);
+    const float w = std::max(1.4f * s, 1.5f);
+    dl->AddLine(p0, p1, col, w);
+    dl->AddLine(p1, p2, col, w);
 }
 
 }  // namespace
@@ -118,7 +111,7 @@ bool ElCheckbox(const ElStyle& st, const char* id, std::string_view label, bool*
         dl->AddRect(bMin, bMax, ToAbgrU32(bdCol), 2.5f * s, 0, 1.0f);
     }
     if (chkT > 0.05f) {
-        DrawCheckmarkGlyph(dl, {bMin, boxSz, ToAbgrU32(WithAlpha(HexColor(0xFFFFFF), chkT)), s});
+        DrawCheckmarkGlyph(dl, bMin, boxSz, ToAbgrU32(WithAlpha(HexColor(0xFFFFFF), chkT)), s);
     }
     if (!label.empty()) {
         dl->AddText(ImVec2(bMax.x + gap, pos.y + (rowH - txtSz.y) * 0.5f),
@@ -306,14 +299,6 @@ bool ElPrimaryButton(const ElStyle& st, const ElButtonSpec& spec) {
 
 namespace {
 
-struct TooltipLayoutArgs {
-    ImVec2 anchorMin{};
-    ImVec2 anchorMax{};
-    ImVec2 boxSize{};
-    ElTooltipPlacement pref = ElTooltipPlacement::Top;
-    float s = 1.0f;
-};
-
 struct TooltipRectSpec {
     ImVec2 minPt{};
     ImVec2 maxPt{};
@@ -321,150 +306,133 @@ struct TooltipRectSpec {
     bool adjacent = false;
 };
 
-struct TooltipCursorArgs {
-    ImVec2& pos;
-    ImVec2 size{};
-    ImVec2 vpMin{};
-    ImVec2 vpMax{};
-    ElTooltipPlacement actual = ElTooltipPlacement::Top;
-    float s = 1.0f;
-};
-
-[[nodiscard]] bool PushTooltipClearOfCursor(TooltipCursorArgs& a) {
+[[nodiscard]] bool PushTooltipClearOfCursor(
+    ImVec2& pos, ImVec2 size, ImVec2 vpMin, ImVec2 vpMax, ElTooltipPlacement actual, float s) {
     const ImGuiIO& io = ImGui::GetIO();
     if (!ImGui::IsMousePosValid(&io.MousePos)) {
         return false;
     }
-    const ImVec2 cMin(io.MousePos.x - 2.0f * a.s, io.MousePos.y - 2.0f * a.s);
-    const ImVec2 cMax(io.MousePos.x + 14.0f * a.s, io.MousePos.y + 20.0f * a.s);
-    if (a.pos.x >= cMax.x || (a.pos.x + a.size.x) <= cMin.x || a.pos.y >= cMax.y
-        || (a.pos.y + a.size.y) <= cMin.y) {
+    const ImVec2 cMin(io.MousePos.x - 2.0f * s, io.MousePos.y - 2.0f * s);
+    const ImVec2 cMax(io.MousePos.x + 14.0f * s, io.MousePos.y + 20.0f * s);
+    if (pos.x >= cMax.x || (pos.x + size.x) <= cMin.x || pos.y >= cMax.y || (pos.y + size.y) <= cMin.y) {
         return false;
     }
-    switch (a.actual) {
+    switch (actual) {
         case ElTooltipPlacement::Bottom:
-            if (cMax.y + 2.0f * a.s + a.size.y <= a.vpMax.y) {
-                a.pos.y = cMax.y + 2.0f * a.s;
+            if (cMax.y + 2.0f * s + size.y <= vpMax.y) {
+                pos.y = cMax.y + 2.0f * s;
             }
             break;
         case ElTooltipPlacement::Top:
-            if (cMin.y - 4.0f * a.s - a.size.y >= a.vpMin.y) {
-                a.pos.y = cMin.y - 4.0f * a.s - a.size.y;
+            if (cMin.y - 4.0f * s - size.y >= vpMin.y) {
+                pos.y = cMin.y - 4.0f * s - size.y;
             }
             break;
         case ElTooltipPlacement::Right:
-            if (cMax.x + 4.0f * a.s + a.size.x <= a.vpMax.x) {
-                a.pos.x = cMax.x + 4.0f * a.s;
+            if (cMax.x + 4.0f * s + size.x <= vpMax.x) {
+                pos.x = cMax.x + 4.0f * s;
             }
             break;
         case ElTooltipPlacement::Left:
-            if (cMin.x - 4.0f * a.s - a.size.x >= a.vpMin.x) {
-                a.pos.x = cMin.x - 4.0f * a.s - a.size.x;
+            if (cMin.x - 4.0f * s - size.x >= vpMin.x) {
+                pos.x = cMin.x - 4.0f * s - size.x;
             }
             break;
     }
     return true;
 }
 
-[[nodiscard]] TooltipRectSpec ComputeTooltipRect(const TooltipLayoutArgs& a) {
+[[nodiscard]] TooltipRectSpec ComputeTooltipRect(
+    ImVec2 anchorMin, ImVec2 anchorMax, ImVec2 boxSize, ElTooltipPlacement pref, float s) {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const float margin = 8.0f * a.s;
-    const float gap = 7.0f * a.s;
+    const float margin = 8.0f * s;
+    const float gap = 7.0f * s;
     const ImVec2 vpMin(vp->Pos.x + margin, vp->Pos.y + margin);
     const ImVec2 vpMax(vp->Pos.x + vp->Size.x - margin, vp->Pos.y + vp->Size.y - margin);
-    const float w = a.boxSize.x;
-    const float h = a.boxSize.y;
-    const float acx = (a.anchorMin.x + a.anchorMax.x) * 0.5f;
-    const float acy = (a.anchorMin.y + a.anchorMax.y) * 0.5f;
+    const float w = boxSize.x;
+    const float h = boxSize.y;
+    const float acx = (anchorMin.x + anchorMax.x) * 0.5f;
+    const float acy = (anchorMin.y + anchorMax.y) * 0.5f;
 
-    ElTooltipPlacement actual = a.pref;
-    if (actual == ElTooltipPlacement::Bottom && (a.anchorMax.y + gap + h > vpMax.y)) {
+    ElTooltipPlacement actual = pref;
+    if (actual == ElTooltipPlacement::Bottom && (anchorMax.y + gap + h > vpMax.y)) {
         actual = ElTooltipPlacement::Top;
-    } else if (actual == ElTooltipPlacement::Top && (a.anchorMin.y - gap - h < vpMin.y)) {
+    } else if (actual == ElTooltipPlacement::Top && (anchorMin.y - gap - h < vpMin.y)) {
         actual = ElTooltipPlacement::Bottom;
-    } else if (actual == ElTooltipPlacement::Right && (a.anchorMax.x + gap + w > vpMax.x)) {
+    } else if (actual == ElTooltipPlacement::Right && (anchorMax.x + gap + w > vpMax.x)) {
         actual = ElTooltipPlacement::Left;
-    } else if (actual == ElTooltipPlacement::Left && (a.anchorMin.x - gap - w < vpMin.x)) {
+    } else if (actual == ElTooltipPlacement::Left && (anchorMin.x - gap - w < vpMin.x)) {
         actual = ElTooltipPlacement::Right;
     }
 
-    ImVec2 pos(acx - w * 0.5f, a.anchorMin.y - gap - h);
+    ImVec2 pos(acx - w * 0.5f, anchorMin.y - gap - h);
     if (actual == ElTooltipPlacement::Bottom) {
-        pos.y = a.anchorMax.y + gap;
+        pos.y = anchorMax.y + gap;
     } else if (actual == ElTooltipPlacement::Right) {
-        pos = ImVec2(a.anchorMax.x + gap, acy - h * 0.5f);
+        pos = ImVec2(anchorMax.x + gap, acy - h * 0.5f);
     } else if (actual == ElTooltipPlacement::Left) {
-        pos = ImVec2(a.anchorMin.x - gap - w, acy - h * 0.5f);
+        pos = ImVec2(anchorMin.x - gap - w, acy - h * 0.5f);
     }
 
     pos.x = std::clamp(pos.x, vpMin.x, std::max(vpMin.x, vpMax.x - w));
     pos.y = std::clamp(pos.y, vpMin.y, std::max(vpMin.y, vpMax.y - h));
-    TooltipCursorArgs curArgs{pos, a.boxSize, vpMin, vpMax, actual, a.s};
-    const bool pushed = PushTooltipClearOfCursor(curArgs);
+    const bool pushed = PushTooltipClearOfCursor(pos, boxSize, vpMin, vpMax, actual, s);
     return {pos, ImVec2(pos.x + w, pos.y + h), actual, !pushed};
 }
 
-struct TooltipArrowArgs {
-    TooltipRectSpec rect{};
-    ImVec2 anchorCenter{};
-    RgbaColor fill{};
-    RgbaColor border{};
-    bool drawBorder = false;
-    float s = 1.0f;
-};
-
-void DrawTooltipArrow(ImDrawList* dl, const TooltipArrowArgs& a) {
-    if (!a.rect.adjacent) {
+void DrawTooltipArrow(ImDrawList* dl,
+                      const TooltipRectSpec& rect,
+                      ImVec2 anchorCenter,
+                      RgbaColor fill,
+                      RgbaColor border,
+                      float s) {
+    if (!rect.adjacent) {
         return;
     }
-    const float aw = 4.5f * a.s;
-    const ImU32 fillU32 = ToAbgrU32(a.fill);
-    const ImU32 bdrU32 = ToAbgrU32(a.border);
-    const float cx =
-        std::clamp(a.anchorCenter.x, a.rect.minPt.x + 10.0f * a.s, a.rect.maxPt.x - 10.0f * a.s);
-    const float cy =
-        std::clamp(a.anchorCenter.y, a.rect.minPt.y + 10.0f * a.s, a.rect.maxPt.y - 10.0f * a.s);
+    const float aw = 4.5f * s;
+    const ImU32 fillU32 = ToAbgrU32(fill);
+    const ImU32 bdrU32 = ToAbgrU32(border);
+    const float cx = std::clamp(anchorCenter.x, rect.minPt.x + 10.0f * s, rect.maxPt.x - 10.0f * s);
+    const float cy = std::clamp(anchorCenter.y, rect.minPt.y + 10.0f * s, rect.maxPt.y - 10.0f * s);
 
     ImVec2 p0{};
     ImVec2 p1{};
     ImVec2 b0{};
     ImVec2 b1{};
     ImVec2 tip{};
-    switch (a.rect.actual) {
+    switch (rect.actual) {
         case ElTooltipPlacement::Top:
-            p0 = ImVec2(cx - aw, a.rect.maxPt.y - 1.2f);
-            p1 = ImVec2(cx + aw, a.rect.maxPt.y - 1.2f);
-            b0 = ImVec2(cx - aw, a.rect.maxPt.y);
-            b1 = ImVec2(cx + aw, a.rect.maxPt.y);
-            tip = ImVec2(cx, a.rect.maxPt.y + aw);
+            p0 = ImVec2(cx - aw, rect.maxPt.y - 1.2f);
+            p1 = ImVec2(cx + aw, rect.maxPt.y - 1.2f);
+            b0 = ImVec2(cx - aw, rect.maxPt.y);
+            b1 = ImVec2(cx + aw, rect.maxPt.y);
+            tip = ImVec2(cx, rect.maxPt.y + aw);
             break;
         case ElTooltipPlacement::Bottom:
-            p0 = ImVec2(cx - aw, a.rect.minPt.y + 1.2f);
-            p1 = ImVec2(cx + aw, a.rect.minPt.y + 1.2f);
-            b0 = ImVec2(cx - aw, a.rect.minPt.y);
-            b1 = ImVec2(cx + aw, a.rect.minPt.y);
-            tip = ImVec2(cx, a.rect.minPt.y - aw);
+            p0 = ImVec2(cx - aw, rect.minPt.y + 1.2f);
+            p1 = ImVec2(cx + aw, rect.minPt.y + 1.2f);
+            b0 = ImVec2(cx - aw, rect.minPt.y);
+            b1 = ImVec2(cx + aw, rect.minPt.y);
+            tip = ImVec2(cx, rect.minPt.y - aw);
             break;
         case ElTooltipPlacement::Right:
-            p0 = ImVec2(a.rect.minPt.x + 1.2f, cy - aw);
-            p1 = ImVec2(a.rect.minPt.x + 1.2f, cy + aw);
-            b0 = ImVec2(a.rect.minPt.x, cy - aw);
-            b1 = ImVec2(a.rect.minPt.x, cy + aw);
-            tip = ImVec2(a.rect.minPt.x - aw, cy);
+            p0 = ImVec2(rect.minPt.x + 1.2f, cy - aw);
+            p1 = ImVec2(rect.minPt.x + 1.2f, cy + aw);
+            b0 = ImVec2(rect.minPt.x, cy - aw);
+            b1 = ImVec2(rect.minPt.x, cy + aw);
+            tip = ImVec2(rect.minPt.x - aw, cy);
             break;
         case ElTooltipPlacement::Left:
-            p0 = ImVec2(a.rect.maxPt.x - 1.2f, cy - aw);
-            p1 = ImVec2(a.rect.maxPt.x - 1.2f, cy + aw);
-            b0 = ImVec2(a.rect.maxPt.x, cy - aw);
-            b1 = ImVec2(a.rect.maxPt.x, cy + aw);
-            tip = ImVec2(a.rect.maxPt.x + aw, cy);
+            p0 = ImVec2(rect.maxPt.x - 1.2f, cy - aw);
+            p1 = ImVec2(rect.maxPt.x - 1.2f, cy + aw);
+            b0 = ImVec2(rect.maxPt.x, cy - aw);
+            b1 = ImVec2(rect.maxPt.x, cy + aw);
+            tip = ImVec2(rect.maxPt.x + aw, cy);
             break;
     }
     dl->AddTriangleFilled(p0, p1, tip, fillU32);
-    if (a.drawBorder) {
-        dl->AddLine(b0, tip, bdrU32, 1.0f);
-        dl->AddLine(b1, tip, bdrU32, 1.0f);
-    }
+    dl->AddLine(b0, tip, bdrU32, 1.0f);
+    dl->AddLine(b1, tip, bdrU32, 1.0f);
 }
 
 struct TooltipPaintSpec {
@@ -497,7 +465,7 @@ void PaintTooltipOverlay(const TooltipPaintSpec& p) {
                       4.5f * p.s);
     dl->AddRectFilled(r.minPt, r.maxPt, ToAbgrU32(fillCol), 4.0f * p.s);
     dl->AddRect(r.minPt, r.maxPt, ToAbgrU32(borderCol), 4.0f * p.s, 0, 1.0f);
-    DrawTooltipArrow(dl, {r, p.anchorCenter, fillCol, borderCol, true, p.s});
+    DrawTooltipArrow(dl, r, p.anchorCenter, fillCol, borderCol, p.s);
     dl->AddText(ImGui::GetFont(),
                 ImGui::GetFontSize(),
                 ImVec2(r.minPt.x + p.padX, r.minPt.y + p.padY),
@@ -527,7 +495,7 @@ void ElDrawTooltip(const ElStyle& st, const ElTooltipSpec& spec) {
     const float padX = 10.0f * s;
     const float padY = 5.0f * s;
     const ImVec2 boxSize(txtSz.x + padX * 2.0f, txtSz.y + padY * 2.0f);
-    const TooltipRectSpec r = ComputeTooltipRect({anchorMin, anchorMax, boxSize, spec.placement, s});
+    const TooltipRectSpec r = ComputeTooltipRect(anchorMin, anchorMax, boxSize, spec.placement, s);
     const ImVec2 anchorCenter((anchorMin.x + anchorMax.x) * 0.5f, (anchorMin.y + anchorMax.y) * 0.5f);
 
     TooltipPaintSpec paint{

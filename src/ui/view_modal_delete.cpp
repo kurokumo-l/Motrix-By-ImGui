@@ -27,29 +27,13 @@ struct DeleteLayout {
     float bodyW = 372.0f;
 };
 
-[[nodiscard]] std::optional<std::string>
-FindTaskNameIn(std::span<const motrix::domain::DownloadTaskView> list, std::string_view gid) {
-    for (const auto& t : list) {
-        if (t.gid == gid) {
-            return t.name;
-        }
-    }
-    return std::nullopt;
-}
-
 [[nodiscard]] std::string
 ResolveTaskDisplayName(const UiFrameContext& ctx, std::string_view gid, std::string_view taskName) {
     if (!taskName.empty()) {
         return std::string(taskName);
     }
-    if (auto found = FindTaskNameIn(ctx.state.downloadingTasks, gid)) {
-        return *found;
-    }
-    if (auto found = FindTaskNameIn(ctx.state.waitingTasks, gid)) {
-        return *found;
-    }
-    if (auto found = FindTaskNameIn(ctx.state.stoppedTasks, gid)) {
-        return *found;
+    if (const auto* task = motrix::app::FindTaskByGid(ctx.state, gid)) {
+        return task->name;
     }
     return std::string(gid);
 }
@@ -71,6 +55,9 @@ void CloseDeleteConfirm(DeleteConfirmState& dc) {
     ImGui::SetCursorScreenPos(ImVec2(closeX, closeY));
     const bool closeClicked = ImGui::InvisibleButton("##del_close", ImVec2(closeBox, closeBox));
     const bool closeHov = ImGui::IsItemHovered();
+    if (closeHov) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
     DrawMotrixIcon(IconSpec{
         MotrixIcon::WinClose,
         closeX + 6.5f * s,
@@ -288,7 +275,7 @@ void RenderDeleteConfirmModal(UiFrameContext& ctx) {
     RenderDeleteBody(ctx, lay, curY);
     RenderDeleteActions(ctx, lay, curY);
 
-    if (headerClose || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    if (headerClose || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
         CloseDeleteConfirm(*ctx.deleteConfirm);
     }
 }

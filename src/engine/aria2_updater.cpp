@@ -21,28 +21,28 @@ constexpr std::size_t kMaxEngineBinaryBytes = 64u * 1024u * 1024u;
 [[nodiscard]] bool IsDirectExeUrl(std::string_view url) noexcept {
     const std::size_t q = url.find('?');
     const std::string_view pathPart = (q == std::string_view::npos) ? url : url.substr(0, q);
-    return motrix::core::AsciiLower(pathPart).ends_with(".exe");
+    return motrix::core::EndsWithAsciiInsensitive(pathPart, ".exe");
 }
 
 [[nodiscard]] int ScoreWindowsX64ExeAsset(std::string_view name) noexcept {
-    const std::string lower = motrix::core::AsciiLower(name);
-    if (!lower.ends_with(".exe")) {
+    using motrix::core::ContainsAsciiInsensitive;
+    if (!motrix::core::EndsWithAsciiInsensitive(name, ".exe")) {
         return -1000;
     }
-    if (lower.find("arm64") != std::string::npos || lower.find("aarch64") != std::string::npos
-        || lower.find("386") != std::string::npos || lower.find("x86.") != std::string::npos
-        || lower.find("win32") != std::string::npos) {
+    if (ContainsAsciiInsensitive(name, "arm64") || ContainsAsciiInsensitive(name, "aarch64")
+        || ContainsAsciiInsensitive(name, "386") || ContainsAsciiInsensitive(name, "x86.")
+        || ContainsAsciiInsensitive(name, "win32")) {
         return -50;
     }
     int score = 10;
-    if (lower.find("windows") != std::string::npos) {
+    if (ContainsAsciiInsensitive(name, "windows")) {
         score += 100;
     }
-    if (lower.find("x86_64") != std::string::npos || lower.find("x64") != std::string::npos
-        || lower.find("amd64") != std::string::npos) {
+    if (ContainsAsciiInsensitive(name, "x86_64") || ContainsAsciiInsensitive(name, "x64")
+        || ContainsAsciiInsensitive(name, "amd64")) {
         score += 50;
     }
-    if (lower.find("aria2-next") != std::string::npos) {
+    if (ContainsAsciiInsensitive(name, "aria2-next")) {
         score += 20;
     }
     return score;
@@ -168,7 +168,7 @@ std::string NormalizeVersionTag(std::string_view tag) {
 }
 
 [[nodiscard]] bool IsGitHubHostUrl(std::string_view url) noexcept {
-    const std::size_t schemeEnd = url.find(":\x2f\x2f");
+    const std::size_t schemeEnd = url.find("://");
     if (schemeEnd == std::string_view::npos) {
         return false;
     }
@@ -180,10 +180,12 @@ std::string NormalizeVersionTag(std::string_view tag) {
         hostPort.remove_prefix(at + 1);
     }
     const std::size_t colon = hostPort.find(':');
-    const std::string host = motrix::core::AsciiLower(
-        (colon == std::string_view::npos) ? hostPort : hostPort.substr(0, colon));
-    return host == "github.com" || host.ends_with(".github.com") || host == "githubusercontent.com"
-           || host.ends_with(".githubusercontent.com");
+    const std::string_view host =
+        (colon == std::string_view::npos) ? hostPort : hostPort.substr(0, colon);
+    return motrix::core::EqualsAsciiInsensitive(host, "github.com")
+           || motrix::core::EndsWithAsciiInsensitive(host, ".github.com")
+           || motrix::core::EqualsAsciiInsensitive(host, "githubusercontent.com")
+           || motrix::core::EndsWithAsciiInsensitive(host, ".githubusercontent.com");
 }
 
 std::string ApplyGitHubMirrorPrefix(std::string_view assetUrl, std::string_view mirrorPrefix) {

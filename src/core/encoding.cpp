@@ -52,12 +52,18 @@ std::filesystem::path PathFromUtf8(std::string_view utf8) {
     return std::filesystem::path(Utf8ToWide(utf8));
 }
 
+namespace {
+
+constexpr char AsciiLowerChar(char c) noexcept {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+}  // namespace
+
 std::string AsciiLower(std::string_view text) {
     std::string out(text);
     for (char& ch : out) {
-        if (ch >= 'A' && ch <= 'Z') {
-            ch = static_cast<char>(ch - 'A' + 'a');
-        }
+        ch = AsciiLowerChar(ch);
     }
     return out;
 }
@@ -76,24 +82,38 @@ std::string_view TrimAscii(std::string_view text) noexcept {
     return text;
 }
 
-bool StartsWithAsciiInsensitive(std::string_view text, std::string_view prefix) noexcept {
-    if (text.size() < prefix.size()) {
+bool EqualsAsciiInsensitive(std::string_view a, std::string_view b) noexcept {
+    if (a.size() != b.size()) {
         return false;
     }
-    auto lowerChar = [](char c) noexcept {
-        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-    };
-    for (std::size_t i = 0; i < prefix.size(); ++i) {
-        if (lowerChar(text[i]) != lowerChar(prefix[i])) {
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (AsciiLowerChar(a[i]) != AsciiLowerChar(b[i])) {
             return false;
         }
     }
     return true;
 }
 
+bool StartsWithAsciiInsensitive(std::string_view text, std::string_view prefix) noexcept {
+    return text.size() >= prefix.size() && EqualsAsciiInsensitive(text.substr(0, prefix.size()), prefix);
+}
+
 bool EndsWithAsciiInsensitive(std::string_view text, std::string_view suffix) noexcept {
     return text.size() >= suffix.size()
-           && StartsWithAsciiInsensitive(text.substr(text.size() - suffix.size()), suffix);
+           && EqualsAsciiInsensitive(text.substr(text.size() - suffix.size()), suffix);
+}
+
+bool ContainsAsciiInsensitive(std::string_view haystack, std::string_view needle) noexcept {
+    if (needle.empty() || haystack.size() < needle.size()) {
+        return false;
+    }
+    const std::size_t limit = haystack.size() - needle.size();
+    for (std::size_t i = 0; i <= limit; ++i) {
+        if (EqualsAsciiInsensitive(haystack.substr(i, needle.size()), needle)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::string_view TrimQuotedArg(std::string_view text) noexcept {
