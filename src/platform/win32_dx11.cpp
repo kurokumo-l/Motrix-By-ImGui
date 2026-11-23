@@ -29,6 +29,7 @@ struct Dx11Context::Impl {
     ComPtr<ID3D11RenderTargetView> rtv;
     std::vector<ComPtr<ID3D11ShaderResourceView>> userTextures;
     bool occluded = false;
+    bool deviceLost = false;
 
     void CreateRenderTarget() {
         ComPtr<ID3D11Texture2D> backBuffer;
@@ -111,6 +112,8 @@ void Dx11Context::Shutdown() {
     impl_->swapChain.Reset();
     impl_->context.Reset();
     impl_->device.Reset();
+    impl_->occluded = false;
+    impl_->deviceLost = false;
 }
 
 void Dx11Context::Trim() noexcept {
@@ -129,29 +132,52 @@ void Dx11Context::Trim() noexcept {
 }
 
 bool Dx11Context::IsInitialized() const noexcept {
-    return static_cast<bool>(impl_->device);
+    return impl_ && static_cast<bool>(impl_->device);
 }
 
-void Dx11Context::Resize(std::uint32_t width, std::uint32_t height) {
-    if (!impl_->swapChain || width == 0 || height == 0) {
-        return;
+bool Dx11Context::IsDeviceLost() const noexcept {
+    return impl_ && impl_->deviceLost;
+}
+
+bool Dx11Context::Resize(std::uint32_t width, std::uint32_t height) {
+    if (!impl_ || !impl_->swapChain || width == 0 || height == 0) {
+        return true;
     }
     impl_->rtv.Reset();
-    impl_->swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    const HRESULT hr = impl_->swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(hr)) {
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+            impl_->deviceLost = true;
+        }
+        return false;
+    }
     impl_->CreateRenderTarget();
+    return static_cast<bool>(impl_->rtv);
 }
 
-void Dx11Context::BeginRenderPass(float r, float g, float b, float a) {
+bool Dx11Context::BeginRenderPass(float r, float g, float b, float a) {
+    if (!impl_ || !impl_->context || !impl_->rtv) {
+        return false;
+    }
     ID3D11RenderTargetView* target = impl_->rtv.Get();
     const float clearColor[4] = {r, g, b, a};
     impl_->context->OMSetRenderTargets(1, &target, nullptr);
     impl_->context->ClearRenderTargetView(target, clearColor);
+    return true;
 }
 
-bool Dx11Context::PresentFrame(bool vsync) {
+PresentResult Dx11Context::PresentFrame(bool vsync) {
+    if (!impl_ || !impl_->swapChain || impl_->deviceLost) {
+        return PresentResult::DeviceLost;
+    }
     const HRESULT hr = impl_->swapChain->Present(vsync ? 1u : 0u, 0u);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+        impl_->occluded = false;
+        impl_->deviceLost = true;
+        return PresentResult::DeviceLost;
+    }
     impl_->occluded = (hr == DXGI_STATUS_OCCLUDED);
-    return impl_->occluded;
+    return impl_->occluded ? PresentResult::Occluded : PresentResult::Ok;
 }
 
 bool Dx11Context::IsOccludedStillActive() {

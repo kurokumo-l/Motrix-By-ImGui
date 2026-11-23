@@ -4,6 +4,7 @@ import std;
 import motrix.core;
 import motrix.domain;
 import motrix.platform;
+export import motrix.test_server_util;
 
 namespace motrix::test {
 

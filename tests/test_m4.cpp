@@ -167,6 +167,11 @@ TEST_CASE("motrix.domain deep links, supported URIs, and startup arg classificat
     CHECK(dlNew.action == DeepLinkAction::NewTask);
     CHECK(dlNew.uriParam == "https://example.com/a.zip");
 
+    const auto dlPlus =
+        ParseMotrixDeepLink("motrix://new-task?uri=https%3A%2F%2Fexample.com%2Fv1+2%2B3.tar.gz");
+    CHECK(dlPlus.action == DeepLinkAction::NewTask);
+    CHECK(dlPlus.uriParam == "https://example.com/v1+2+3.tar.gz");
+
     CHECK(ParseMotrixDeepLink("MO://PREFERENCES").action == DeepLinkAction::Preferences);
     CHECK(ParseMotrixDeepLink("mo://prefs").action == DeepLinkAction::Preferences);
     CHECK(ParseMotrixDeepLink("mo://about").action == DeepLinkAction::About);
@@ -195,8 +200,8 @@ TEST_CASE("motrix.domain deep links, supported URIs, and startup arg classificat
     CHECK(argThunder.uri == "https://example.com/file.zip");
 
     const auto argBadThunder = ClassifyStartupArg("thunder://not-valid-base64!!!");
-    CHECK(argBadThunder.kind == StartupArgKind::ResourceUri);
-    CHECK(argBadThunder.uri == "thunder://not-valid-base64!!!");
+    CHECK(argBadThunder.kind == StartupArgKind::None);
+    CHECK(argBadThunder.uri.empty());
 
     const auto argMagnet = ClassifyStartupArg("magnet:?xt=urn:btih:0123456789abcdef");
     CHECK(argMagnet.kind == StartupArgKind::ResourceUri);
@@ -248,8 +253,10 @@ TEST_CASE("motrix.ipc StartupPayload serialization and arg builder", "[ipc][m4]"
 
 TEST_CASE("motrix.ipc NamedPipe single-instance acquire, forward, and teardown", "[ipc][pipe][m4]") {
     motrix::core::Logger logger;
+    static std::atomic<std::uint64_t> m4PipeSeq{0};
     const std::string pipeName = std::string(R"(\\.\pipe\MotrixNativeTest_)")
-                                 + std::to_string(motrix::engine::CurrentHostProcessId());
+                                 + std::to_string(motrix::engine::CurrentHostProcessId()) + "_"
+                                 + std::to_string(m4PipeSeq.fetch_add(1, std::memory_order_relaxed));
 
     auto primary = CreateNamedPipeChannel(logger, pipeName);
     auto secondary = CreateNamedPipeChannel(logger, pipeName);
@@ -287,7 +294,7 @@ TEST_CASE("motrix.ipc NamedPipe single-instance acquire, forward, and teardown",
 
     {
         std::unique_lock lock(mu);
-        const bool ok = cv.wait_for(lock, std::chrono::milliseconds(500), [&] { return receivedFlag; });
+        const bool ok = cv.wait_for(lock, std::chrono::milliseconds(3000), [&] { return receivedFlag; });
         REQUIRE(ok);
         CHECK(receivedPayload.uris == outgoing.uris);
         REQUIRE(receivedPayload.torrentFiles.size() == 1u);

@@ -27,8 +27,10 @@ TEST_CASE("motrix.ipc DefaultIpcPipeName is scoped to current user SID and sessi
 
 TEST_CASE("motrix.ipc NamedPipe enforces explicit current-user DACL", "[ipc][security]") {
     motrix::core::Logger logger;
+    static std::atomic<std::uint64_t> daclPipeSeq{0};
     const std::string pipeName = std::string(R"(\\.\pipe\MotrixDaclTest_)")
-                                 + std::to_string(motrix::engine::CurrentHostProcessId());
+                                 + std::to_string(motrix::engine::CurrentHostProcessId()) + "_"
+                                 + std::to_string(daclPipeSeq.fetch_add(1, std::memory_order_relaxed));
     auto channel = motrix::ipc::CreateNamedPipeChannel(logger, pipeName);
     REQUIRE(channel != nullptr);
     const auto acq = channel->TryAcquirePrimary([](const motrix::ipc::StartupPayload&) {});
@@ -95,7 +97,9 @@ TEST_CASE("motrix.platform Win32WindowHost supports deferred startHidden quit an
     bool imguiInitCalled = false;
     bool frameRendered = false;
     std::jthread stopper([&](std::stop_token) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        for (int i = 0; i < 200 && !hostA.IsHiddenToTray(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
         hostA.RequestQuit();
     });
 
@@ -158,14 +162,18 @@ TEST_CASE("motrix.platform Win32WindowHost renders after ShowFromTray -> HideToT
     std::atomic<int> frameCount{0};
 
     std::jthread driver([&](std::stop_token) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        for (int i = 0; i < 200 && !host.IsHiddenToTray(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
         host.ShowFromTray();
         for (int i = 0; i < 100 && frameCount.load(std::memory_order_acquire) < 1; ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
         const int beforeHide = frameCount.load(std::memory_order_acquire);
         host.HideToTray();
-        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        for (int i = 0; i < 200 && !host.IsHiddenToTray(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
         host.ShowFromTray();
         for (int i = 0; i < 100 && frameCount.load(std::memory_order_acquire) <= beforeHide; ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -186,4 +194,16 @@ TEST_CASE("motrix.platform Win32WindowHost renders after ShowFromTray -> HideToT
     CHECK(*res == 0);
     CHECK(initCount.load() == 1);
     CHECK(frameCount.load() >= 2);
+}
+
+TEST_CASE(
+    "motrix.platform OpenPathInExplorer safely ignores non-existent relative paths and control chars",
+    "[platform][security]") {
+    motrix::platform::Win32WindowHost host;
+    host.OpenPathInExplorer("");
+    host.OpenPathInExplorer("nonexistent_relative_binary.exe");
+    host.OpenPathInExplorer("missing_subdir/nonexistent_file.bin");
+    host.OpenPathInExplorer(std::string_view("https://example.com/a\r\nb", 23));
+    host.OpenPathInExplorer(std::string_view("C:\\Temp\\safe\0evil", 17));
+    CHECK_FALSE(host.Metrics().hiddenToTray);
 }

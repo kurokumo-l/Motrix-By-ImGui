@@ -5,7 +5,7 @@ import std;
 namespace motrix::ui {
 
 void AnimState::BeginFrame(float dt) noexcept {
-    dt_ = std::clamp(dt, 0.0f, 0.05f);
+    dt_ = std::isfinite(dt) ? std::clamp(dt, 0.0f, 0.05f) : 0.0f;
     anyActive_ = false;
     ++frameCount_;
     deferredOverlay_ = nullptr;
@@ -24,28 +24,33 @@ void AnimState::FlushDeferredOverlay() {
 }
 
 void AnimState::Set(std::uint32_t id, float value) {
-    floats_[id] = FloatEntry{value, frameCount_};
+    floats_[id] = FloatEntry{std::isfinite(value) ? value : 0.0f, frameCount_};
 }
 
 float AnimState::Float(std::uint32_t id, float target, float speed, float initial) {
+    const float safeTarget = std::isfinite(target) ? target : 0.0f;
     auto it = floats_.find(id);
     if (it == floats_.end()) {
-        const float start = (initial >= 0.0f) ? initial : target;
+        const float start = (std::isfinite(initial) && initial >= 0.0f) ? initial : safeTarget;
         floats_.emplace(id, FloatEntry{start, frameCount_});
-        if (std::fabs(start - target) > 0.002f) {
+        if (std::fabs(start - safeTarget) > 0.002f) {
             anyActive_ = true;
         }
         return start;
     }
     it->second.lastFrame = frameCount_;
-    if (std::fabs(it->second.value - target) <= 0.002f) {
-        it->second.value = target;
-        return target;
+    if (!std::isfinite(it->second.value) || !std::isfinite(speed) || speed <= 0.0f) {
+        it->second.value = safeTarget;
+        return safeTarget;
+    }
+    if (std::fabs(it->second.value - safeTarget) <= 0.002f) {
+        it->second.value = safeTarget;
+        return safeTarget;
     }
     const float factor = 1.0f - std::exp(-speed * dt_);
-    it->second.value += (target - it->second.value) * factor;
-    if (std::fabs(it->second.value - target) <= 0.002f) {
-        it->second.value = target;
+    it->second.value += (safeTarget - it->second.value) * factor;
+    if (!std::isfinite(it->second.value) || std::fabs(it->second.value - safeTarget) <= 0.002f) {
+        it->second.value = safeTarget;
     } else {
         anyActive_ = true;
     }
@@ -66,7 +71,7 @@ void AnimState::PruneStale(std::uint64_t maxIdleFrames) noexcept {
 
 float AnimStep(AnimState* anim, const AnimTargetSpec& spec) {
     if (anim == nullptr) {
-        return spec.target;
+        return std::isfinite(spec.target) ? spec.target : 0.0f;
     }
     return anim->Float(spec.id, spec.target, spec.speed, spec.initial);
 }

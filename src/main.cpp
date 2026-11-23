@@ -21,6 +21,7 @@ struct CliOptions {
     motrix::app::CoordinatorOptions app;
     std::string prefillUri;
     int prefTab = 0;
+    bool fromShell = false;
     bool forceEngine = false;
     bool disableEngine = false;
     bool disableSingleInstance = false;
@@ -157,6 +158,24 @@ void ApplyValueFlag(CliOptions& opts, std::string_view arg, const std::string& r
            || arg == "--hover";
 }
 
+[[nodiscard]] bool IsShellRestrictedFlag(std::string_view arg) noexcept {
+    constexpr std::array<std::string_view, 9> kRestricted{
+        "--engine",
+        "--no-single-instance",
+        "--rpc-port",
+        "--screenshot",
+        "--frames",
+        "--hover",
+        "--preview-tasks",
+        "--no-engine",
+        "--with-engine",
+    };
+    return std::ranges::any_of(kRestricted, [arg](std::string_view flag) {
+        return arg == flag
+               || (arg.size() > flag.size() && arg.starts_with(flag) && arg[flag.size()] == '=');
+    });
+}
+
 void ApplySimpleFlag(CliOptions& opts, std::string_view arg) {
     if (arg == "--preview-tasks") {
         opts.app.populatePreviewTasks = true;
@@ -191,10 +210,43 @@ void ApplySimpleFlag(CliOptions& opts, std::string_view arg) {
     opts.host.screenshotFrames = 12;
 
     const std::size_t argc = argv.size();
+    for (std::size_t i = 1; i < argc && argv[i] != "--"; ++i) {
+        if (argv[i] == "--from-shell") {
+            opts.fromShell = true;
+            break;
+        }
+    }
+
+    bool seenTerminator = false;
     for (std::size_t i = 1; i < argc; ++i) {
         const std::string& arg = argv[i];
-        if (NeedsValueArg(arg) && i + 1 < argc) {
-            ApplyValueFlag(opts, arg, argv[++i]);
+        if (seenTerminator) {
+            opts.positionalArgs.push_back(arg);
+            continue;
+        }
+        if (arg == "--") {
+            seenTerminator = true;
+            continue;
+        }
+        if (arg == "--from-shell") {
+            continue;
+        }
+        if (NeedsValueArg(arg)) {
+            if (i + 1 >= argc) {
+                opts.parseWarnings.push_back(
+                    std::format("Missing value for CLI flag '{}'; ignoring", arg));
+                continue;
+            }
+            const std::string& val = argv[++i];
+            if (opts.fromShell && IsShellRestrictedFlag(arg)) {
+                opts.parseWarnings.push_back(
+                    std::format("Ignored restricted flag '{}' in shell launch", arg));
+                continue;
+            }
+            ApplyValueFlag(opts, arg, val);
+        } else if (opts.fromShell && IsShellRestrictedFlag(arg)) {
+            opts.parseWarnings.push_back(
+                std::format("Ignored restricted flag '{}' in shell launch", arg));
         } else if (!arg.empty() && arg[0] != '-') {
             opts.positionalArgs.push_back(arg);
         } else {
@@ -244,25 +296,64 @@ struct EarlyIpcBuffer {
     return payload;
 }
 
-[[nodiscard]] std::unique_ptr<motrix::ipc::ISingleInstanceChannel>
+enum class SingleInstanceOutcome {
+    Acquired,
+    Forwarded,
+    Error,
+};
+
+struct SingleInstanceResult {
+    SingleInstanceOutcome outcome = SingleInstanceOutcome::Error;
+    std::unique_ptr<motrix::ipc::ISingleInstanceChannel> channel;
+};
+
+[[nodiscard]] SingleInstanceResult
 TryAcquireSingleInstance(const motrix::ipc::StartupPayload& forwardPayload,
                          motrix::core::Logger& logger,
                          EarlyIpcBuffer& earlyBuf) {
     auto ipcChannel = motrix::ipc::CreateNamedPipeChannel(logger);
-    const auto acquired = ipcChannel->TryAcquirePrimary([&](const motrix::ipc::StartupPayload& remote) {
+    auto onRemote = [&](const motrix::ipc::StartupPayload& remote) {
         std::scoped_lock lk(earlyBuf.mu);
         if (auto* coord = earlyBuf.coordinator.load(std::memory_order_acquire)) {
             coord->Dispatch(ToStartupCommand(remote));
         } else {
             earlyBuf.pending.push_back(remote);
         }
-    });
-    if (acquired && !*acquired) {
-        logger.Info("ipc", "Secondary instance detected; forwarding startup payload to primary");
-        (void)ipcChannel->ForwardToPrimary(forwardPayload);
-        return nullptr;
+    };
+
+    const auto acquired = ipcChannel->TryAcquirePrimary(onRemote);
+    if (!acquired) {
+        logger.Error("ipc", "Single-instance primary acquisition failed: {}", acquired.error().message);
+        return {SingleInstanceOutcome::Error, nullptr};
     }
-    return ipcChannel;
+    if (*acquired) {
+        return {SingleInstanceOutcome::Acquired, std::move(ipcChannel)};
+    }
+
+    logger.Info("ipc", "Secondary instance detected; forwarding startup payload to primary");
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const auto fwd = ipcChannel->ForwardToPrimary(forwardPayload);
+        if (fwd) {
+            return {SingleInstanceOutcome::Forwarded, nullptr};
+        }
+        logger.Warn("ipc", "ForwardToPrimary attempt {}/3 failed: {}", attempt + 1, fwd.error().message);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    const auto retryAcquire = ipcChannel->TryAcquirePrimary(onRemote);
+    if (!retryAcquire) {
+        logger.Error("ipc", "Retry primary acquisition failed: {}", retryAcquire.error().message);
+        return {SingleInstanceOutcome::Error, nullptr};
+    }
+    if (*retryAcquire) {
+        logger.Info("ipc", "Acquired primary single-instance lock on retry");
+        return {SingleInstanceOutcome::Acquired, std::move(ipcChannel)};
+    }
+    if (const auto finalFwd = ipcChannel->ForwardToPrimary(forwardPayload); finalFwd) {
+        return {SingleInstanceOutcome::Forwarded, nullptr};
+    }
+    logger.Error("ipc", "Failed to acquire primary lock or forward startup payload to primary");
+    return {SingleInstanceOutcome::Error, nullptr};
 }
 
 void ConfigureInitialHostPresentation(CliOptions& cli,
@@ -302,7 +393,8 @@ void ConfigureInitialHostPresentation(CliOptions& cli,
 void AttachHostCallbacks(motrix::platform::WindowHostConfig& hostCfg,
                          motrix::app::AppCoordinator& coordinator,
                          motrix::core::Logger& logger,
-                         bool isScreenshotMode) {
+                         bool isScreenshotMode,
+                         const std::function<void()>& stopIpcBeforeShutdown) {
     hostCfg.onFilesDropped = [&](std::vector<std::string> paths) {
         coordinator.Dispatch(motrix::app::QueueDroppedFilesCmd{std::move(paths)});
     };
@@ -318,7 +410,10 @@ void AttachHostCallbacks(motrix::platform::WindowHostConfig& hostCfg,
         logger.Info("main", "OS session ending state={}", ending ? "suspending" : "resumed");
         coordinator.SetSessionEnding(ending);
     };
-    hostCfg.onQuitRequested = [&]() {
+    hostCfg.onQuitRequested = [&, stopIpcBeforeShutdown]() {
+        if (stopIpcBeforeShutdown) {
+            stopIpcBeforeShutdown();
+        }
         logger.Info("main", "Quit requested cleanly");
         coordinator.BeginShutdown();
     };
@@ -409,11 +504,27 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     EarlyIpcBuffer earlyBuf;
     const bool useSingleInstance =
         !isScreenshotMode && !cli.disableSingleInstance && cli.app.rpcPortOverride == 0;
-    auto ipcChannel =
-        useSingleInstance ? TryAcquireSingleInstance(forwardPayload, logger, earlyBuf) : nullptr;
-    if (useSingleInstance && !ipcChannel) {
-        return 0;
+    std::unique_ptr<motrix::ipc::ISingleInstanceChannel> ipcChannel;
+    if (useSingleInstance) {
+        auto single = TryAcquireSingleInstance(forwardPayload, logger, earlyBuf);
+        if (single.outcome == SingleInstanceOutcome::Forwarded) {
+            return 0;
+        }
+        if (single.outcome == SingleInstanceOutcome::Error) {
+            return 1;
+        }
+        ipcChannel = std::move(single.channel);
     }
+
+    auto stopIpcBeforeShutdown = [&]() {
+        {
+            std::scoped_lock lk(earlyBuf.mu);
+            earlyBuf.coordinator.store(nullptr, std::memory_order_release);
+        }
+        if (ipcChannel) {
+            ipcChannel->Close();
+        }
+    };
 
     motrix::platform::Win32WindowHost host;
     motrix::app::AppCoordinator coordinator(cli.app, logger, &host);
@@ -421,14 +532,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     const auto initSnap = coordinator.Snapshot();
     PrepareWindowAndShell(cli, *initSnap, initialPayload, coordinator);
-    AttachHostCallbacks(cli.host, coordinator, logger, isScreenshotMode);
+    AttachHostCallbacks(cli.host, coordinator, logger, isScreenshotMode, stopIpcBeforeShutdown);
 
     const auto result = RunUiHostLoop(cli, host, coordinator, initSnap->prefs);
 
-    earlyBuf.coordinator.store(nullptr, std::memory_order_release);
-    if (ipcChannel) {
-        ipcChannel->Close();
-    }
+    stopIpcBeforeShutdown();
+    coordinator.BeginShutdown();
     if (!result) {
         logger.Error("main", "Host exited with error: {}", result.error().message);
         return 1;

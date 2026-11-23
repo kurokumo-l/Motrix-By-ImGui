@@ -17,9 +17,8 @@ using namespace motrix::test;
 
 struct BtTempDir {
     std::filesystem::path root;
-    explicit BtTempDir(std::string_view suffix) : root(std::filesystem::temp_directory_path() / suffix) {
+    explicit BtTempDir(std::string_view prefix) : root(MakeUniqueTempDir(prefix)) {
         std::error_code ec;
-        std::filesystem::remove_all(root, ec);
         std::filesystem::create_directories(root / "seed", ec);
         std::filesystem::create_directories(root / "seed_state", ec);
         std::filesystem::create_directories(root / "app", ec);
@@ -68,6 +67,8 @@ void WriteAppConfig(const BtTempDir& td,
     sys.dir = motrix::core::PathToUtf8(td.root / "dl");
     sys.listenPort = static_cast<int>(btPort);
     sys.dhtListenPort = static_cast<int>(dhtPort);
+    sys.enableDht = false;
+    sys.btEnableLpd = true;
     sys.seedTime = 5;
     sys.seedRatio = 10.0;
 
@@ -90,7 +91,7 @@ struct LocalSeeder {
                motrix::core::Logger& logger) {
         const std::uint16_t rpcPort = PickFreeEphemeralPort();
         btPort = PickFreeEphemeralPort();
-        const std::uint16_t dhtPort = PickFreeEphemeralPort();
+        const std::uint16_t dhtPort = PickFreeUdpLoopbackPort();
         const std::string secret = "bt_seed_sec";
 
         proc = CreateEngineProcessManager(logger);
@@ -150,8 +151,10 @@ TEST_CASE("Live offline BitTorrent P2P: multi-file torrent, select-file update, 
           "[downloads][live][bt]") {
     const auto exeOpt = DiscoverEngineExecutable("");
     if (!exeOpt.has_value()) {
-        SUCCEED("No local aria2c/aria2-next binary found; skipping.");
-        return;
+        if (ShouldRequireLiveTests()) {
+            FAIL("No local aria2c/aria2-next binary found while MOTRIX_REQUIRE_LIVE_TESTS=1.");
+        }
+        SKIP("No local aria2c/aria2-next binary found; skipping.");
     }
     const auto probe = ProbeEngineBinaryVersion(*exeOpt);
     REQUIRE(probe.has_value());
@@ -194,7 +197,7 @@ TEST_CASE("Live offline BitTorrent P2P: multi-file torrent, select-file update, 
                 .has_value());
 
     const std::uint16_t leechRpc = PickFreeEphemeralPort();
-    WriteAppConfig(td, leechRpc, PickFreeEphemeralPort(), PickFreeEphemeralPort());
+    WriteAppConfig(td, leechRpc, PickFreeEphemeralPort(), PickFreeUdpLoopbackPort());
     RecordingWindowHost host;
     CoordinatorOptions opts{};
     opts.appDataDir = td.root / "app";
@@ -273,13 +276,15 @@ TEST_CASE("Live RemoveTaskCmd deleteFiles removes sidecar and partial HTTP downl
           "[downloads][live][delete]") {
     const auto exeOpt = DiscoverEngineExecutable("");
     if (!exeOpt.has_value()) {
-        SUCCEED("No local aria2c/aria2-next binary found; skipping.");
-        return;
+        if (ShouldRequireLiveTests()) {
+            FAIL("No local aria2c/aria2-next binary found while MOTRIX_REQUIRE_LIVE_TESTS=1.");
+        }
+        SKIP("No local aria2c/aria2-next binary found; skipping.");
     }
 
     BtTempDir td("motrix_native_delete_http_suite");
     LocalTestServer server;
-    WriteAppConfig(td, PickFreeEphemeralPort(), PickFreeEphemeralPort(), PickFreeEphemeralPort());
+    WriteAppConfig(td, PickFreeEphemeralPort(), PickFreeEphemeralPort(), PickFreeUdpLoopbackPort());
 
     motrix::core::Logger logger;
     CoordinatorOptions opts{};
@@ -327,8 +332,10 @@ TEST_CASE("Live RemoveTaskCmd deleteFiles removes multi-file BT tree and prunes 
           "[downloads][live][delete]") {
     const auto exeOpt = DiscoverEngineExecutable("");
     if (!exeOpt.has_value()) {
-        SUCCEED("No local aria2c/aria2-next binary found; skipping.");
-        return;
+        if (ShouldRequireLiveTests()) {
+            FAIL("No local aria2c/aria2-next binary found while MOTRIX_REQUIRE_LIVE_TESTS=1.");
+        }
+        SKIP("No local aria2c/aria2-next binary found; skipping.");
     }
     const auto probe = ProbeEngineBinaryVersion(*exeOpt);
     REQUIRE(probe.has_value());
@@ -353,7 +360,7 @@ TEST_CASE("Live RemoveTaskCmd deleteFiles removes multi-file BT tree and prunes 
                                {"bt-seed-unverified", "true"}}})
                 .has_value());
 
-    WriteAppConfig(td, PickFreeEphemeralPort(), PickFreeEphemeralPort(), PickFreeEphemeralPort());
+    WriteAppConfig(td, PickFreeEphemeralPort(), PickFreeEphemeralPort(), PickFreeUdpLoopbackPort());
     CoordinatorOptions opts{};
     opts.loadPersistedConfig = true;
     opts.appDataDir = td.root / "app";

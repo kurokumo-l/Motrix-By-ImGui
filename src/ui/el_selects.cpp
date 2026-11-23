@@ -44,11 +44,12 @@ struct ChipDrawState {
 bool RenderSelectPopup(const ElStyle& st, const ElSelectSpec& spec, const char* popId) {
     const MotrixPalette& p = st.palette;
     const float s = st.dpiScale;
+    const char* safeId = (spec.id != nullptr && spec.id[0] != '\0') ? spec.id : "##sel";
     PopupGuard pop(popId);
     if (!pop.IsOpen()) {
         return false;
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+    if (spec.currentIdx == nullptr || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
         ImGui::CloseCurrentPopup();
         return false;
     }
@@ -56,7 +57,7 @@ bool RenderSelectPopup(const ElStyle& st, const ElSelectSpec& spec, const char* 
     for (int i = 0; i < static_cast<int>(spec.items.size()); ++i) {
         const bool selected = (i == *spec.currentIdx);
         const ImVec2 itemPos = ImGui::GetCursorScreenPos();
-        if (ImGui::InvisibleButton(std::format("{}_opt_{}", spec.id, i).c_str(),
+        if (ImGui::InvisibleButton(std::format("{}_opt_{}", safeId, i).c_str(),
                                    ImVec2(spec.width, 32.0f * s))) {
             *spec.currentIdx = i;
             changed = true;
@@ -70,11 +71,22 @@ bool RenderSelectPopup(const ElStyle& st, const ElSelectSpec& spec, const char* 
                                ImVec2(itemPos.x + spec.width, itemPos.y + 32.0f * s),
                                ToAbgrU32(WithAlpha(p.inputAddonBg, p.inputAddonBg.a * optHovT)));
         }
-        const char* lbl = spec.items[static_cast<std::size_t>(i)];
-        const ImVec2 lSz = ImGui::CalcTextSize(lbl);
-        pdl->AddText(ImVec2(itemPos.x + 14.0f * s, itemPos.y + (30.0f * s - lSz.y) * 0.5f),
-                     ToAbgrU32(selected ? p.primary : p.panelTitle),
-                     lbl);
+        const char* rawLbl = spec.items[static_cast<std::size_t>(i)];
+        const std::string_view lbl = (rawLbl != nullptr) ? std::string_view(rawLbl) : std::string_view{};
+        if (!lbl.empty()) {
+            const ImVec2 lSz = ImGui::CalcTextSize(lbl.data(), lbl.data() + lbl.size(), false);
+            ClipRectGuard clip(
+                pdl,
+                ClipRectSpec{itemPos.x + 10.0f * s,
+                             itemPos.y,
+                             std::max(itemPos.x + 12.0f * s, itemPos.x + spec.width - 10.0f * s),
+                             itemPos.y + 32.0f * s,
+                             true});
+            pdl->AddText(ImVec2(itemPos.x + 14.0f * s, itemPos.y + (30.0f * s - lSz.y) * 0.5f),
+                         ToAbgrU32(selected ? p.primary : p.panelTitle),
+                         lbl.data(),
+                         lbl.data() + lbl.size());
+        }
     }
     return changed;
 }
@@ -83,11 +95,28 @@ bool DrawDirEntryGroup(std::span<const std::string> list,
                        const char* prefix,
                        char* buf,
                        std::size_t cap) {
+    IdGuard grpId(prefix != nullptr ? std::string_view(prefix) : std::string_view("dir"));
     bool changed = false;
     for (std::size_t i = 0; i < list.size(); ++i) {
-        if (ImGui::Selectable(std::format("{}##{}{}", list[i], prefix, i).c_str())) {
-            CopyUtf8ToBuffer(list[i], buf, cap);
-            changed = true;
+        IdGuard rowId(static_cast<int>(i));
+        const ImVec2 itemPos = ImGui::GetCursorScreenPos();
+        const float itemW = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+        const float itemH = ImGui::GetTextLineHeightWithSpacing();
+        if (ImGui::Selectable("##dir_item", false, ImGuiSelectableFlags_None, ImVec2(itemW, itemH))) {
+            if (buf != nullptr && cap > 0) {
+                CopyUtf8ToBuffer(list[i], buf, cap);
+                changed = true;
+            }
+        }
+        if (!list[i].empty()) {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ClipRectGuard clip(
+                dl, ClipRectSpec{itemPos.x, itemPos.y, itemPos.x + itemW, itemPos.y + itemH, true});
+            dl->AddText(ImVec2(itemPos.x + ImGui::GetStyle().FramePadding.x,
+                               itemPos.y + (itemH - ImGui::GetTextLineHeight()) * 0.5f),
+                        ImGui::GetColorU32(ImGuiCol_Text),
+                        list[i].data(),
+                        list[i].data() + list[i].size());
         }
     }
     return changed;
@@ -190,12 +219,13 @@ bool RenderTrackerPopup(const ElStyle& st,
 bool ElSelectCombo(const ElStyle& st, const ElSelectSpec& spec) {
     const MotrixPalette& p = st.palette;
     const float s = st.dpiScale;
+    const char* safeId = (spec.id != nullptr && spec.id[0] != '\0') ? spec.id : "##sel";
     FontGuard fnt(st.fonts, FontRole::Regular, 14.5f);
     const float h = 32.0f * s;
     const ImVec2 rMin = ImGui::GetCursorScreenPos();
     const ImVec2 rMax(rMin.x + spec.width, rMin.y + h);
-    const std::string popId = std::format("{}_pop", spec.id);
-    if (ImGui::InvisibleButton(spec.id, ImVec2(spec.width, h))) {
+    const std::string popId = std::format("{}_pop", safeId);
+    if (ImGui::InvisibleButton(safeId, ImVec2(spec.width, h))) {
         ImGui::OpenPopup(popId.c_str());
     }
     const bool hovered = ImGui::IsItemHovered();
@@ -207,18 +237,26 @@ bool ElSelectCombo(const ElStyle& st, const ElSelectSpec& spec) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(rMin, rMax, ToAbgrU32(p.inputBg), 4.0f * s);
     dl->AddRect(
-        rMin, rMax, ToAbgrU32(AnimateElBorderColor(st, spec.id, open, hovered)), 4.0f * s, 0, 1.0f);
+        rMin, rMax, ToAbgrU32(AnimateElBorderColor(st, safeId, open, hovered)), 4.0f * s, 0, 1.0f);
 
-    if (!spec.items.empty()) {
-        const int idx = std::clamp(*spec.currentIdx, 0, static_cast<int>(spec.items.size()) - 1);
-        const char* curTxt = spec.items[static_cast<std::size_t>(idx)];
-        const ImVec2 tSz = ImGui::CalcTextSize(curTxt);
-        dl->AddText(
-            ImVec2(rMin.x + 12.0f * s, rMin.y + (h - tSz.y) * 0.5f), ToAbgrU32(p.panelTitle), curTxt);
-    }
     const float chevSz = 12.0f * s;
+    const float textMaxX = std::max(rMin.x + 12.0f * s, rMax.x - chevSz - 14.0f * s);
+    if (spec.currentIdx != nullptr && !spec.items.empty()) {
+        const int idx = std::clamp(*spec.currentIdx, 0, static_cast<int>(spec.items.size()) - 1);
+        const char* rawCur = spec.items[static_cast<std::size_t>(idx)];
+        const std::string_view curTxt =
+            (rawCur != nullptr) ? std::string_view(rawCur) : std::string_view{};
+        if (!curTxt.empty()) {
+            const ImVec2 tSz = ImGui::CalcTextSize(curTxt.data(), curTxt.data() + curTxt.size(), false);
+            ClipRectGuard clip(dl, ClipRectSpec{rMin.x + 8.0f * s, rMin.y, textMaxX, rMax.y, true});
+            dl->AddText(ImVec2(rMin.x + 12.0f * s, rMin.y + (h - tSz.y) * 0.5f),
+                        ToAbgrU32(p.panelTitle),
+                        curTxt.data(),
+                        curTxt.data() + curTxt.size());
+        }
+    }
     const float chevT = AnimStep(
-        st.anim, {ImGui::GetID(spec.id) ^ 0x2C01u, (open || hovered) ? 1.0f : 0.0f, 20.0f, 0.0f});
+        st.anim, {ImGui::GetID(safeId) ^ 0x2C01u, (open || hovered) ? 1.0f : 0.0f, 20.0f, 0.0f});
     DrawMotrixIcon(IconSpec{
         open ? MotrixIcon::ChevronUp : MotrixIcon::ChevronDown,
         rMax.x - chevSz - 10.0f * s,
@@ -240,22 +278,23 @@ bool ElSelectCombo(const ElStyle& st, const ElSelectSpec& spec) {
 bool ElDirectoryInput(const ElStyle& st, const ElDirInputSpec& spec) {
     const MotrixPalette& p = st.palette;
     const float s = st.dpiScale;
+    const char* safeId = (spec.id != nullptr && spec.id[0] != '\0') ? spec.id : "##dir";
     const ImVec2 basePos = ImGui::GetCursorScreenPos();
     const ElCompositeResult r = ElCompositeInput(st,
                                                  {
-                                                     spec.id,
+                                                     safeId,
                                                      spec.buf,
                                                      spec.cap,
                                                      spec.width,
                                                      MotrixIcon::TaskHistory,
                                                      MotrixIcon::Folder,
                                                  });
-    const std::string histPopId = std::format("{}_hist", spec.id);
+    const std::string histPopId = std::format("{}_hist", safeId);
     if (r.leftClicked) {
         ImGui::OpenPopup(histPopId.c_str());
     }
     bool changed = r.textChanged;
-    if (r.rightClicked && spec.onBrowse) {
+    if (r.rightClicked && spec.onBrowse && spec.buf != nullptr && spec.cap > 0) {
         if (auto chosen = spec.onBrowse(spec.buf)) {
             CopyUtf8ToBuffer(*chosen, spec.buf, spec.cap);
             changed = true;

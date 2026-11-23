@@ -59,10 +59,14 @@ class Win32EngineProcessManager final : public IEngineProcessManager {
 public:
     explicit Win32EngineProcessManager(motrix::core::Logger& logger) : logger_(logger) {}
 
-    ~Win32EngineProcessManager() override { (void)Stop(std::chrono::milliseconds(1500)); }
+    ~Win32EngineProcessManager() override {
+        std::scoped_lock lock(lifecycleMutex_);
+        (void)StopLocked(std::chrono::milliseconds(1500));
+    }
 
     motrix::core::Result<void> Start(const EngineSpawnSpec& spec) override {
-        (void)Stop(std::chrono::milliseconds(1000));
+        std::scoped_lock lock(lifecycleMutex_);
+        (void)StopLocked(std::chrono::milliseconds(1000));
         if (IsOsSessionShuttingDown()) {
             return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
                                                            motrix::core::ErrorCode::Cancelled,
@@ -99,6 +103,7 @@ public:
         ScopedWinHandle childThread(piRes->thread);
         if (!::AssignProcessToJobObject(job->Get(), childProc.Get())) {
             ::TerminateProcess(childProc.Get(), 1);
+            ::WaitForSingleObject(childProc.Get(), 5000);
             state_.store(EngineProcessState::Stopped, std::memory_order_release);
             return std::unexpected(
                 motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
@@ -127,8 +132,23 @@ public:
     }
 
     motrix::core::Result<void> Stop(std::chrono::milliseconds gracefulTimeout) override {
+        std::scoped_lock lock(lifecycleMutex_);
+        return StopLocked(gracefulTimeout);
+    }
+
+    EngineProcessState State() const noexcept override { return state_.load(std::memory_order_acquire); }
+
+    std::uint32_t ProcessId() const noexcept override { return pid_.load(std::memory_order_acquire); }
+
+    EngineKind ActiveKind() const noexcept override {
+        return activeKind_.load(std::memory_order_acquire);
+    }
+
+private:
+    motrix::core::Result<void> StopLocked(std::chrono::milliseconds gracefulTimeout) {
         const auto prev = state_.load(std::memory_order_acquire);
         if (prev == EngineProcessState::Stopped && !procHandle_.IsValid() && !jobHandle_.IsValid()) {
+            activeKind_.store(EngineKind::Unknown, std::memory_order_release);
             return {};
         }
 
@@ -146,7 +166,9 @@ public:
             if (wr == WAIT_TIMEOUT) {
                 logger_.Warn("engine", "Graceful stop timed out; terminating engine child");
                 ::TerminateProcess(procHandle_.Get(), 1);
-                ::WaitForSingleObject(procHandle_.Get(), 1000);
+                if (::WaitForSingleObject(procHandle_.Get(), 5000) != WAIT_OBJECT_0) {
+                    logger_.Warn("engine", "Engine child did not exit within 5000ms after termination");
+                }
             }
         }
 
@@ -160,19 +182,11 @@ public:
         procHandle_.Reset();
         jobHandle_.Reset();
         pid_.store(0, std::memory_order_release);
+        activeKind_.store(EngineKind::Unknown, std::memory_order_release);
         state_.store(EngineProcessState::Stopped, std::memory_order_release);
         return {};
     }
 
-    EngineProcessState State() const noexcept override { return state_.load(std::memory_order_acquire); }
-
-    std::uint32_t ProcessId() const noexcept override { return pid_.load(std::memory_order_acquire); }
-
-    EngineKind ActiveKind() const noexcept override {
-        return activeKind_.load(std::memory_order_acquire);
-    }
-
-private:
     [[nodiscard]] motrix::core::Result<detail::ChildProcessHandles>
     LaunchSuspendedChild(const EngineSpawnSpec& spec, const IEngineDialect& dialect, HANDLE stdWrite) {
         auto launchOpts = spec.launchOptions;
@@ -267,6 +281,7 @@ private:
     }
 
     motrix::core::Logger& logger_;
+    std::mutex lifecycleMutex_;
     ScopedWinHandle jobHandle_;
     ScopedWinHandle procHandle_;
     std::atomic<std::uint32_t> pid_{0};

@@ -28,13 +28,24 @@ namespace {
 }  // namespace
 
 void AppCoordinator::StartAria2NextUpdateAsync(bool forceReinstall) {
+    std::jthread finishedWorker;
+    {
+        std::scoped_lock lk(workerMutex_);
+        if (stopping_.load(std::memory_order_acquire) || engineUpdateRunning_) {
+            return;
+        }
+        engineUpdateRunning_ = true;
+        finishedWorker = std::move(engineUpdateWorker_);
+    }
+    if (finishedWorker.joinable()) {
+        finishedWorker.join();
+    }
+
     const auto initialSnap = Snapshot();
     if (IsUpdateInProgress(initialSnap->engineUpdateStatus)) {
+        std::scoped_lock lk(workerMutex_);
+        engineUpdateRunning_ = false;
         return;
-    }
-    if (engineUpdateWorker_.joinable()) {
-        engineUpdateWorker_.request_stop();
-        engineUpdateWorker_.join();
     }
 
     const std::filesystem::path dataDir =
@@ -61,7 +72,19 @@ void AppCoordinator::StartAria2NextUpdateAsync(bool forceReinstall) {
         s.engineUpdateVersion.clear();
     });
 
+    std::scoped_lock lk(workerMutex_);
+    if (stopping_.load(std::memory_order_acquire)) {
+        engineUpdateRunning_ = false;
+        return;
+    }
     engineUpdateWorker_ = std::jthread([this, s = std::move(spec)](std::stop_token st) mutable {
+        struct RunningGuard {
+            AppCoordinator& self;
+            ~RunningGuard() {
+                std::scoped_lock lock(self.workerMutex_);
+                self.engineUpdateRunning_ = false;
+            }
+        } runningGuard{*this};
         ExecuteAria2NextUpdate(std::move(st), std::move(s));
     });
 }
@@ -110,9 +133,21 @@ void AppCoordinator::FinishAria2NextInstall(const std::stop_token& st,
     {
         std::scoped_lock lk(engineLifecycleMu_);
         hasLiveRuntime_.store(false, std::memory_order_release);
+        engineReplacing_ = true;
         stoppedRt = std::move(engineRuntime_);
     }
     stoppedRt.reset();
+
+    struct ReplacingResetGuard {
+        AppCoordinator& self;
+        ~ReplacingResetGuard() {
+            std::scoped_lock lk(self.engineLifecycleMu_);
+            if (self.engineReplacing_) {
+                self.engineReplacing_ = false;
+                self.deferredEngineOps_.clear();
+            }
+        }
+    } replaceGuard{*this};
 
     const auto instRes = motrix::engine::InstallStagedAria2Next(stage.stagedExePath, spec.targetExePath);
     if (!instRes) {

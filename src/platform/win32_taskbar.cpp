@@ -174,7 +174,7 @@ void Win32HandleImmersiveColorChange(Win32WindowState& state, std::int64_t lPara
     if (lParam != 0 && ::_wcsicmp(reinterpret_cast<const wchar_t*>(lParam), L"ImmersiveColorSet") == 0) {
         state.systemDark = QuerySystemDarkMode();
         Win32RefreshIconsOnThemeOrDpi(state);
-        state.activeFramesRemaining = std::max(state.activeFramesRemaining, 3);
+        state.BumpActiveFrames(3);
     }
 }
 

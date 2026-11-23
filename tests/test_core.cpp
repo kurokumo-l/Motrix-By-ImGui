@@ -1,7 +1,38 @@
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+// clang-format on
+
 #include <catch2/catch_test_macros.hpp>
 
 import std;
 import motrix.core;
+
+namespace {
+
+std::atomic<std::uint64_t> g_coreTestDirSeq{0};
+
+struct TempDirGuard {
+    std::filesystem::path path;
+    explicit TempDirGuard(std::string_view tag) {
+        const auto seq = g_coreTestDirSeq.fetch_add(1, std::memory_order_relaxed);
+        path = std::filesystem::temp_directory_path()
+               / std::format("motrix_test_core_{}_{}_{}", ::GetCurrentProcessId(), seq, tag);
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+    ~TempDirGuard() {
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+};
+
+}  // namespace
 
 TEST_CASE("motrix.core error result propagation", "[core][error]") {
     using namespace motrix::core;
@@ -36,9 +67,8 @@ TEST_CASE("motrix.core UTF-8 <-> Wide roundtrip", "[core][encoding]") {
 
 TEST_CASE("motrix.core atomic filesystem write, overwrite, and BOM strip", "[core][atomic_fs]") {
     using namespace motrix::core;
-    const auto tempRoot = std::filesystem::temp_directory_path() / "motrix_native_test_fs";
-    std::error_code ec;
-    std::filesystem::remove_all(tempRoot, ec);
+    TempDirGuard tempDir("atomic_fs");
+    const auto& tempRoot = tempDir.path;
 
     const auto filePath = tempRoot / "nested" / "config.json";
     REQUIRE(WriteTextAtomic(filePath, "{\"port\":16800}").has_value());
@@ -59,12 +89,39 @@ TEST_CASE("motrix.core atomic filesystem write, overwrite, and BOM strip", "[cor
     REQUIRE(readBom.has_value());
     CHECK(*readBom == "ok");
 
+    // No stray .tmp files left behind after overwrites
+    std::size_t fileCount = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(filePath.parent_path())) {
+        (void)entry;
+        ++fileCount;
+    }
+    CHECK(fileCount == 1);
+
+    // Empty target path rejected
+    auto emptyRes = WriteTextAtomic({}, "data");
+    REQUIRE_FALSE(emptyRes.has_value());
+    CHECK(emptyRes.error().code == ErrorCode::InvalidArgument);
+
+    // Overwriting an existing directory fails cleanly, preserves Win32 detail, and cleans temp file
+    const auto dirTarget = tempRoot / "existing_dir";
+    std::error_code ec;
+    std::filesystem::create_directories(dirTarget, ec);
+    auto dirRes = WriteTextAtomic(dirTarget, "payload");
+    REQUIRE_FALSE(dirRes.has_value());
+    CHECK(dirRes.error().code == ErrorCode::IoFailure);
+    CHECK(dirRes.error().detail.find("win32 error") != std::string::npos);
+
+    std::size_t rootEntries = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(tempRoot)) {
+        CHECK(entry.path().extension() != ".tmp");
+        ++rootEntries;
+    }
+    CHECK(rootEntries == 2);
+
     // Missing file returns NotFound
     auto missing = ReadFileUtf8(tempRoot / "does_not_exist.txt");
     REQUIRE_FALSE(missing.has_value());
     CHECK(missing.error().code == ErrorCode::NotFound);
-
-    std::filesystem::remove_all(tempRoot, ec);
 }
 
 TEST_CASE("motrix.core i18n lookup and async logger", "[core][i18n][logger]") {
@@ -75,9 +132,8 @@ TEST_CASE("motrix.core i18n lookup and async logger", "[core][i18n][logger]") {
     CHECK(tr.Tr("task.active") == "下载中");
     CHECK(tr.Tr("unknown.key") == "unknown.key");
 
-    const auto logPath = std::filesystem::temp_directory_path() / "motrix_native_test_logs" / "test.log";
-    std::error_code ec;
-    std::filesystem::remove_all(logPath.parent_path(), ec);
+    TempDirGuard tempDir("logger_basic");
+    const auto logPath = tempDir.path / "test.log";
     {
         Logger logger(LoggerOptions{
             .logFilePath = logPath,
@@ -91,7 +147,6 @@ TEST_CASE("motrix.core i18n lookup and async logger", "[core][i18n][logger]") {
     REQUIRE(logged.has_value());
     CHECK(logged->find("hello logger 16800") != std::string::npos);
     CHECK(logged->find("filtered out") == std::string::npos);
-    std::filesystem::remove_all(logPath.parent_path(), ec);
 }
 
 TEST_CASE("motrix.core ParseLogLevel maps known strings case-insensitively", "[core][logger]") {
@@ -144,10 +199,8 @@ TEST_CASE("motrix.core shared ASCII and OS path/handle helpers behave consistent
 
 TEST_CASE("motrix.core logger rotates cleanly when maxBackups is zero", "[core][logger]") {
     using namespace motrix::core;
-    const auto logPath =
-        std::filesystem::temp_directory_path() / "motrix_native_test_logs_zero" / "zero.log";
-    std::error_code ec;
-    std::filesystem::remove_all(logPath.parent_path(), ec);
+    TempDirGuard tempDir("logger_zero");
+    const auto logPath = tempDir.path / "zero.log";
     {
         Logger logger(LoggerOptions{
             .logFilePath = logPath,
@@ -163,5 +216,55 @@ TEST_CASE("motrix.core logger rotates cleanly when maxBackups is zero", "[core][
     REQUIRE(logged.has_value());
     CHECK(logged->find("second-entry") != std::string::npos);
     CHECK(logged->find("first-long-log-line") == std::string::npos);
-    std::filesystem::remove_all(logPath.parent_path(), ec);
+}
+
+TEST_CASE("motrix.core logger multi-backup rotation and locked rotation backoff", "[core][logger]") {
+    using namespace motrix::core;
+    TempDirGuard tempDir("logger_multi");
+    const auto logPath = tempDir.path / "app.log";
+
+    {
+        Logger logger(LoggerOptions{
+            .logFilePath = logPath,
+            .minLevel = LogLevel::Info,
+            .maxFileBytes = 64,
+            .maxBackups = 2,
+        });
+        logger.Info("rot", "batch-one-line-padding-to-exceed-64-bytes-123456789012345");
+        logger.Info("rot", "batch-two-line-padding-to-exceed-64-bytes-123456789012345");
+        logger.Info("rot", "batch-three-current");
+        logger.Flush();
+    }
+
+    CHECK(std::filesystem::exists(logPath));
+    CHECK(std::filesystem::exists(tempDir.path / "app.log.1"));
+    CHECK(std::filesystem::exists(tempDir.path / "app.log.2"));
+    CHECK_FALSE(std::filesystem::exists(tempDir.path / "app.log.3"));
+
+    // Hold app.log.1 open without FILE_SHARE_DELETE to simulate external lock during rotation.
+    const auto lockedBackup = tempDir.path / "app.log.1";
+    UniqueHandle lockHandle(::CreateFileW(lockedBackup.c_str(),
+                                          GENERIC_READ,
+                                          FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                          nullptr,
+                                          OPEN_EXISTING,
+                                          FILE_ATTRIBUTE_NORMAL,
+                                          nullptr));
+    REQUIRE(lockHandle.IsValid());
+
+    {
+        Logger logger(LoggerOptions{
+            .logFilePath = logPath,
+            .minLevel = LogLevel::Info,
+            .maxFileBytes = 64,
+            .maxBackups = 2,
+        });
+        logger.Info("lock", "locked-rotation-trigger-line-exceeding-sixty-four-bytes-12345");
+        logger.Info("lock", "post-backoff-continued-line");
+        logger.Flush();
+    }
+
+    auto afterLocked = ReadFileUtf8(logPath);
+    REQUIRE(afterLocked.has_value());
+    CHECK(afterLocked->find("post-backoff-continued-line") != std::string::npos);
 }

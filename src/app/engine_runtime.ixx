@@ -57,6 +57,7 @@ export struct EngineRuntimeConfig {
     std::string logLevel = "warn";
     bool enableUpnp = true;
     bool resumeAllWhenLaunched = false;
+    std::shared_ptr<std::mutex> configPersistMutex;
 };
 
 export class EngineRuntime {

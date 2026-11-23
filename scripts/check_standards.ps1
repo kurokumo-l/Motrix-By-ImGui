@@ -22,6 +22,15 @@ $allowedWin32EncodingFiles = '^src/(core/encoding|platform/win32|engine/http_win
 
 foreach ($file in $firstPartyFiles) {
     $rel = $file.FullName.Substring($Root.Length + 1).Replace('\', '/')
+    $raw = [System.IO.File]::ReadAllText($file.FullName)
+    if ($file.Extension -in @('.ixx', '.cpp')) {
+        if ($raw.Length -gt 0 -and -not $raw.EndsWith("`n")) {
+            $Violations.Add("$rel : File must end with LF final newline per .editorconfig")
+        }
+        if ($raw.Contains("`r")) {
+            $Violations.Add("$rel : File must use LF line endings per .editorconfig")
+        }
+    }
     $lines = @(Get-Content -Path $file.FullName -Encoding UTF8)
     $lineCount = $lines.Count
     $isTest = ($rel -match '^tests/')
@@ -89,8 +98,22 @@ foreach ($file in $firstPartyFiles) {
         if (-not $isTest -and $line -match '\.string\s*\(\s*\)') {
             $Violations.Add("${rel}:$ln : filesystem::path::string() forbidden on Windows (use motrix::core::PathToUtf8)")
         }
-        if (-not $isTest -and $line -match '\.get\s*<|->get\s*<\s*std::string\s*>') {
-            $Violations.Add("${rel}:$ln : Unchecked JSON .get<T>() forbidden (use type checks / .get_ref)")
+        if (-not $isTest -and $line -match '(\.|->)get\s*<') {
+            $isArrowGet = ($line -match '->get\s*<') -and ($line -notmatch '\.get\s*<')
+            $isStrGet = $line -match '->get\s*<\s*std::(string|string_view)\s*>'
+            $hasTypeGuard = $false
+            if ($isArrowGet -and -not $isStrGet) {
+                $winStart = [Math]::Max(0, $i - 2)
+                for ($k = $winStart; $k -le $i; $k++) {
+                    if ($lines[$k] -match '(\.|->)is_(boolean|number|number_integer|number_unsigned|string)\s*\(') {
+                        $hasTypeGuard = $true
+                        break
+                    }
+                }
+            }
+            if (-not $hasTypeGuard) {
+                $Violations.Add("${rel}:$ln : Unchecked JSON .get<T>() forbidden (use type checks / .get_ref)")
+            }
         }
         if (-not $isTest -and $line -match 'json::parse\(' -and $line -notmatch 'json::parse\(.+,\s*nullptr,\s*false') {
             $Violations.Add("${rel}:$ln : Throwing json::parse() forbidden (pass nullptr, false)")
@@ -129,8 +152,9 @@ foreach ($file in $firstPartyFiles) {
                 if ($trimmed.EndsWith(';')) {
                     $pendingSig = ""
                 } elseif ($opens -gt 0) {
-                    if ($pendingSig -match '^[A-Za-z_~].*?\)[^;]*\{' -and
-                        $pendingSig -notmatch '^(if|for|while|switch|else|return|try|catch)\b') {
+                    $sigCheck = $pendingSig -replace '^(\[\[[^\]]*\]\]\s*)+', ''
+                    if ($sigCheck -match '^[A-Za-z_~].*?\)[^;]*\{' -and
+                        $sigCheck -notmatch '^(if|for|while|switch|else|return|try|catch)\b') {
                         $inFunc = $true
                         $funcDepth = $nsDepth + 1
                         $funcStart = $pendingStart
@@ -172,7 +196,9 @@ $cf = if (-not $skipCf) { (Get-Command clang-format -ErrorAction SilentlyContinu
 if (-not $skipCf -and -not $cf -and (Test-Path "C:\Program Files\LLVM\bin\clang-format.exe")) {
     $cf = "C:\Program Files\LLVM\bin\clang-format.exe"
 }
-if ($cf) {
+if (-not $skipCf -and -not $cf) {
+    $Violations.Add("clang-format : clang-format not found (install LLVM or set MOTRIX_SKIP_CLANG_FORMAT=1)")
+} elseif ($cf) {
     $cppFiles = @($firstPartyFiles | Where-Object { $_.Extension -in @('.ixx', '.cpp') } | ForEach-Object { $_.FullName })
     if ($cppFiles.Count -gt 0) {
         $cfErr = & $cf --dry-run --Werror @cppFiles 2>&1

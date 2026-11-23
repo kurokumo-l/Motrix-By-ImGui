@@ -62,6 +62,140 @@ TEST_CASE("motrix.domain thunder URI decoding and magnet parsing", "[domain][uri
     CHECK_FALSE(IsMagnetUri("https://example.com"));
 }
 
+TEST_CASE("motrix.domain thunder, deep link, and URI security hardening", "[domain][uri][security]") {
+    using namespace motrix::domain;
+
+    // Long thunder payload (> 6 Base64 chars) exercises full multi-quantum DecodeBase64 path.
+    const std::string longInner =
+        "https://cdn.example.com/releases/2026/ubuntu-24.04.2-desktop-amd64.iso";
+    const std::string longRaw = "AA" + longInner + "ZZ";
+    const std::string longThunder =
+        "thunder://"
+        + Base64Encode(std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(longRaw.data()), longRaw.size()));
+    const auto longDecoded = DecodeThunderUri(longThunder);
+    REQUIRE(longDecoded.has_value());
+    CHECK(*longDecoded == longInner);
+
+    // Non-zero unused Base64 padding bits must be rejected.
+    const std::string padRaw = "AAhttp://a.comZZ";  // 16 bytes -> 2 padding '=' chars
+    std::string padB64 = Base64Encode(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(padRaw.data()), padRaw.size()));
+    REQUIRE(padB64.size() >= 4);
+    REQUIRE(padB64.ends_with("=="));
+    padB64[padB64.size() - 3] = static_cast<char>(padB64[padB64.size() - 3] + 1);
+    CHECK_FALSE(DecodeThunderUri("thunder://" + padB64).has_value());
+
+    // Invalid '=' placement, excessive padding, bad quantum length.
+    CHECK_FALSE(DecodeThunderUri("thunder://QUF=AAAA").has_value());
+    CHECK_FALSE(DecodeThunderUri("thunder://QUF===").has_value());
+    CHECK_FALSE(DecodeThunderUri("thunder://QUFodHRwQ").has_value());
+
+    auto makeThunder = [](std::string_view inner) {
+        const std::string wrapped = std::string("AA") + std::string(inner) + "ZZ";
+        return "thunder://"
+               + Base64Encode(std::span<const std::uint8_t>(
+                   reinterpret_cast<const std::uint8_t*>(wrapped.data()), wrapped.size()));
+    };
+    CHECK_FALSE(DecodeThunderUri(makeThunder("file:///C:/Windows/win.ini")).has_value());
+    CHECK_FALSE(DecodeThunderUri(makeThunder("https://a.com\r\nhttps://b.com")).has_value());
+    CHECK_FALSE(
+        DecodeThunderUri(std::string("thunder://")
+                         + Base64Encode(std::span<const std::uint8_t>(
+                             reinterpret_cast<const std::uint8_t*>("AAhttps://a.com\0evilZZ"), 22)))
+            .has_value());
+    CHECK_FALSE(DecodeThunderUri(makeThunder("-https://a.com")).has_value());
+    CHECK_FALSE(DecodeThunderUri(makeThunder(longThunder)).has_value());
+
+    // SplitAndNormalizeUris drops invalid thunder:// and control chars instead of passing them through.
+    const auto normalized =
+        SplitAndNormalizeUris(longThunder + "\nthunder://not-valid-base64!!!\n"
+                              + makeThunder("file:///C:/secret") + "\nhttps://good.example/ok.zip\n");
+    REQUIRE(normalized.size() == 2);
+    CHECK(normalized[0] == longInner);
+    CHECK(normalized[1] == "https://good.example/ok.zip");
+
+    // ClassifyStartupArg rejects invalid thunder:// and control characters.
+    CHECK(ClassifyStartupArg("thunder://not-valid-base64!!!").kind == StartupArgKind::None);
+    CHECK(ClassifyStartupArg("https://example.com/\r\n--evil").kind == StartupArgKind::None);
+
+    // ParseMotrixDeepLink preserves '+' in RFC 3986 URIs and blocks control chars / unsafe schemes.
+    const auto plusLink =
+        ParseMotrixDeepLink("motrix://new-task?uri=https%3A%2F%2Fexample.com%2Fa+b%2Bc.zip");
+    CHECK(plusLink.action == DeepLinkAction::NewTask);
+    CHECK(plusLink.uriParam == "https://example.com/a+b+c.zip");
+
+    const auto injectedLink =
+        ParseMotrixDeepLink("motrix://new-task?uri=https%3A%2F%2Fexample.com%2Fa%0D%0Ab");
+    CHECK(injectedLink.uriParam.empty());
+
+    const auto fileLink = ParseMotrixDeepLink("motrix://new-task?uri=file%3A%2F%2F%2FC%3A%2Fwin.ini");
+    CHECK(fileLink.uriParam.empty());
+}
+
+TEST_CASE("motrix.domain ResolveTaskFullPath blocks traversal and rooted paths",
+          "[domain][task][security]") {
+    using namespace motrix::domain;
+
+    DownloadTaskView btTask{};
+    btTask.taskType = TaskType::BitTorrent;
+    btTask.dir = "D:/Downloads";
+    btTask.btInfo = TaskBittorrentInfo{.name = "Ubuntu-24.04"};
+    CHECK(ResolveTaskFullPath(btTask) == "D:\\Downloads\\Ubuntu-24.04");
+
+    for (const std::string_view badName : {"../../Windows/System32",
+                                           "a/../../evil",
+                                           "C:\\Windows\\win.ini",
+                                           "C:evil.exe",
+                                           "\\\\server\\share\\evil",
+                                           "/rooted/evil"}) {
+        btTask.btInfo->name = std::string(badName);
+        CHECK(ResolveTaskFullPath(btTask) == "D:\\Downloads");
+    }
+    btTask.btInfo->name = std::string("bad\0name", 8);
+    CHECK(ResolveTaskFullPath(btTask) == "D:\\Downloads");
+
+    DownloadTaskView httpTask{};
+    httpTask.dir = "D:/Downloads";
+    httpTask.files = {TaskFileView{.index = 1, .path = "../../evil.exe"}};
+    CHECK(ResolveTaskFullPath(httpTask) == "D:\\Downloads");
+
+    httpTask.files[0].path = "C:/Windows/win.ini";
+    CHECK(ResolveTaskFullPath(httpTask) == "D:\\Downloads");
+
+    httpTask.files[0].path = "d:/Downloads/sub/archive.zip";
+    CHECK(ResolveTaskFullPath(httpTask) == "d:\\Downloads\\sub\\archive.zip");
+}
+
+TEST_CASE("motrix.domain ProgressOf honors mediaProgress cap and ETA resists overflow",
+          "[domain][task][formatters]") {
+    using namespace motrix::domain;
+
+    DownloadTaskView mediaTask{};
+    mediaTask.status = TaskStatus::Active;
+    mediaTask.totalLength = 42000000ull;
+    mediaTask.completedLength = 42000000ull;
+    mediaTask.mediaProgress = 0.99f;
+    CHECK(std::abs(ProgressOf(mediaTask) - 0.99f) < 1e-5f);
+
+    mediaTask.status = TaskStatus::Complete;
+    CHECK(ProgressOf(mediaTask) == 1.0f);
+
+    DownloadTaskView nanTask{};
+    nanTask.totalLength = 0;
+    nanTask.mediaProgress = std::numeric_limits<float>::quiet_NaN();
+    CHECK(ProgressOf(nanTask) == 0.0f);
+
+    DownloadTaskView hugeEta{};
+    hugeEta.status = TaskStatus::Active;
+    hugeEta.totalLength = (std::numeric_limits<std::uint64_t>::max)();
+    hugeEta.completedLength = 10;
+    hugeEta.downloadSpeed = 1000;
+    const auto eta = EtaSecondsOf(hugeEta);
+    REQUIRE(eta.has_value());
+    CHECK(*eta > 0ull);
+}
+
 TEST_CASE("motrix.domain config schema defaults align with personal preferences", "[domain][config]") {
     using namespace motrix::domain;
     const auto prefs = DefaultUserPreferences();

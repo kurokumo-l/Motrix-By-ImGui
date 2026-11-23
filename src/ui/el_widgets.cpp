@@ -26,6 +26,19 @@ void DrawCheckmarkGlyph(ImDrawList* dl, ImVec2 minPt, float size, ImU32 col, flo
     dl->AddLine(p1, p2, col, w);
 }
 
+[[nodiscard]] ImVec2 CalcTextSizeRaw(std::string_view text) {
+    if (text.empty()) {
+        return ImVec2(0.0f, ImGui::GetFontSize());
+    }
+    return ImGui::CalcTextSize(text.data(), text.data() + text.size(), false);
+}
+
+void DrawTextRaw(ImDrawList* dl, ImVec2 pos, ImU32 col, std::string_view text) {
+    if (!text.empty()) {
+        dl->AddText(pos, col, text.data(), text.data() + text.size());
+    }
+}
+
 }  // namespace
 
 RgbaColor ResolveElBorderColor(const MotrixPalette& p, bool focused, bool hovered) noexcept {
@@ -52,8 +65,8 @@ void ElDrawLinkText(const ElStyle& st, const ElLinkSpec& spec) {
     const float dpiScale = st.dpiScale;
     FontGuard fnt(st.fonts, FontRole::Regular, spec.fontSize);
     const ImVec2 pos = ImGui::GetCursorScreenPos();
-    const ImVec2 sz = ImGui::CalcTextSize(spec.label.data(), spec.label.data() + spec.label.size());
-    const std::string btnId(spec.label);
+    const ImVec2 sz = CalcTextSizeRaw(spec.label);
+    const std::string btnId = std::format("##el_link_{}", spec.label);
     if (ImGui::InvisibleButton(btnId.c_str(), ImVec2(sz.x + 2.0f * dpiScale, sz.y + 2.0f * dpiScale))) {
         if (spec.onClick) {
             spec.onClick();
@@ -67,7 +80,7 @@ void ElDrawLinkText(const ElStyle& st, const ElLinkSpec& spec) {
         AnimStep(st.anim, {ImGui::GetID(btnId.c_str()) ^ 0x4C4Bu, hov ? 1.0f : 0.0f, 22.0f, 0.0f});
     const RgbaColor col = spec.accentColor ? p.primary : LerpColor(p.taskMetaText, p.primary, hovT);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddText(pos, ToAbgrU32(col), spec.label.data(), spec.label.data() + spec.label.size());
+    DrawTextRaw(dl, pos, ToAbgrU32(col), spec.label);
     if (hovT > 0.02f) {
         dl->AddLine(ImVec2(pos.x, pos.y + sz.y),
                     ImVec2(pos.x + sz.x, pos.y + sz.y),
@@ -162,6 +175,7 @@ bool ElSwitch(const ElStyle& st, const char* id, std::string_view label, bool* v
 }
 
 bool ElInputText(const ElStyle& st, const ElTextInputSpec& spec) {
+    const char* safeId = (spec.id != nullptr && spec.id[0] != '\0') ? spec.id : "##el_txt";
     const MotrixPalette& p = st.palette;
     const float s = st.dpiScale;
     FontGuard fnt(st.fonts, FontRole::Regular, 14.5f);
@@ -181,15 +195,25 @@ bool ElInputText(const ElStyle& st, const ElTextInputSpec& spec) {
 
     ImGui::SetNextItemWidth(spec.width);
     const std::string hint(spec.placeholder);
-    const bool changed = ImGui::InputTextWithHint(spec.id, hint.c_str(), spec.buf, spec.cap, spec.flags);
-    const bool focused = ImGui::IsItemActive() || ImGui::IsItemFocused();
-    const bool hovered = ImGui::IsItemHovered();
+    const bool validBuf = spec.buf != nullptr && spec.cap > 0
+                          && spec.cap <= static_cast<std::size_t>(std::numeric_limits<int>::max());
+    bool changed = false;
+    bool focused = false;
+    bool hovered = false;
+    if (validBuf) {
+        changed = ImGui::InputTextWithHint(safeId, hint.c_str(), spec.buf, spec.cap, spec.flags);
+        focused = ImGui::IsItemActive() || ImGui::IsItemFocused();
+        hovered = ImGui::IsItemHovered();
+    } else {
+        ImGui::Dummy(ImVec2(spec.width, h));
+    }
     ImGui::GetWindowDrawList()->AddRect(
-        rMin, rMax, ToAbgrU32(AnimateElBorderColor(st, spec.id, focused, hovered)), 4.0f * s, 0, 1.0f);
+        rMin, rMax, ToAbgrU32(AnimateElBorderColor(st, safeId, focused, hovered)), 4.0f * s, 0, 1.0f);
     return changed;
 }
 
 bool ElInputTextMultiline(const ElStyle& st, const ElTextInputSpec& spec) {
+    const char* safeId = (spec.id != nullptr && spec.id[0] != '\0') ? spec.id : "##el_ml";
     const MotrixPalette& p = st.palette;
     const float s = st.dpiScale;
     FontGuard fnt(st.fonts, FontRole::Regular, 14.5f);
@@ -201,7 +225,9 @@ bool ElInputTextMultiline(const ElStyle& st, const ElTextInputSpec& spec) {
 
     const float padX = 12.0f * s;
     const float padY = 8.0f * s;
-    if (spec.buf != nullptr && spec.buf[0] == '\0' && !spec.placeholder.empty()) {
+    const bool validBuf = spec.buf != nullptr && spec.cap > 0
+                          && spec.cap <= static_cast<std::size_t>(std::numeric_limits<int>::max());
+    if (validBuf && spec.buf[0] == '\0' && !spec.placeholder.empty()) {
         const float wrapW = std::max(40.0f * s, spec.width - padX * 2.0f);
         dl->AddText(ImGui::GetFont(),
                     ImGui::GetFontSize(),
@@ -220,8 +246,12 @@ bool ElInputTextMultiline(const ElStyle& st, const ElTextInputSpec& spec) {
 
     const int mlFlags =
         spec.flags | ImGuiInputTextFlags_WordWrap | ImGuiInputTextFlags_NoHorizontalScroll;
-    const bool changed =
-        ImGui::InputTextMultiline(spec.id, spec.buf, spec.cap, ImVec2(spec.width, h), mlFlags);
+    bool changed = false;
+    if (validBuf) {
+        changed = ImGui::InputTextMultiline(safeId, spec.buf, spec.cap, ImVec2(spec.width, h), mlFlags);
+    } else {
+        ImGui::Dummy(ImVec2(spec.width, h));
+    }
     const bool focused = ImGui::IsItemActive() || ImGui::IsItemFocused();
     const bool hovered = ImGui::IsItemHovered();
     dl->AddRect(
@@ -258,11 +288,11 @@ bool ElSecondaryButton(const ElStyle& st, const ElButtonSpec& spec) {
     dl->AddRectFilled(pos, ImVec2(pos.x + spec.width, pos.y + spec.height), ToAbgrU32(bgCol), 4.0f * s);
     dl->AddRect(
         pos, ImVec2(pos.x + spec.width, pos.y + spec.height), ToAbgrU32(bdCol), 4.0f * s, 0, 1.0f);
-    const ImVec2 tSz = ImGui::CalcTextSize(spec.label.data(), spec.label.data() + spec.label.size());
-    dl->AddText(ImVec2(pos.x + (spec.width - tSz.x) * 0.5f, pos.y + (spec.height - tSz.y) * 0.5f),
+    const ImVec2 tSz = CalcTextSizeRaw(spec.label);
+    DrawTextRaw(dl,
+                ImVec2(pos.x + (spec.width - tSz.x) * 0.5f, pos.y + (spec.height - tSz.y) * 0.5f),
                 ToAbgrU32(fgCol),
-                spec.label.data(),
-                spec.label.data() + spec.label.size());
+                spec.label);
     return !spec.disabled && rawClick;
 }
 
@@ -289,11 +319,11 @@ bool ElPrimaryButton(const ElStyle& st, const ElButtonSpec& spec) {
     }
     const RgbaColor fgCol = spec.disabled ? WithAlpha(HexColor(0xFFFFFF), 0.72f) : HexColor(0xFFFFFF);
     dl->AddRectFilled(pos, ImVec2(pos.x + spec.width, pos.y + spec.height), ToAbgrU32(bgCol), 4.0f * s);
-    const ImVec2 tSz = ImGui::CalcTextSize(spec.label.data(), spec.label.data() + spec.label.size());
-    dl->AddText(ImVec2(pos.x + (spec.width - tSz.x) * 0.5f, pos.y + (spec.height - tSz.y) * 0.5f),
+    const ImVec2 tSz = CalcTextSizeRaw(spec.label);
+    DrawTextRaw(dl,
+                ImVec2(pos.x + (spec.width - tSz.x) * 0.5f, pos.y + (spec.height - tSz.y) * 0.5f),
                 ToAbgrU32(fgCol),
-                spec.label.data(),
-                spec.label.data() + spec.label.size());
+                spec.label);
     return !spec.disabled && rawClick;
 }
 

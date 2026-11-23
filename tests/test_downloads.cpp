@@ -17,10 +17,8 @@ using namespace motrix::test;
 
 struct TempTestDir {
     std::filesystem::path root;
-    explicit TempTestDir(std::string_view suffix)
-        : root(std::filesystem::temp_directory_path() / suffix) {
+    explicit TempTestDir(std::string_view prefix) : root(MakeUniqueTempDir(prefix)) {
         std::error_code ec;
-        std::filesystem::remove_all(root, ec);
         std::filesystem::create_directories(root / "app", ec);
         std::filesystem::create_directories(root / "dl", ec);
     }
@@ -45,7 +43,7 @@ void WriteIsolatedConfig(const TempTestDir& td,
     sys.split = 4;
     sys.maxConnectionPerServer = 4;
     sys.listenPort = PickFreeEphemeralPort();
-    sys.dhtListenPort = PickFreeEphemeralPort();
+    sys.dhtListenPort = PickFreeUdpLoopbackPort();
 
     REQUIRE(
         motrix::core::WriteTextAtomic(td.root / "app" / "user.json", SerializeUserPreferencesJson(prefs))
@@ -93,8 +91,10 @@ TEST_CASE("Live HTTP downloads: exact, multi-split, headers, rename, thunder, re
           "[downloads][live][http]") {
     const auto exeOpt = DiscoverEngineExecutable("");
     if (!exeOpt.has_value()) {
-        SUCCEED("No local aria2c/aria2-next binary found; skipping.");
-        return;
+        if (ShouldRequireLiveTests()) {
+            FAIL("No local aria2c/aria2-next binary found while MOTRIX_REQUIRE_LIVE_TESTS=1.");
+        }
+        SKIP("No local aria2c/aria2-next binary found; skipping.");
     }
 
     TempTestDir td("motrix_native_http_dl_suite");
@@ -194,8 +194,10 @@ TEST_CASE("Live controls: pause, resume, bulk pause/resume, restart error, delet
           "[downloads][live][controls]") {
     const auto exeOpt = DiscoverEngineExecutable("");
     if (!exeOpt.has_value()) {
-        SUCCEED("No local aria2c/aria2-next binary found; skipping.");
-        return;
+        if (ShouldRequireLiveTests()) {
+            FAIL("No local aria2c/aria2-next binary found while MOTRIX_REQUIRE_LIVE_TESTS=1.");
+        }
+        SKIP("No local aria2c/aria2-next binary found; skipping.");
     }
 
     TempTestDir td("motrix_native_controls_suite");
@@ -325,8 +327,10 @@ TEST_CASE(
     "[downloads][live][session]") {
     const auto exeOpt = DiscoverEngineExecutable("");
     if (!exeOpt.has_value()) {
-        SUCCEED("No local aria2c/aria2-next binary found; skipping.");
-        return;
+        if (ShouldRequireLiveTests()) {
+            FAIL("No local aria2c/aria2-next binary found while MOTRIX_REQUIRE_LIVE_TESTS=1.");
+        }
+        SKIP("No local aria2c/aria2-next binary found; skipping.");
     }
 
     TempTestDir td("motrix_native_session_suite");

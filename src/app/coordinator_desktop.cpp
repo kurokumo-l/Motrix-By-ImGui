@@ -131,14 +131,14 @@ void AppCoordinator::UpdateLivePlatformStatus(const AppStateSnapshot& state) {
                 continue;
             }
             ++activeTransferCount;
-            if (t.totalLength > 0) {
+            if (t.mediaProgress >= 0.0f) {
+                const std::uint64_t weight = t.totalLength > 0 ? t.totalLength : 1'000'000ull;
+                totalBytes += weight;
+                const float clamped = std::clamp(t.mediaProgress, 0.0f, 1.0f);
+                completedBytes += static_cast<std::uint64_t>(clamped * static_cast<float>(weight));
+            } else if (t.totalLength > 0) {
                 totalBytes += t.totalLength;
                 completedBytes += std::min(t.completedLength, t.totalLength);
-            } else if (t.mediaProgress >= 0.0f) {
-                constexpr std::uint64_t kMediaWeight = 1'000'000ull;
-                totalBytes += kMediaWeight;
-                const float clamped = std::clamp(t.mediaProgress, 0.0f, 1.0f);
-                completedBytes += static_cast<std::uint64_t>(clamped * static_cast<float>(kMediaWeight));
             }
         }
     }
@@ -199,9 +199,17 @@ void AppCoordinator::StartTrackerSyncAsync(std::vector<std::string> sources, std
         return;
     }
 
-    if (trackerSyncWorker_.joinable()) {
-        trackerSyncWorker_.request_stop();
-        trackerSyncWorker_.join();
+    std::jthread finishedWorker;
+    {
+        std::scoped_lock lk(workerMutex_);
+        if (stopping_.load(std::memory_order_acquire) || trackerSyncRunning_) {
+            return;
+        }
+        trackerSyncRunning_ = true;
+        finishedWorker = std::move(trackerSyncWorker_);
+    }
+    if (finishedWorker.joinable()) {
+        finishedWorker.join();
     }
 
     PublishMutated([&](AppStateSnapshot& s) {
@@ -210,8 +218,20 @@ void AppCoordinator::StartTrackerSyncAsync(std::vector<std::string> sources, std
         s.trackerSyncStatus.clear();
     });
 
+    std::scoped_lock lk(workerMutex_);
+    if (stopping_.load(std::memory_order_acquire)) {
+        trackerSyncRunning_ = false;
+        return;
+    }
     trackerSyncWorker_ =
         std::jthread([this, srcs = std::move(sources), proxy = std::move(proxyUrl)](std::stop_token st) {
+            struct RunningGuard {
+                AppCoordinator& self;
+                ~RunningGuard() {
+                    std::scoped_lock lock(self.workerMutex_);
+                    self.trackerSyncRunning_ = false;
+                }
+            } runningGuard{*this};
             if (st.stop_requested()) {
                 return;
             }
@@ -248,9 +268,11 @@ void AppCoordinator::StartTrackerSyncAsync(std::vector<std::string> sources, std
                 optsCopy = motrix::domain::SystemConfigToOptionPairs(eff);
             });
 
+            const auto snap = Snapshot();
             if (persistConfig_) {
-                PersistConfigs(*Snapshot(), true, true, true);
+                PersistConfigs(*snap, true, true, true);
             }
+            ReconfigureLiveEngine(*snap, false, false);
             EnqueueGlobalOptionsWork(std::move(optsCopy));
         });
 }

@@ -18,6 +18,151 @@ namespace {
 constexpr std::size_t kMaxReleaseJsonBytes = 2u * 1024u * 1024u;
 constexpr std::size_t kMaxEngineBinaryBytes = 64u * 1024u * 1024u;
 
+std::atomic<std::uint64_t> gUpdaterTempSeq{1};
+
+[[nodiscard]] bool HasControlOrBackslash(std::string_view text) noexcept {
+    for (const char ch : text) {
+        const auto uch = static_cast<unsigned char>(ch);
+        if (ch == '\\' || uch < 0x20u || uch == 0x7Fu) {
+            return true;
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] bool IsHexDigitAscii(char ch) noexcept {
+    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+}
+
+[[nodiscard]] std::string NormalizeSha256Hex(std::string_view raw) {
+    const std::string_view trimmed = motrix::core::TrimAscii(raw);
+    if (trimmed.size() != 64u) {
+        return {};
+    }
+    for (const char ch : trimmed) {
+        if (!IsHexDigitAscii(ch)) {
+            return {};
+        }
+    }
+    return motrix::core::AsciiLower(trimmed);
+}
+
+struct ParsedAuthorityUrl {
+    std::string_view scheme;
+    std::string_view host;
+};
+
+[[nodiscard]] std::optional<ParsedAuthorityUrl> ParseHttpUrlAuthority(std::string_view url) noexcept {
+    const std::string_view trimmed = motrix::core::TrimAscii(url);
+    if (trimmed.empty() || HasControlOrBackslash(trimmed)) {
+        return std::nullopt;
+    }
+    const std::size_t schemeEnd = trimmed.find("://");
+    if (schemeEnd == std::string_view::npos || schemeEnd == 0u) {
+        return std::nullopt;
+    }
+    const std::string_view scheme = trimmed.substr(0, schemeEnd);
+    if (!motrix::core::EqualsAsciiInsensitive(scheme, "https")
+        && !motrix::core::EqualsAsciiInsensitive(scheme, "http")) {
+        return std::nullopt;
+    }
+    const std::string_view rest = trimmed.substr(schemeEnd + 3u);
+    const std::size_t authEnd = rest.find_first_of("/?#\\");
+    const std::string_view authority =
+        (authEnd == std::string_view::npos) ? rest : rest.substr(0, authEnd);
+    if (authority.empty() || authority.find('@') != std::string_view::npos) {
+        return std::nullopt;
+    }
+
+    std::string_view host;
+    if (authority.starts_with('[')) {
+        const std::size_t closeBracket = authority.find(']');
+        if (closeBracket == std::string_view::npos || closeBracket <= 1u) {
+            return std::nullopt;
+        }
+        const std::string_view tail = authority.substr(closeBracket + 1u);
+        if (!tail.empty() && !tail.starts_with(':')) {
+            return std::nullopt;
+        }
+        host = authority.substr(0, closeBracket + 1u);
+    } else {
+        const std::size_t colon = authority.find(':');
+        host = (colon == std::string_view::npos) ? authority : authority.substr(0, colon);
+        if (colon != std::string_view::npos) {
+            const std::string_view portPart = authority.substr(colon + 1u);
+            if (portPart.empty()) {
+                return std::nullopt;
+            }
+            for (const char c : portPart) {
+                if (c < '0' || c > '9') {
+                    return std::nullopt;
+                }
+            }
+        }
+    }
+    if (host.empty()) {
+        return std::nullopt;
+    }
+    return ParsedAuthorityUrl{.scheme = scheme, .host = host};
+}
+
+[[nodiscard]] bool IsLoopbackHost(std::string_view host) noexcept {
+    return motrix::core::EqualsAsciiInsensitive(host, "localhost") || host == "127.0.0.1"
+           || host == "[::1]";
+}
+
+[[nodiscard]] bool IsLoopbackUrl(std::string_view url) noexcept {
+    const auto parsed = ParseHttpUrlAuthority(url);
+    return parsed.has_value() && IsLoopbackHost(parsed->host);
+}
+
+[[nodiscard]] bool IsAllowedUpdateUrl(std::string_view url, bool allowLoopbackHttp) noexcept {
+    const auto parsed = ParseHttpUrlAuthority(url);
+    if (!parsed) {
+        return false;
+    }
+    if (motrix::core::EqualsAsciiInsensitive(parsed->scheme, "https")) {
+        return true;
+    }
+    return allowLoopbackHttp && IsLoopbackHost(parsed->host);
+}
+
+[[nodiscard]] bool IsValidHttpsMirrorPrefix(std::string_view mirrorPrefix) noexcept {
+    const std::string_view trimmed = motrix::core::TrimAscii(mirrorPrefix);
+    if (trimmed.empty()) {
+        return true;
+    }
+    const auto parsed = ParseHttpUrlAuthority(trimmed);
+    return parsed.has_value() && motrix::core::EqualsAsciiInsensitive(parsed->scheme, "https");
+}
+
+[[nodiscard]] bool IsGitHubHostUrl(std::string_view url) noexcept {
+    const auto parsed = ParseHttpUrlAuthority(url);
+    if (!parsed || !motrix::core::EqualsAsciiInsensitive(parsed->scheme, "https")) {
+        return false;
+    }
+    const std::string_view host = parsed->host;
+    if (host.starts_with('.')) {
+        return false;
+    }
+    return motrix::core::EqualsAsciiInsensitive(host, "github.com")
+           || motrix::core::EndsWithAsciiInsensitive(host, ".github.com")
+           || motrix::core::EqualsAsciiInsensitive(host, "githubusercontent.com")
+           || motrix::core::EndsWithAsciiInsensitive(host, ".githubusercontent.com");
+}
+
+[[nodiscard]] std::string ExtractAssetSha256(const nlohmann::json& item) {
+    const auto dIt = item.find("digest");
+    if (dIt == item.end() || !dIt->is_string()) {
+        return {};
+    }
+    const std::string d = motrix::core::AsciiLower(dIt->get_ref<const std::string&>());
+    if (!d.starts_with("sha256:")) {
+        return {};
+    }
+    return NormalizeSha256Hex(std::string_view(d).substr(7u));
+}
+
 [[nodiscard]] bool IsDirectExeUrl(std::string_view url) noexcept {
     const std::size_t q = url.find('?');
     const std::string_view pathPart = (q == std::string_view::npos) ? url : url.substr(0, q);
@@ -30,8 +175,9 @@ constexpr std::size_t kMaxEngineBinaryBytes = 64u * 1024u * 1024u;
         return -1000;
     }
     if (ContainsAsciiInsensitive(name, "arm64") || ContainsAsciiInsensitive(name, "aarch64")
-        || ContainsAsciiInsensitive(name, "386") || ContainsAsciiInsensitive(name, "x86.")
-        || ContainsAsciiInsensitive(name, "win32")) {
+        || ContainsAsciiInsensitive(name, "386") || ContainsAsciiInsensitive(name, "i686")
+        || ContainsAsciiInsensitive(name, "ia64") || ContainsAsciiInsensitive(name, "x86.")
+        || ContainsAsciiInsensitive(name, "x86-") || ContainsAsciiInsensitive(name, "win32")) {
         return -50;
     }
     int score = 10;
@@ -66,157 +212,27 @@ void CleanupFileQuietly(const std::filesystem::path& path) noexcept {
     std::filesystem::remove(path, ec);
 }
 
-[[nodiscard]] motrix::core::Result<Aria2NextStageOutcome>
-DownloadAndVerifyBinary(const Aria2NextUpdateSpec& spec,
-                        const Aria2NextReleaseInfo& release,
-                        const std::function<void(Aria2NextUpdatePhase)>& onPhase) {
-    if (onPhase) {
-        onPhase(Aria2NextUpdatePhase::Downloading);
-    }
-    const std::filesystem::path stagePath =
-        spec.targetExePath.parent_path() / "aria2-next.exe.stage.exe";
-    CleanupFileQuietly(stagePath);
+[[nodiscard]] std::filesystem::path MakeUniqueSiblingPath(const std::filesystem::path& targetExePath,
+                                                          std::string_view suffix) {
+    const std::uint64_t seq = gUpdaterTempSeq.fetch_add(1u, std::memory_order_relaxed);
+    const std::uint32_t pid = CurrentHostProcessId();
+    const std::filesystem::path dir = targetExePath.parent_path();
+    const std::string name = std::format("aria2-next.{}.{}.{}", pid, seq, suffix);
+    return dir.empty() ? std::filesystem::path(name) : (dir / name);
+}
 
-    detail::HttpRequestSpec binReq{
-        .url = release.downloadUrl,
-        .proxyUrl = spec.proxyUrl,
-        .acceptHeader = "application/octet-stream",
-        .timeout = spec.timeout,
-        .maxBytes = kMaxEngineBinaryBytes,
-        .stopToken = spec.stopToken,
-    };
-    const auto dlRes = detail::HttpDownloadToFile(binReq, stagePath);
-    if (!dlRes) {
-        return std::unexpected(dlRes.error());
-    }
-
-    if (onPhase) {
-        onPhase(Aria2NextUpdatePhase::Verifying);
-    }
-    if (!LooksLikePeExecutableHeader(stagePath)) {
-        CleanupFileQuietly(stagePath);
+[[nodiscard]] motrix::core::Result<Aria2NextReleaseInfo>
+ParseReleaseJsonChecked(std::string_view jsonText,
+                        std::string_view mirrorPrefix,
+                        bool requireGitHubAssetHost,
+                        bool allowLoopbackHttp) {
+    if (!IsValidHttpsMirrorPrefix(mirrorPrefix)) {
         return std::unexpected(
             motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
-                                    motrix::core::ErrorCode::ParseFailure,
-                                    "Downloaded file is not a valid Windows PE executable (.exe)"));
-    }
-    if (!release.expectedSha256.empty()) {
-        const auto shaRes = detail::ComputeFileSha256Hex(stagePath);
-        if (!shaRes || *shaRes != release.expectedSha256) {
-            CleanupFileQuietly(stagePath);
-            return std::unexpected(
-                motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
-                                        motrix::core::ErrorCode::ParseFailure,
-                                        "Downloaded aria2-next SHA-256 digest verification failed"));
-        }
+                                    motrix::core::ErrorCode::InvalidArgument,
+                                    "aria2-next mirror prefix must be a valid https:// URL"));
     }
 
-    const auto probe = ProbeEngineBinaryVersion(stagePath, std::chrono::milliseconds(4000));
-    if (!probe || probe->version.empty()) {
-        CleanupFileQuietly(stagePath);
-        return std::unexpected(
-            motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
-                                    motrix::core::ErrorCode::ParseFailure,
-                                    "Downloaded executable failed aria2 --version verification",
-                                    probe ? std::string{} : probe.error().message));
-    }
-    if (probe->kind != EngineKind::Aria2Next) {
-        CleanupFileQuietly(stagePath);
-        return std::unexpected(motrix::core::MakeError(
-            motrix::core::ErrorDomain::Engine,
-            motrix::core::ErrorCode::ParseFailure,
-            std::format("Downloaded binary identified as '{}' instead of aria2-next", probe->product)));
-    }
-
-    Aria2NextStageOutcome out{};
-    out.release = release;
-    if (out.release.normalizedVersion.empty()) {
-        out.release.normalizedVersion = probe->version;
-    }
-    out.detectedVersion = probe->version;
-    out.detectedKind = probe->kind;
-
-    std::error_code ec;
-    const bool targetExists = std::filesystem::is_regular_file(spec.targetExePath, ec);
-    if (targetExists && !spec.forceReinstall && spec.currentKind == EngineKind::Aria2Next
-        && !spec.currentVersion.empty()
-        && NormalizeVersionTag(spec.currentVersion) == NormalizeVersionTag(probe->version)) {
-        CleanupFileQuietly(stagePath);
-        out.alreadyUpToDate = true;
-        return out;
-    }
-
-    out.stagedExePath = stagePath;
-    return out;
-}
-
-}  // namespace
-
-std::filesystem::path ManagedAria2NextExecutablePath(const std::filesystem::path& appDataDir) {
-    if (appDataDir.empty()) {
-        return {};
-    }
-    return appDataDir / "engine" / "aria2-next.exe";
-}
-
-std::string NormalizeVersionTag(std::string_view tag) {
-    std::string_view t = motrix::core::TrimAscii(tag);
-    while (!t.empty() && (t.front() == 'v' || t.front() == 'V')) {
-        t.remove_prefix(1);
-    }
-    return std::string(t);
-}
-
-[[nodiscard]] bool IsGitHubHostUrl(std::string_view url) noexcept {
-    const std::size_t schemeEnd = url.find("://");
-    if (schemeEnd == std::string_view::npos) {
-        return false;
-    }
-    const std::string_view rest = url.substr(schemeEnd + 3);
-    const std::size_t authEnd = rest.find_first_of("/?#");
-    std::string_view hostPort = (authEnd == std::string_view::npos) ? rest : rest.substr(0, authEnd);
-    const std::size_t at = hostPort.rfind('@');
-    if (at != std::string_view::npos) {
-        hostPort.remove_prefix(at + 1);
-    }
-    const std::size_t colon = hostPort.find(':');
-    const std::string_view host =
-        (colon == std::string_view::npos) ? hostPort : hostPort.substr(0, colon);
-    return motrix::core::EqualsAsciiInsensitive(host, "github.com")
-           || motrix::core::EndsWithAsciiInsensitive(host, ".github.com")
-           || motrix::core::EqualsAsciiInsensitive(host, "githubusercontent.com")
-           || motrix::core::EndsWithAsciiInsensitive(host, ".githubusercontent.com");
-}
-
-std::string ApplyGitHubMirrorPrefix(std::string_view assetUrl, std::string_view mirrorPrefix) {
-    const std::string_view url = motrix::core::TrimAscii(assetUrl);
-    const std::string_view mirror = motrix::core::TrimAscii(mirrorPrefix);
-    if (mirror.empty() || url.empty() || !IsGitHubHostUrl(url)) {
-        return std::string(url);
-    }
-    if (url.starts_with(mirror)) {
-        return std::string(url);
-    }
-    if (mirror.ends_with('/') || mirror.ends_with('=') || mirror.ends_with('?')) {
-        return std::string(mirror) + std::string(url);
-    }
-    return std::string(mirror) + "/" + std::string(url);
-}
-
-[[nodiscard]] std::string ExtractAssetSha256(const nlohmann::json& item) {
-    const auto dIt = item.find("digest");
-    if (dIt == item.end() || !dIt->is_string()) {
-        return {};
-    }
-    const std::string d = motrix::core::AsciiLower(dIt->get_ref<const std::string&>());
-    if (d.starts_with("sha256:") && d.size() == 71u) {
-        return d.substr(7);
-    }
-    return {};
-}
-
-motrix::core::Result<Aria2NextReleaseInfo> ParseAria2NextReleaseJson(std::string_view jsonText,
-                                                                     std::string_view mirrorPrefix) {
     const auto root = nlohmann::json::parse(jsonText.begin(), jsonText.end(), nullptr, false);
     if (root.is_discarded() || !root.is_object()) {
         return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
@@ -264,12 +280,112 @@ motrix::core::Result<Aria2NextReleaseInfo> ParseAria2NextReleaseJson(std::string
             motrix::core::ErrorCode::NotFound,
             "No compatible Windows x86_64 .exe asset found in aria2-next release"));
     }
+    if (!IsAllowedUpdateUrl(rawUrl, allowLoopbackHttp)) {
+        return std::unexpected(
+            motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                    motrix::core::ErrorCode::ParseFailure,
+                                    "Release asset download URL violates HTTPS/security policy"));
+    }
+    if (requireGitHubAssetHost && !IsGitHubHostUrl(rawUrl)) {
+        return std::unexpected(
+            motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                    motrix::core::ErrorCode::ParseFailure,
+                                    "GitHub release asset URL does not point to a GitHub HTTPS host"));
+    }
 
     info.downloadUrl = ApplyGitHubMirrorPrefix(rawUrl, mirrorPrefix);
     return info;
 }
 
-namespace {
+[[nodiscard]] motrix::core::Result<Aria2NextStageOutcome>
+DownloadAndVerifyBinary(const Aria2NextUpdateSpec& spec,
+                        const Aria2NextReleaseInfo& release,
+                        const std::function<void(Aria2NextUpdatePhase)>& onPhase) {
+    const std::string requiredSha256 = NormalizeSha256Hex(release.expectedSha256);
+    if (requiredSha256.empty()) {
+        return std::unexpected(
+            motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                    motrix::core::ErrorCode::ParseFailure,
+                                    "Missing required SHA-256 digest for aria2-next binary"));
+    }
+
+    if (onPhase) {
+        onPhase(Aria2NextUpdatePhase::Downloading);
+    }
+    const std::filesystem::path stagePath = MakeUniqueSiblingPath(spec.targetExePath, "stage.exe");
+    CleanupFileQuietly(stagePath);
+
+    detail::HttpRequestSpec binReq{
+        .url = release.downloadUrl,
+        .proxyUrl = spec.proxyUrl,
+        .acceptHeader = "application/octet-stream",
+        .timeout = spec.timeout,
+        .maxBytes = kMaxEngineBinaryBytes,
+        .stopToken = spec.stopToken,
+    };
+    const auto dlRes = detail::HttpDownloadToFile(binReq, stagePath);
+    if (!dlRes) {
+        return std::unexpected(dlRes.error());
+    }
+
+    if (onPhase) {
+        onPhase(Aria2NextUpdatePhase::Verifying);
+    }
+    if (!LooksLikePeExecutableHeader(stagePath)) {
+        CleanupFileQuietly(stagePath);
+        return std::unexpected(
+            motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                    motrix::core::ErrorCode::ParseFailure,
+                                    "Downloaded file is not a valid Windows PE executable (.exe)"));
+    }
+    const auto shaRes = detail::ComputeFileSha256Hex(stagePath);
+    if (!shaRes || *shaRes != requiredSha256) {
+        CleanupFileQuietly(stagePath);
+        return std::unexpected(
+            motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                    motrix::core::ErrorCode::ParseFailure,
+                                    "Downloaded aria2-next SHA-256 digest verification failed"));
+    }
+
+    const auto probe = ProbeEngineBinaryVersion(stagePath, std::chrono::milliseconds(4000));
+    if (!probe || probe->version.empty()) {
+        CleanupFileQuietly(stagePath);
+        return std::unexpected(
+            motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                    motrix::core::ErrorCode::ParseFailure,
+                                    "Downloaded executable failed aria2 --version verification",
+                                    probe ? std::string{} : probe.error().message));
+    }
+    if (probe->kind != EngineKind::Aria2Next) {
+        CleanupFileQuietly(stagePath);
+        return std::unexpected(motrix::core::MakeError(
+            motrix::core::ErrorDomain::Engine,
+            motrix::core::ErrorCode::ParseFailure,
+            std::format("Downloaded binary identified as '{}' instead of aria2-next", probe->product)));
+    }
+
+    Aria2NextStageOutcome out{};
+    out.release = release;
+    out.release.expectedSha256 = requiredSha256;
+    if (out.release.normalizedVersion.empty()) {
+        out.release.normalizedVersion = probe->version;
+    }
+    out.detectedVersion = probe->version;
+    out.detectedKind = probe->kind;
+
+    std::error_code ec;
+    const bool targetExists = std::filesystem::is_regular_file(spec.targetExePath, ec);
+    if (targetExists && !spec.forceReinstall && spec.currentKind == EngineKind::Aria2Next
+        && !spec.currentVersion.empty()
+        && NormalizeVersionTag(spec.currentVersion) == NormalizeVersionTag(probe->version)) {
+        CleanupFileQuietly(stagePath);
+        out.alreadyUpToDate = true;
+        return out;
+    }
+
+    out.stagedExePath = stagePath;
+    return out;
+}
 
 [[nodiscard]] std::uint16_t ReadLe16(const std::uint8_t* p) noexcept {
     return static_cast<std::uint16_t>(p[0]) | (static_cast<std::uint16_t>(p[1]) << 8);
@@ -280,7 +396,68 @@ namespace {
            | (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24);
 }
 
+[[nodiscard]] std::error_code MoveOrCopyToTarget(const std::filesystem::path& stagedExePath,
+                                                 const std::filesystem::path& targetExePath) {
+    std::error_code ec;
+    std::filesystem::rename(stagedExePath, targetExePath, ec);
+    if (!ec) {
+        return {};
+    }
+
+    const std::filesystem::path tempCopy = MakeUniqueSiblingPath(targetExePath, "copy.tmp");
+    CleanupFileQuietly(tempCopy);
+    std::error_code copyEc;
+    std::filesystem::copy_file(
+        stagedExePath, tempCopy, std::filesystem::copy_options::overwrite_existing, copyEc);
+    if (copyEc) {
+        CleanupFileQuietly(tempCopy);
+        return ec;
+    }
+    std::filesystem::rename(tempCopy, targetExePath, copyEc);
+    if (copyEc) {
+        CleanupFileQuietly(tempCopy);
+        return copyEc;
+    }
+    CleanupFileQuietly(stagedExePath);
+    return {};
+}
+
 }  // namespace
+
+std::filesystem::path ManagedAria2NextExecutablePath(const std::filesystem::path& appDataDir) {
+    if (appDataDir.empty()) {
+        return {};
+    }
+    return appDataDir / "engine" / "aria2-next.exe";
+}
+
+std::string NormalizeVersionTag(std::string_view tag) {
+    std::string_view t = motrix::core::TrimAscii(tag);
+    while (!t.empty() && (t.front() == 'v' || t.front() == 'V')) {
+        t.remove_prefix(1);
+    }
+    return std::string(t);
+}
+
+std::string ApplyGitHubMirrorPrefix(std::string_view assetUrl, std::string_view mirrorPrefix) {
+    const std::string_view url = motrix::core::TrimAscii(assetUrl);
+    const std::string_view mirror = motrix::core::TrimAscii(mirrorPrefix);
+    if (mirror.empty() || url.empty() || !IsValidHttpsMirrorPrefix(mirror) || !IsGitHubHostUrl(url)) {
+        return std::string(url);
+    }
+    if (url.starts_with(mirror)) {
+        return std::string(url);
+    }
+    if (mirror.ends_with('/') || mirror.ends_with('=') || mirror.ends_with('?')) {
+        return std::string(mirror) + std::string(url);
+    }
+    return std::string(mirror) + "/" + std::string(url);
+}
+
+motrix::core::Result<Aria2NextReleaseInfo> ParseAria2NextReleaseJson(std::string_view jsonText,
+                                                                     std::string_view mirrorPrefix) {
+    return ParseReleaseJsonChecked(jsonText, mirrorPrefix, false, true);
+}
 
 bool LooksLikePeExecutableHeader(const std::filesystem::path& filePath) {
     std::error_code ec;
@@ -316,10 +493,10 @@ bool LooksLikePeExecutableHeader(const std::filesystem::path& filePath) {
     const std::uint16_t optSize = ReadLe16(nt.data() + 20);
     const std::uint16_t chars = ReadLe16(nt.data() + 22);
     const std::uint16_t magic = ReadLe16(nt.data() + 24);
-    const bool knownArch = (machine == 0x8664u || machine == 0x014Cu || machine == 0xAA64u);
-    const bool validOpt = (magic == 0x020Bu || magic == 0x010Bu) && optSize >= 0x60u
+    const bool isX64Exe = (machine == 0x8664u) && ((chars & 0x0002u) != 0) && ((chars & 0x2000u) == 0);
+    const bool validOpt = (magic == 0x020Bu) && optSize >= 0x60u
                           && static_cast<std::uint64_t>(peOffset) + 24 + optSize <= sz;
-    return knownArch && sections >= 1 && (chars & 0x0002u) != 0 && validOpt;
+    return isX64Exe && sections >= 1 && validOpt;
 }
 
 motrix::core::Result<Aria2NextStageOutcome>
@@ -331,11 +508,24 @@ StageAria2NextUpdate(const Aria2NextUpdateSpec& spec,
                                                        motrix::core::ErrorCode::InvalidArgument,
                                                        "aria2-next update URL or target path is empty"));
     }
+    if (!IsValidHttpsMirrorPrefix(spec.mirrorPrefix)) {
+        return std::unexpected(
+            motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                    motrix::core::ErrorCode::InvalidArgument,
+                                    "aria2-next mirror prefix must be a valid https:// URL"));
+    }
+    if (!IsAllowedUpdateUrl(url, true)) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                                       motrix::core::ErrorCode::InvalidArgument,
+                                                       "aria2-next update URL must use HTTPS"));
+    }
+    const bool allowLoopbackHttp = IsLoopbackUrl(url);
 
     if (IsDirectExeUrl(url)) {
         Aria2NextReleaseInfo direct{};
         direct.assetName = FilenameFromUrl(url);
         direct.downloadUrl = ApplyGitHubMirrorPrefix(url, spec.mirrorPrefix);
+        direct.expectedSha256 = NormalizeSha256Hex(spec.expectedSha256);
         return DownloadAndVerifyBinary(spec, direct, onPhase);
     }
 
@@ -343,7 +533,7 @@ StageAria2NextUpdate(const Aria2NextUpdateSpec& spec,
         onPhase(Aria2NextUpdatePhase::Checking);
     }
     detail::HttpRequestSpec jsonReq{
-        .url = ApplyGitHubMirrorPrefix(url, spec.mirrorPrefix),
+        .url = std::string(url),
         .proxyUrl = spec.proxyUrl,
         .acceptHeader = "application/vnd.github+json",
         .timeout = spec.timeout,
@@ -355,9 +545,14 @@ StageAria2NextUpdate(const Aria2NextUpdateSpec& spec,
         return std::unexpected(jsonRes.error());
     }
 
-    const auto relRes = ParseAria2NextReleaseJson(*jsonRes, spec.mirrorPrefix);
+    const bool requireGitHubAssetHost = IsGitHubHostUrl(url);
+    auto relRes =
+        ParseReleaseJsonChecked(*jsonRes, spec.mirrorPrefix, requireGitHubAssetHost, allowLoopbackHttp);
     if (!relRes) {
         return std::unexpected(relRes.error());
+    }
+    if (relRes->expectedSha256.empty() && !spec.expectedSha256.empty()) {
+        relRes->expectedSha256 = NormalizeSha256Hex(spec.expectedSha256);
     }
 
     std::error_code ec;
@@ -390,9 +585,15 @@ motrix::core::Result<void> InstallStagedAria2Next(const std::filesystem::path& s
         }
     }
 
-    const std::filesystem::path backupPath = targetExePath.parent_path() / "aria2-next.exe.bak";
+    const std::filesystem::path backupPath = MakeUniqueSiblingPath(targetExePath, "bak");
     CleanupFileQuietly(backupPath);
     const bool hadExisting = std::filesystem::exists(targetExePath, ec);
+    if (ec) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                                       motrix::core::ErrorCode::IoFailure,
+                                                       "Failed to inspect target aria2-next.exe",
+                                                       ec.message()));
+    }
     if (hadExisting) {
         std::filesystem::rename(targetExePath, backupPath, ec);
         if (ec) {
@@ -404,17 +605,19 @@ motrix::core::Result<void> InstallStagedAria2Next(const std::filesystem::path& s
         }
     }
 
-    std::filesystem::rename(stagedExePath, targetExePath, ec);
-    if (ec) {
+    const std::error_code installEc = MoveOrCopyToTarget(stagedExePath, targetExePath);
+    if (installEc) {
+        std::error_code restoreEc;
         if (hadExisting) {
-            std::error_code restoreEc;
             std::filesystem::rename(backupPath, targetExePath, restoreEc);
         }
-        CleanupFileQuietly(stagedExePath);
+        if (!hadExisting || !restoreEc) {
+            CleanupFileQuietly(stagedExePath);
+        }
         return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
                                                        motrix::core::ErrorCode::IoFailure,
                                                        "Failed to install staged aria2-next.exe",
-                                                       ec.message()));
+                                                       installEc.message()));
     }
 
     CleanupFileQuietly(backupPath);

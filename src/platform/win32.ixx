@@ -104,6 +104,7 @@ public:
                                                   int width,
                                                   int height,
                                                   std::span<const std::uint8_t> rgba) override;
+    [[nodiscard]] std::uint64_t TextureGeneration() const noexcept override;
 
     // Called from WndProc bridge inside win32_host.cpp
     struct Impl;

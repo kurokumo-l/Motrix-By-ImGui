@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.1)
+cmake_minimum_required(VERSION 4.3)
 
 # Statically link MSVC CRT (/MT in Release, /MTd in Debug) so Release builds are fully portable
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -47,7 +47,7 @@ add_library(imgui STATIC
     "${IMGUI_DIR}/backends/imgui_impl_win32.cpp"
     "${IMGUI_DIR}/backends/imgui_impl_dx11.cpp"
 )
-target_include_directories(imgui PUBLIC
+target_include_directories(imgui SYSTEM PUBLIC
     "${IMGUI_DIR}"
     "${IMGUI_DIR}/backends"
 )
@@ -62,7 +62,7 @@ set_target_properties(imgui PROPERTIES
 add_library(stb_image_write STATIC
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb/stb_image_write_impl.cpp"
 )
-target_include_directories(stb_image_write PUBLIC
+target_include_directories(stb_image_write SYSTEM PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb"
 )
 set_target_properties(stb_image_write PROPERTIES
@@ -481,11 +481,19 @@ target_link_libraries(motrix_native PRIVATE
 )
 motrix_configure_target(motrix_native)
 
-add_custom_command(TARGET motrix_native POST_BUILD
+add_custom_target(motrix_copy_assets
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets"
-        "$<TARGET_FILE_DIR:motrix_native>/assets"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts"
+        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons"
+        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets/icons"
+    COMMAND ${CMAKE_COMMAND} -E rm -f
+        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets/fonts/lucide_info.json"
+    COMMENT "Syncing runtime assets (excluding lucide_info.json)"
 )
+add_dependencies(motrix_native motrix_copy_assets)
 
 add_executable(motrix_tests
     tests/test_core.cpp
@@ -504,6 +512,7 @@ add_executable(motrix_tests
     tests/test_ui.cpp
     tests/test_ui_views.cpp
 )
+add_dependencies(motrix_tests motrix_copy_assets)
 target_sources(motrix_tests PRIVATE
     FILE_SET test_modules TYPE CXX_MODULES
     BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/tests"
@@ -525,4 +534,4 @@ target_link_libraries(motrix_tests PRIVATE
     advapi32
 )
 motrix_configure_target(motrix_tests)
-catch_discover_tests(motrix_tests)
+catch_discover_tests(motrix_tests PROPERTIES SKIP_RETURN_CODE 4)

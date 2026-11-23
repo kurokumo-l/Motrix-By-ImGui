@@ -218,6 +218,9 @@ void EnsureTrayIconsCreated(Win32WindowState& state) {
 }
 
 void ShowTrayContextMenu(Win32WindowState& state, HWND hwnd) {
+    if (state.inPickerDialog) {
+        return;
+    }
     UniqueMenu menu;
     if (!menu.Get()) {
         return;
@@ -245,14 +248,18 @@ void ShowTrayContextMenu(Win32WindowState& state, HWND hwnd) {
     POINT pt{};
     ::GetCursorPos(&pt);
     ::SetForegroundWindow(hwnd);
-    const UINT picked = static_cast<UINT>(::TrackPopupMenuEx(
-        menu.Get(), TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD, pt.x, pt.y, hwnd, nullptr));
+    UINT picked = 0;
+    {
+        ScopedModalLoop modalGuard(state);
+        picked = static_cast<UINT>(::TrackPopupMenuEx(
+            menu.Get(), TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_RETURNCMD, pt.x, pt.y, hwnd, nullptr));
+    }
     ::PostMessageW(hwnd, WM_NULL, 0, 0);
 
     if (picked >= static_cast<UINT>(TrayMenuAction::ShowWindow)
         && picked <= static_cast<UINT>(TrayMenuAction::Quit) && state.config.onTrayAction) {
         state.config.onTrayAction(static_cast<TrayMenuAction>(picked));
-        state.activeFramesRemaining = std::max(state.activeFramesRemaining, 3);
+        state.BumpActiveFrames(3);
     }
 }
 
@@ -383,9 +390,9 @@ void ShowWindowFromTrayInteraction(Win32WindowState& state, HWND hwnd) {
         state.config.onTrayAction(TrayMenuAction::ShowWindow);
     } else {
         Win32ShowWindow(hwnd, true, true);
-        state.hiddenToTray = false;
+        state.hiddenToTray.store(false, std::memory_order_release);
     }
-    state.activeFramesRemaining = std::max(state.activeFramesRemaining, 3);
+    state.BumpActiveFrames(3);
 }
 
 void Win32HandleTrayCallback(Win32WindowState& state, std::uint64_t lParam) {
@@ -396,11 +403,12 @@ void Win32HandleTrayCallback(Win32WindowState& state, std::uint64_t lParam) {
     const UINT msgId = static_cast<UINT>(LOWORD(static_cast<DWORD_PTR>(lParam)));
     switch (msgId) {
         case WM_LBUTTONUP: {
-            if (state.hiddenToTray || !::IsWindowVisible(hwnd) || ::IsIconic(hwnd)) {
+            if (state.hiddenToTray.load(std::memory_order_acquire) || !::IsWindowVisible(hwnd)
+                || ::IsIconic(hwnd)) {
                 ShowWindowFromTrayInteraction(state, hwnd);
             } else {
                 Win32ShowWindow(hwnd, false, false);
-                state.hiddenToTray = true;
+                state.hiddenToTray.store(true, std::memory_order_release);
                 state.trimRequested = true;
             }
             break;

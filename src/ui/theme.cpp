@@ -12,7 +12,7 @@ namespace motrix::ui {
 namespace {
 
 [[nodiscard]] float ExpFactor(float speed, float dt) noexcept {
-    if (dt <= 0.0f) {
+    if (!std::isfinite(dt) || dt <= 0.0f || !std::isfinite(speed) || speed <= 0.0f) {
         return 0.0f;
     }
     return 1.0f - std::exp(-speed * std::min(dt, 0.1f));
@@ -267,9 +267,10 @@ void ThemeController::ApplyImGuiStyleGeometry(float dpiScale) const {
     style.PopupBorderSize = 1.0f;
     style.AntiAliasedLines = true;
     style.AntiAliasedFill = true;
-    style.ScaleAllSizes(dpiScale);
+    const float safeDpi = (std::isfinite(dpiScale) && dpiScale > 0.0f) ? dpiScale : 1.0f;
+    style.ScaleAllSizes(safeDpi);
     style.InputTextCursorSize = std::max(1.5f, style.InputTextCursorSize);
-    style.FontScaleDpi = dpiScale;
+    style.FontScaleDpi = safeDpi;
 }
 
 void ThemeController::ApplyImGuiStyleColors() const {

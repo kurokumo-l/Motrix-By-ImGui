@@ -236,7 +236,7 @@ std::filesystem::path ResolveDefaultDownloadsDir() {
 ScopedComInit::ScopedComInit() noexcept {
     const HRESULT hr = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     shouldUninit_ = (hr == S_OK || hr == S_FALSE);
-    usable_ = SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
+    usable_ = SUCCEEDED(hr);
 }
 
 ScopedComInit::~ScopedComInit() {

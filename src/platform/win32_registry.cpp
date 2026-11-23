@@ -144,7 +144,7 @@ ReadRegString(HKEY root, const wchar_t* subkey, const wchar_t* valueName) {
     const auto existingCmd = ReadRegString(HKEY_CURRENT_USER, cmdSubkey.c_str(), nullptr);
     if (enable) {
         const std::wstring exeWide = exePath.wstring();
-        const std::wstring desiredCmd = L"\"" + exeWide + L"\" \"%1\"";
+        const std::wstring desiredCmd = L"\"" + exeWide + L"\" --from-shell -- \"%1\"";
         const auto urlProto = ReadRegString(HKEY_CURRENT_USER, baseKey.c_str(), L"URL Protocol");
         if (existingCmd && *existingCmd == desiredCmd && urlProto.has_value()) {
             return false;
@@ -215,7 +215,7 @@ SetOrCleanTorrentAssociation(const std::filesystem::path& exePath, bool enable) 
 
     if (enable) {
         const std::wstring exeWide = exePath.wstring();
-        const std::wstring desiredCmd = L"\"" + exeWide + L"\" \"%1\"";
+        const std::wstring desiredCmd = L"\"" + exeWide + L"\" --from-shell -- \"%1\"";
         const auto existingOpenWith =
             ReadRegString(HKEY_CURRENT_USER, kTorrentOpenWithKey, kTorrentProgId);
         if (existingProgCmd && *existingProgCmd == desiredCmd && existingExtProgId

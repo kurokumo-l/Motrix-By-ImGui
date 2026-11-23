@@ -614,11 +614,20 @@ bool DWriteFontBakedLoadGlyph(ImFontAtlas* atlas,
     return loader;
 }
 
+[[nodiscard]] bool ProbeDWriteAvailable() noexcept {
+    ComRef<IDWriteFactory> factory;
+    return SUCCEEDED(::DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
+                                           __uuidof(IDWriteFactory),
+                                           reinterpret_cast<IUnknown**>(factory.Put())))
+           && static_cast<bool>(factory);
+}
+
 }  // namespace
 
 const ImFontLoader* GetDWriteFontLoader() noexcept {
+    static const bool kAvailable = ProbeDWriteAvailable();
     static const ImFontLoader kLoader = MakeDWriteLoader();
-    return &kLoader;
+    return kAvailable ? &kLoader : nullptr;
 }
 
 bool HasDWriteSystemFontFamily(std::string_view familyUtf8) {
@@ -639,7 +648,9 @@ bool HasDWriteSystemFontFamily(std::string_view familyUtf8) {
     UINT32 index = 0;
     BOOL exists = FALSE;
     const std::wstring wideName = motrix::core::Utf8ToWide(trimmed);
-    (void)sysFonts->FindFamilyName(wideName.c_str(), &index, &exists);
+    if (wideName.empty() || FAILED(sysFonts->FindFamilyName(wideName.c_str(), &index, &exists))) {
+        return false;
+    }
     return exists == TRUE;
 }
 

@@ -20,10 +20,10 @@ ParseUInt64Field(const nlohmann::json& obj, const char* key, std::uint64_t fallb
         return fallback;
     }
     if (it->is_number_unsigned()) {
-        return it->get<std::uint64_t>();
+        return it->get_ref<const std::uint64_t&>();
     }
     if (it->is_number_integer()) {
-        const auto v = it->get<std::int64_t>();
+        const auto v = it->get_ref<const std::int64_t&>();
         return v > 0 ? static_cast<std::uint64_t>(v) : 0;
     }
     if (it->is_string()) {
@@ -42,8 +42,19 @@ ParseUInt64Field(const nlohmann::json& obj, const char* key, std::uint64_t fallb
     if (it == obj.end()) {
         return fallback;
     }
+    if (it->is_number_unsigned()) {
+        const auto v = it->get_ref<const std::uint64_t&>();
+        if (v <= static_cast<std::uint64_t>((std::numeric_limits<int>::max)())) {
+            return static_cast<int>(v);
+        }
+        return fallback;
+    }
     if (it->is_number_integer()) {
-        return it->get<int>();
+        const auto v = it->get_ref<const std::int64_t&>();
+        if (v >= (std::numeric_limits<int>::min)() && v <= (std::numeric_limits<int>::max)()) {
+            return static_cast<int>(v);
+        }
+        return fallback;
     }
     if (it->is_string()) {
         const auto& s = it->get_ref<const std::string&>();
@@ -70,7 +81,7 @@ ParseUInt64Field(const nlohmann::json& obj, const char* key, std::uint64_t fallb
         return fallback;
     }
     if (it->is_boolean()) {
-        return it->get<bool>();
+        return it->get_ref<const bool&>();
     }
     if (it->is_string()) {
         const auto& s = it->get_ref<const std::string&>();
@@ -255,8 +266,12 @@ void PopulateTaskFiles(const nlohmann::json& obj,
 [[nodiscard]] double ReadMediaProgressField(const nlohmann::json& mediaObj) {
     if (const auto progIt = mediaObj.find("progress"); progIt != mediaObj.end()) {
         double p = -1.0;
-        if (progIt->is_number()) {
-            p = progIt->get<double>();
+        if (progIt->is_number_float()) {
+            p = progIt->get_ref<const double&>();
+        } else if (progIt->is_number_unsigned()) {
+            p = static_cast<double>(progIt->get_ref<const std::uint64_t&>());
+        } else if (progIt->is_number_integer()) {
+            p = static_cast<double>(progIt->get_ref<const std::int64_t&>());
         } else if (progIt->is_string()) {
             const auto& s = progIt->get_ref<const std::string&>();
             const auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), p);
@@ -264,7 +279,7 @@ void PopulateTaskFiles(const nlohmann::json& obj,
                 p = -1.0;
             }
         }
-        return p;
+        return std::isfinite(p) ? p : -1.0;
     }
     if (ReadBoolStrOrBool(mediaObj, "live", false)) {
         return -1.0;
@@ -289,14 +304,23 @@ void PopulateTaskFiles(const nlohmann::json& obj,
     std::uint64_t totalBandwidth = 0;
     for (const auto& tr : *tracksIt) {
         if (tr.is_object() && ReadBoolStrOrBool(tr, "selected", false)) {
-            totalBandwidth += ParseUInt64Field(tr, "bandwidth");
+            const std::uint64_t bw = ParseUInt64Field(tr, "bandwidth");
+            constexpr std::uint64_t kMaxU64 = (std::numeric_limits<std::uint64_t>::max)();
+            totalBandwidth = (bw > kMaxU64 - totalBandwidth) ? kMaxU64 : (totalBandwidth + bw);
         }
     }
     if (totalBandwidth == 0) {
         return 0;
     }
     const double bytes = static_cast<double>(totalBandwidth) * static_cast<double>(durationMs) / 8000.0;
-    return bytes > 0.0 ? static_cast<std::uint64_t>(bytes) : 0;
+    constexpr double kMaxU64Double = static_cast<double>((std::numeric_limits<std::uint64_t>::max)());
+    if (!std::isfinite(bytes) || bytes <= 0.0) {
+        return 0;
+    }
+    if (bytes >= kMaxU64Double) {
+        return (std::numeric_limits<std::uint64_t>::max)();
+    }
+    return static_cast<std::uint64_t>(bytes);
 }
 
 void PopulateMediaMetadata(const nlohmann::json& obj, motrix::domain::DownloadTaskView& task) {
@@ -424,19 +448,36 @@ motrix::core::Result<EngineSyncSnapshot> ParseMulticallSyncJson(std::string_view
                                                        motrix::core::ErrorCode::ParseFailure,
                                                        "Invalid system.multicall response"));
     }
+    for (std::size_t idx = 0; idx < 4; ++idx) {
+        const auto& entry = j[idx];
+        if (entry.is_object()) {
+            std::string msg = ReadStr(entry, "faultString");
+            const int faultCode = ParseIntField(entry, "faultCode", -1);
+            if (msg.empty()) {
+                msg = "system.multicall subcall failed";
+            }
+            const auto errCode = entry.contains("faultCode") ? motrix::core::ErrorCode::RpcError
+                                                             : motrix::core::ErrorCode::ParseFailure;
+            return std::unexpected(motrix::core::MakeError(
+                motrix::core::ErrorDomain::Engine, errCode, std::move(msg), std::to_string(faultCode)));
+        }
+        if (!entry.is_array() || entry.empty()) {
+            return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                                           motrix::core::ErrorCode::ParseFailure,
+                                                           "Invalid system.multicall subcall result"));
+        }
+    }
+    if (!j[0][0].is_object() || !j[1][0].is_array() || !j[2][0].is_array() || !j[3][0].is_array()) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                                       motrix::core::ErrorCode::ParseFailure,
+                                                       "Invalid system.multicall inner payload"));
+    }
+
     EngineSyncSnapshot snap{};
-    if (j[0].is_array() && !j[0].empty() && j[0][0].is_object()) {
-        snap.globalStat = ParseGlobalStatObject(j[0][0]);
-    }
-    if (j[1].is_array() && !j[1].empty()) {
-        snap.active = ParseTaskArray(j[1][0]);
-    }
-    if (j[2].is_array() && !j[2].empty()) {
-        snap.waiting = ParseTaskArray(j[2][0]);
-    }
-    if (j[3].is_array() && !j[3].empty()) {
-        snap.stopped = ParseTaskArray(j[3][0]);
-    }
+    snap.globalStat = ParseGlobalStatObject(j[0][0]);
+    snap.active = ParseTaskArray(j[1][0]);
+    snap.waiting = ParseTaskArray(j[2][0]);
+    snap.stopped = ParseTaskArray(j[3][0]);
     return snap;
 }
 

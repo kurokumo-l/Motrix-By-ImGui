@@ -65,8 +65,20 @@ void MotrixUiShell::PrepareFrame() {
 }
 
 void MotrixUiShell::PrefillAddTaskUri(std::string_view uri) {
-    const std::size_t n = std::min(uri.size(), impl_->addForm.uriBuffer.size() - 1);
-    std::copy_n(uri.data(), n, impl_->addForm.uriBuffer.data());
+    const std::size_t cap = impl_->addForm.uriBuffer.size();
+    if (cap == 0) {
+        impl_->addForm.focusRequested = true;
+        return;
+    }
+    std::size_t n = std::min(uri.size(), cap - 1);
+    if (n < uri.size()) {
+        while (n > 0 && (static_cast<unsigned char>(uri[n]) & 0xC0u) == 0x80u) {
+            --n;
+        }
+    }
+    if (n > 0 && uri.data() != nullptr) {
+        std::copy_n(uri.data(), n, impl_->addForm.uriBuffer.data());
+    }
     impl_->addForm.uriBuffer[n] = '\0';
     impl_->addForm.focusRequested = true;
 }
@@ -79,16 +91,16 @@ namespace {
 
 void DispatchShellShortcuts(UiFrameContext& ctx) {
     const ImGuiIO& io = ImGui::GetIO();
-    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N, false)) {
+    const bool modalClosed = ctx.state.activeModal == motrix::app::ActiveModal::None
+                             && (ctx.deleteConfirm == nullptr || !ctx.deleteConfirm->open);
+    if (!io.WantTextInput && modalClosed && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N, false)) {
         ctx.sink.Dispatch(motrix::app::OpenModalCmd{motrix::app::ActiveModal::AddTask});
     }
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_T, false)) {
         ctx.sink.Dispatch(motrix::app::ToggleThemeCmd{});
     }
-    const bool inTaskList = !io.WantTextInput && ctx.state.activeSection == 0
-                            && ctx.state.activeModal == motrix::app::ActiveModal::None
-                            && ctx.state.detailedTaskGid.empty()
-                            && (ctx.deleteConfirm == nullptr || !ctx.deleteConfirm->open);
+    const bool inTaskList = !io.WantTextInput && ctx.state.activeSection == 0 && modalClosed
+                            && ctx.state.detailedTaskGid.empty();
     if (inTaskList && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
         ctx.sink.Dispatch(motrix::app::SelectAllTasksCmd{});
     }

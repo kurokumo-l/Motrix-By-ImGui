@@ -71,24 +71,33 @@ AppCoordinator::~AppCoordinator() {
 
 void AppCoordinator::BeginShutdown() {
     stopping_.store(true, std::memory_order_release);
-    if (trackerSyncWorker_.joinable()) {
-        trackerSyncWorker_.request_stop();
+    std::jthread trackerWorker;
+    std::jthread updateWorker;
+    {
+        std::scoped_lock lk(workerMutex_);
+        trackerWorker = std::move(trackerSyncWorker_);
+        updateWorker = std::move(engineUpdateWorker_);
     }
-    if (engineUpdateWorker_.joinable()) {
-        engineUpdateWorker_.request_stop();
+    if (trackerWorker.joinable()) {
+        trackerWorker.request_stop();
+    }
+    if (updateWorker.joinable()) {
+        updateWorker.request_stop();
     }
     std::unique_ptr<EngineRuntime> oldRt;
     {
         std::scoped_lock lock(engineLifecycleMu_);
         hasLiveRuntime_.store(false, std::memory_order_release);
+        engineReplacing_ = false;
+        deferredEngineOps_.clear();
         oldRt = std::move(engineRuntime_);
     }
     oldRt.reset();
-    if (trackerSyncWorker_.joinable()) {
-        trackerSyncWorker_.join();
+    if (trackerWorker.joinable()) {
+        trackerWorker.join();
     }
-    if (engineUpdateWorker_.joinable()) {
-        engineUpdateWorker_.join();
+    if (updateWorker.joinable()) {
+        updateWorker.join();
     }
 }
 
@@ -175,6 +184,7 @@ void AppCoordinator::CreateAndStartEngineRuntime(const AppStateSnapshot& state,
         .logLevel = state.prefs.logLevel,
         .enableUpnp = state.prefs.enableUpnp,
         .resumeAllWhenLaunched = state.prefs.resumeAllWhenAppLaunched,
+        .configPersistMutex = configPersistMutex_,
     };
     auto runtime = std::make_unique<EngineRuntime>(
         logger_, std::move(rtCfg), [this](const EngineSyncUpdate& update) {
@@ -192,14 +202,56 @@ void AppCoordinator::CreateAndStartEngineRuntime(const AppStateSnapshot& state,
     {
         std::scoped_lock lock(engineLifecycleMu_);
         if (stopping_.load(std::memory_order_acquire)) {
+            engineReplacing_ = false;
+            deferredEngineOps_.clear();
             discarded = std::move(runtime);
         } else {
             discarded = std::move(engineRuntime_);
             hasLiveRuntime_.store(true, std::memory_order_release);
+            engineReplacing_ = false;
             engineRuntime_ = std::move(runtime);
+            auto ops = std::move(deferredEngineOps_);
+            deferredEngineOps_.clear();
+            for (auto& op : ops) {
+                if (op) {
+                    op(*engineRuntime_);
+                }
+            }
         }
     }
     discarded.reset();
+}
+
+void AppCoordinator::ReconfigureLiveEngine(const AppStateSnapshot& state,
+                                           bool restartEngine,
+                                           bool updateUpnp) {
+    const auto effSys =
+        motrix::domain::BuildEffectiveSystemConfig(state.sysConfig, state.prefs, state.speedLimitPaused);
+    std::scoped_lock lock(engineLifecycleMu_);
+    if (!engineRuntime_) {
+        return;
+    }
+    const std::string binOverride =
+        !enginePathOverride_.empty() ? enginePathOverride_ : state.prefs.engineBinPath;
+    const std::filesystem::path engineDataDir =
+        (!persistConfig_ || appDataDir_.empty())
+            ? (std::filesystem::temp_directory_path() / "MotrixNativeEngine")
+            : appDataDir_;
+    if (updateUpnp && !restartEngine) {
+        engineRuntime_->UpdateUpnpPreference(
+            state.prefs.enableUpnp, effSys.listenPort, effSys.dhtListenPort);
+    }
+    engineRuntime_->Reconfigure(
+        EngineRuntimeConfig{
+            .appDataDir = engineDataDir,
+            .enginePathOverride = binOverride,
+            .sysConfig = effSys,
+            .logLevel = state.prefs.logLevel,
+            .enableUpnp = state.prefs.enableUpnp,
+            .resumeAllWhenLaunched = state.prefs.resumeAllWhenAppLaunched,
+            .configPersistMutex = configPersistMutex_,
+        },
+        restartEngine);
 }
 
 void AppCoordinator::EnqueueGlobalOptionsWork(std::vector<std::pair<std::string, std::string>> options) {
@@ -208,6 +260,15 @@ void AppCoordinator::EnqueueGlobalOptionsWork(std::vector<std::pair<std::string,
         engineRuntime_->Enqueue(EngineWorkCommand{
             .kind = EngineWorkCommand::Kind::ApplyGlobalOptions,
             .options = std::move(options),
+        });
+    } else if (!previewMockMode_ && engineReplacing_ && !stopping_.load(std::memory_order_acquire)) {
+        auto sharedOpts =
+            std::make_shared<std::vector<std::pair<std::string, std::string>>>(std::move(options));
+        deferredEngineOps_.push_back([sharedOpts](EngineRuntime& rt) {
+            rt.Enqueue(EngineWorkCommand{
+                .kind = EngineWorkCommand::Kind::ApplyGlobalOptions,
+                .options = *sharedOpts,
+            });
         });
     }
 }
@@ -334,6 +395,10 @@ void AppCoordinator::PersistConfigs(const AppStateSnapshot& state,
     if (appDataDir_.empty()) {
         return;
     }
+    std::unique_lock<std::mutex> persistLock;
+    if (configPersistMutex_) {
+        persistLock = std::unique_lock<std::mutex>(*configPersistMutex_);
+    }
     std::error_code ec;
     std::filesystem::create_directories(appDataDir_, ec);
     const auto userPath = appDataDir_ / "user.json";
@@ -348,7 +413,8 @@ void AppCoordinator::PersistConfigs(const AppStateSnapshot& state,
     }
     const auto confPath = appDataDir_ / "aria2.conf";
     if (saveSys && (overwrite || !std::filesystem::exists(confPath, ec))) {
-        const auto eff = motrix::domain::BuildEffectiveSystemConfig(state.sysConfig, state.prefs);
+        const auto eff = motrix::domain::BuildEffectiveSystemConfig(
+            state.sysConfig, state.prefs, state.speedLimitPaused);
         const auto rawPairs = motrix::domain::SystemConfigToOptionPairs(eff);
         std::vector<motrix::engine::EngineOptionPair> engPairs;
         engPairs.reserve(rawPairs.size() + 1);

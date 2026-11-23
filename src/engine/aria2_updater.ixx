@@ -30,6 +30,7 @@ export struct Aria2NextUpdateSpec {
     std::chrono::milliseconds timeout = std::chrono::milliseconds(30000);
     bool forceReinstall = false;
     std::stop_token stopToken = {};
+    std::string expectedSha256;
 };
 
 export struct Aria2NextStageOutcome {

@@ -135,9 +135,9 @@ void PopulatePeerProgress(const motrix::domain::DownloadTaskView& task,
     }
 }
 
-void RemoveAndClearEngineTask(motrix::engine::IEngineRpcClient& rpc,
-                              std::string_view gid,
-                              bool alreadyStopped);
+[[nodiscard]] bool RemoveAndClearEngineTask(motrix::engine::IEngineRpcClient& rpc,
+                                            std::string_view gid,
+                                            bool alreadyStopped);
 
 void ExecuteRestartTaskCommand(motrix::engine::IEngineRpcClient& rpc,
                                const motrix::engine::IEngineDialect& dialect,
@@ -151,9 +151,11 @@ void ExecuteRestartTaskCommand(motrix::engine::IEngineRpcClient& rpc,
         .options = dialect.FilterTaskOptions(BuildAddUriOptions(cmd)),
         .position = std::nullopt,
     };
-    if (auto res = rpc.AddUri(req); res) {
-        RemoveAndClearEngineTask(rpc, cmd.gid, cmd.taskInStopped);
-    } else {
+    if (!RemoveAndClearEngineTask(rpc, cmd.gid, cmd.taskInStopped)) {
+        lastErr = "Failed removing previous task before restart";
+        return;
+    }
+    if (auto res = rpc.AddUri(req); !res) {
         lastErr = res.error().message;
     }
 }
@@ -163,6 +165,7 @@ struct RemovalTargets {
     std::string dir;
     std::string btName;
     std::string infoHash;
+    bool forbidFileDelete = false;
 };
 
 [[nodiscard]] RemovalTargets CollectRemovalTargets(motrix::engine::IEngineRpcClient& rpc,
@@ -173,6 +176,10 @@ struct RemovalTargets {
     }
     auto detail = rpc.TellStatus(cmd.gid);
     if (!detail) {
+        return out;
+    }
+    if (detail->task.status == motrix::domain::TaskStatus::Complete) {
+        out.forbidFileDelete = true;
         return out;
     }
     std::vector<std::string> fullFiles;
@@ -213,23 +220,40 @@ void DeleteBtSidecarFiles(const std::filesystem::path& appDataDir, const Removal
     }
 }
 
-void RemoveAndClearEngineTask(motrix::engine::IEngineRpcClient& rpc,
-                              std::string_view gid,
-                              bool alreadyStopped) {
+[[nodiscard]] bool IsTaskGoneFromEngine(motrix::engine::IEngineRpcClient& rpc, std::string_view gid) {
+    if (!rpc.IsConnected()) {
+        return false;
+    }
+    const auto st = rpc.TellStatus(gid);
+    return !st && st.error().code == motrix::core::ErrorCode::RpcError;
+}
+
+[[nodiscard]] bool RemoveAndClearEngineTask(motrix::engine::IEngineRpcClient& rpc,
+                                            std::string_view gid,
+                                            bool alreadyStopped) {
+    if (!rpc.IsConnected()) {
+        return false;
+    }
     if (alreadyStopped) {
-        (void)rpc.RemoveDownloadResult(gid);
-        return;
+        if (rpc.RemoveDownloadResult(gid)) {
+            return true;
+        }
+        return IsTaskGoneFromEngine(rpc, gid);
     }
     (void)rpc.ForceRemove(gid);
     for (int attempt = 0; attempt < 12; ++attempt) {
         if (rpc.RemoveDownloadResult(gid)) {
-            return;
+            return true;
         }
-        if (const auto st = rpc.TellStatus(gid); !st) {
-            return;
+        if (IsTaskGoneFromEngine(rpc, gid)) {
+            return true;
+        }
+        if (!rpc.IsConnected()) {
+            return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(40));
     }
+    return false;
 }
 
 }  // namespace
@@ -266,6 +290,10 @@ void EngineRuntime::HandleApplyGlobalOptionsCmd(const EngineWorkCommand& cmd, st
     }
     if (!config_.appDataDir.empty() && !cmd.options.empty()) {
         const auto confOpts = dialect_->FilterGlobalOptions(allOpts);
+        std::unique_lock<std::mutex> persistLock;
+        if (config_.configPersistMutex) {
+            persistLock = std::unique_lock<std::mutex>(*config_.configPersistMutex);
+        }
         (void)motrix::core::WriteTextAtomic(config_.appDataDir / "aria2.conf",
                                             motrix::engine::FormatAria2Conf(confOpts));
     }
@@ -394,8 +422,11 @@ void EngineRuntime::HandleTaskControlCommand(const EngineWorkCommand& cmd,
 
 void EngineRuntime::ExecuteRemoveCommand(const EngineWorkCommand& cmd) {
     const RemovalTargets targets = CollectRemovalTargets(*rpc_, cmd);
-    RemoveAndClearEngineTask(*rpc_, cmd.gid, cmd.taskInStopped);
-    if (!cmd.deleteFiles) {
+    if (!RemoveAndClearEngineTask(*rpc_, cmd.gid, cmd.taskInStopped)) {
+        logger_.Warn("rpc", "Failed removing engine task {}; skipping file deletion", cmd.gid);
+        return;
+    }
+    if (!cmd.deleteFiles || targets.forbidFileDelete) {
         return;
     }
     DeleteRemovedTaskFiles(targets.files, targets.dir);

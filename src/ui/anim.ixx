@@ -6,6 +6,7 @@ namespace motrix::ui {
 
 export struct CachedTextureSlot {
     std::uint64_t texId = 0;
+    std::uint64_t generation = 0;
     int texW = 0;
     int texH = 0;
     bool dark = false;

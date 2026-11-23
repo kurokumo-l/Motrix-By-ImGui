@@ -4,6 +4,7 @@ import std;
 import motrix.core;
 import motrix.domain;
 import motrix.engine;
+import motrix.ipc;
 import motrix.app;
 import motrix.test_server;
 
@@ -110,6 +111,64 @@ TEST_CASE("JSON-RPC builders and frame parser handle requests, errors, and pushe
     CHECK(pushFrame->notification.gid == "0001");
 
     CHECK_FALSE(ParseRpcFrame("broken{json").has_value());
+}
+
+TEST_CASE(
+    "JSON-RPC builder handles invalid UTF-8 and parser rejects multicall faults and non-finite media",
+    "[engine][rpc][json]") {
+    AddUriRequest badUtf8Req{};
+    badUtf8Req.uris = {"https://example.com/\xFF\xFE/test.bin"};
+    badUtf8Req.options = {{"out", std::string("bad\x80name.bin")}};
+    const std::string rpcPayload = BuildAddUriRpcRequest("req-bad-utf8", "sec\xFF", badUtf8Req);
+    CHECK(rpcPayload.find("\"aria2.addUri\"") != std::string::npos);
+
+    motrix::ipc::StartupPayload badIpc{};
+    badIpc.uris = {"https://example.com/\xFF\xFE/test.bin"};
+    const std::string ipcJson = motrix::ipc::SerializeStartupPayload(badIpc);
+    CHECK(ipcJson.find("\"uris\"") != std::string::npos);
+
+    const auto faultMulticall = ParseMulticallSyncJson(
+        R"([[{"numActive":"0"}],{"faultCode":1,"faultString":"Unauthorized"},[[]],[[]]])");
+    REQUIRE_FALSE(faultMulticall.has_value());
+    CHECK(faultMulticall.error().code == motrix::core::ErrorCode::RpcError);
+
+    const auto infMedia = ParseTaskListJson(R"([{
+        "gid":"00000000000000e1",
+        "status":"active",
+        "totalLength":"0",
+        "completedLength":"0",
+        "files":[{"index":"1","path":"C:/dl/inf.mp4","length":"0","completedLength":"0","selected":"true"}],
+        "media":{"protocol":"hls","progress":"inf","live":"false"}
+    },{
+        "gid":"00000000000000e2",
+        "status":"active",
+        "totalLength":"0",
+        "completedLength":"0",
+        "files":[{"index":"1","path":"C:/dl/nan.mp4","length":"0","completedLength":"0","selected":"true"}],
+        "media":{"protocol":"hls","progress":"nan","live":"false"}
+    },{
+        "gid":"00000000000000e3",
+        "status":"active",
+        "totalLength":"0",
+        "completedLength":"0",
+        "files":[{"index":"1","path":"C:/dl/huge.mp4","length":"0","completedLength":"0","selected":"true"}],
+        "media":{
+            "protocol":"collection",
+            "duration":"18446744073709551615",
+            "tracks":[{"bandwidth":"18446744073709551615","selected":"true"}]
+        }
+    }])");
+    REQUIRE(infMedia.has_value());
+    REQUIRE(infMedia->size() == 3);
+    CHECK((*infMedia)[0].mediaProgress < 0.0f);
+    CHECK((*infMedia)[1].mediaProgress < 0.0f);
+    CHECK((*infMedia)[2].totalLength == (std::numeric_limits<std::uint64_t>::max)());
+
+    const auto overflowPort = ParsePeersJson(
+        R"([{"peerId":"-qB4600-123456789012","ip":"127.0.0.1","port":4294967376,"bitfield":"ff"}])", 8);
+    REQUIRE(overflowPort.has_value());
+    REQUIRE(overflowPort->size() == 1);
+    CHECK((*overflowPort)[0].port == 0);
 }
 
 TEST_CASE("Task list parser parses HTTP/BT tasks and truncates files over 64 prioritizing selected",
@@ -238,18 +297,17 @@ TEST_CASE("Task list parser parses HTTP/BT tasks and truncates files over 64 pri
 TEST_CASE("Live engine process spawn and WebSocket JSON-RPC smoke test", "[engine][live]") {
     const auto exeOpt = DiscoverEngineExecutable("");
     if (!exeOpt.has_value()) {
-        SUCCEED("No local aria2c/aria2-next binary found; skipping live smoke test.");
-        return;
+        if (motrix::test::ShouldRequireLiveTests()) {
+            FAIL("No local aria2c/aria2-next binary found while MOTRIX_REQUIRE_LIVE_TESTS=1.");
+        }
+        SKIP("No local aria2c/aria2-next binary found; skipping live smoke test.");
     }
 
     const auto probe = ProbeEngineBinaryVersion(*exeOpt);
     REQUIRE(probe.has_value());
     INFO("Detected engine: " << probe->product << " " << probe->version);
 
-    const auto tempDir = std::filesystem::temp_directory_path() / "motrix_native_m2_live_test";
-    std::error_code ec;
-    std::filesystem::remove_all(tempDir, ec);
-    std::filesystem::create_directories(tempDir, ec);
+    const auto tempDir = motrix::test::MakeUniqueTempDir("motrix_native_m2_live_test");
     struct TempGuard {
         std::filesystem::path dir;
         ~TempGuard() {
@@ -262,14 +320,14 @@ TEST_CASE("Live engine process spawn and WebSocket JSON-RPC smoke test", "[engin
     auto proc = CreateEngineProcessManager(logger);
     REQUIRE(proc != nullptr);
 
-    constexpr std::uint16_t kTestPort = 26890;
+    const std::uint16_t testPort = motrix::test::PickFreeEphemeralPort();
     const std::string kSecret = "m2_smoke_secret";
     const auto probeDialect = CreateDialect(probe->kind);
     EngineSpawnSpec spec{};
     spec.executablePath = *exeOpt;
     spec.hintKind = probe->kind;
     spec.launchOptions = EngineLaunchOptions{
-        .rpcPort = kTestPort,
+        .rpcPort = testPort,
         .rpcSecret = kSecret,
         .stateOrSessionPath = probeDialect->UsesStateDirInsteadOfAria2Files()
                                   ? (tempDir / "state")
@@ -286,7 +344,7 @@ TEST_CASE("Live engine process spawn and WebSocket JSON-RPC smoke test", "[engin
     REQUIRE(rpc != nullptr);
     const RpcConnectionOptions connOpts{
         .host = "127.0.0.1",
-        .port = kTestPort,
+        .port = testPort,
         .secret = kSecret,
     };
     bool connected = false;
@@ -360,10 +418,8 @@ namespace {
 
 struct ConfSyncTempDir {
     std::filesystem::path root;
-    explicit ConfSyncTempDir(std::string_view suffix)
-        : root(std::filesystem::temp_directory_path() / suffix) {
+    explicit ConfSyncTempDir(std::string_view suffix) : root(motrix::test::MakeUniqueTempDir(suffix)) {
         std::error_code ec;
-        std::filesystem::remove_all(root, ec);
         std::filesystem::create_directories(root / "app", ec);
         std::filesystem::create_directories(root / "dl", ec);
     }
@@ -382,7 +438,7 @@ struct ConfSyncTempDir {
     sys.rpcSecret = "conf_sync_sec";
     sys.dir = motrix::core::PathToUtf8(td.root / "dl");
     sys.listenPort = motrix::test::PickFreeEphemeralPort();
-    sys.dhtListenPort = motrix::test::PickFreeEphemeralPort();
+    sys.dhtListenPort = motrix::test::PickFreeUdpLoopbackPort();
     REQUIRE(
         motrix::core::WriteTextAtomic(td.root / "app" / "user.json", SerializeUserPreferencesJson(prefs))
             .has_value());
@@ -400,14 +456,15 @@ TEST_CASE("Live aria2.conf generation and SavePreferencesCmd live RPC option syn
     using namespace motrix::test;
     const auto exeOpt = DiscoverEngineExecutable("");
     if (!exeOpt.has_value()) {
-        SUCCEED("No local aria2c/aria2-next binary found; skipping.");
-        return;
+        if (motrix::test::ShouldRequireLiveTests()) {
+            FAIL("No local aria2c/aria2-next binary found while MOTRIX_REQUIRE_LIVE_TESTS=1.");
+        }
+        SKIP("No local aria2c/aria2-next binary found; skipping.");
     }
     const auto probe = ProbeEngineBinaryVersion(*exeOpt);
     REQUIRE(probe.has_value());
     if (probe->kind != EngineKind::Aria2Next) {
-        SUCCEED("aria2-next test skipped on classic aria2.");
-        return;
+        SKIP("aria2-next test skipped on classic aria2.");
     }
 
     ConfSyncTempDir td("motrix_native_conf_sync_suite");

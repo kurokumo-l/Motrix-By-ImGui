@@ -5,6 +5,12 @@ import motrix.core;
 
 namespace motrix::platform {
 
+export enum class PresentResult {
+    Ok,
+    Occluded,
+    DeviceLost,
+};
+
 export class Dx11Context {
 public:
     Dx11Context();
@@ -17,10 +23,11 @@ public:
     void Shutdown();
     void Trim() noexcept;
     [[nodiscard]] bool IsInitialized() const noexcept;
+    [[nodiscard]] bool IsDeviceLost() const noexcept;
 
-    void Resize(std::uint32_t width, std::uint32_t height);
-    void BeginRenderPass(float r, float g, float b, float a);
-    [[nodiscard]] bool PresentFrame(bool vsync);
+    [[nodiscard]] bool Resize(std::uint32_t width, std::uint32_t height);
+    [[nodiscard]] bool BeginRenderPass(float r, float g, float b, float a);
+    [[nodiscard]] PresentResult PresentFrame(bool vsync);
     [[nodiscard]] bool IsOccludedStillActive();
     [[nodiscard]] bool CaptureSwapChainPng(const std::filesystem::path& outputPath);
 

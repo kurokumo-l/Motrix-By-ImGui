@@ -41,28 +41,49 @@ struct LocalTestServer::Impl {
     std::vector<std::uint8_t> chunkedData = LocalTestServer::MakePatternBytes(64 * 1024, 0x55);
 
     std::jthread acceptThread;
+    std::mutex sockMu;
+    std::unordered_set<SOCKET> activeClientSocks;
     std::mutex workerMu;
     std::vector<std::jthread> workers;
 
     void Start() {
-        listenSock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (s == INVALID_SOCKET) {
+            throw std::runtime_error("LocalTestServer: socket() failed");
+        }
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
         addr.sin_port = 0;
-        ::bind(listenSock, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
         socklen_t len = sizeof(addr);
-        ::getsockname(listenSock, reinterpret_cast<sockaddr*>(&addr), &len);
+        if (::bind(s, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0
+            || ::getsockname(s, reinterpret_cast<sockaddr*>(&addr), &len) != 0
+            || ::listen(s, SOMAXCONN) != 0) {
+            ::closesocket(s);
+            throw std::runtime_error("LocalTestServer: bind/getsockname/listen failed");
+        }
+        {
+            std::scoped_lock lock(sockMu);
+            listenSock = s;
+        }
         port = ::ntohs(addr.sin_port);
-        ::listen(listenSock, SOMAXCONN);
         acceptThread = std::jthread([this](std::stop_token) { AcceptLoop(); });
     }
 
     void Stop() {
         stopping.store(true, std::memory_order_release);
-        if (listenSock != INVALID_SOCKET) {
-            ::closesocket(listenSock);
-            listenSock = INVALID_SOCKET;
+        SOCKET ls = INVALID_SOCKET;
+        std::vector<SOCKET> clientCopy;
+        {
+            std::scoped_lock lock(sockMu);
+            ls = std::exchange(listenSock, INVALID_SOCKET);
+            clientCopy.assign(activeClientSocks.begin(), activeClientSocks.end());
+        }
+        if (ls != INVALID_SOCKET) {
+            ::closesocket(ls);
+        }
+        for (SOCKET c : clientCopy) {
+            ::shutdown(c, SD_BOTH);
         }
         if (acceptThread.joinable()) {
             acceptThread.join();
@@ -77,15 +98,41 @@ struct LocalTestServer::Impl {
                 w.join();
             }
         }
+        std::unordered_set<SOCKET> leftover;
+        {
+            std::scoped_lock lock(sockMu);
+            leftover.swap(activeClientSocks);
+        }
+        for (SOCKET c : leftover) {
+            ::shutdown(c, SD_BOTH);
+            ::closesocket(c);
+        }
     }
 
     void AcceptLoop() {
         while (!stopping.load(std::memory_order_acquire)) {
+            SOCKET ls = INVALID_SOCKET;
+            {
+                std::scoped_lock lock(sockMu);
+                ls = listenSock;
+            }
+            if (ls == INVALID_SOCKET) {
+                break;
+            }
             sockaddr_in cli{};
             socklen_t clen = sizeof(cli);
-            SOCKET c = ::accept(listenSock, reinterpret_cast<sockaddr*>(&cli), &clen);
+            SOCKET c = ::accept(ls, reinterpret_cast<sockaddr*>(&cli), &clen);
             if (c == INVALID_SOCKET) {
                 break;
+            }
+            if (stopping.load(std::memory_order_acquire)) {
+                ::shutdown(c, SD_BOTH);
+                ::closesocket(c);
+                break;
+            }
+            {
+                std::scoped_lock lock(sockMu);
+                activeClientSocks.insert(c);
             }
             std::scoped_lock lock(workerMu);
             workers.emplace_back([this, c](std::stop_token) { HandleClient(c); });
@@ -113,8 +160,15 @@ struct LocalTestServer::Impl {
                     std::scoped_lock lock(impl.mu);
                     --impl.activeConns;
                 }
-                ::shutdown(sock, SD_BOTH);
-                ::closesocket(sock);
+                bool shouldClose = false;
+                {
+                    std::scoped_lock lock(impl.sockMu);
+                    shouldClose = (impl.activeClientSocks.erase(sock) > 0);
+                }
+                if (shouldClose) {
+                    ::shutdown(sock, SD_BOTH);
+                    ::closesocket(sock);
+                }
             }
         } guard(*this, s);
 
@@ -184,11 +238,11 @@ struct LocalTestServer::Impl {
                 stats.lastCookie = hdrs["cookie"];
                 stats.lastAuthorization = hdrs["authorization"];
             }
-            ServeBytes(s, smallData, hdrs["range"], isHead, false);
+            ServeBytes(s, smallData, hdrs["range"], isHead, 0);
             return;
         }
         if (path.starts_with("/exact/small/")) {
-            ServeBytes(s, smallData, hdrs["range"], isHead, false);
+            ServeBytes(s, smallData, hdrs["range"], isHead, 0);
             return;
         }
         if (path.starts_with("/exact/multi/")) {
@@ -210,7 +264,7 @@ struct LocalTestServer::Impl {
                     s, "HTTP/1.1 503 Unavailable\r\nContent-Length: 4\r\nConnection: close\r\n\r\nwait");
                 return;
             }
-            ServeBytes(s, toggleData, hdrs["range"], isHead, false);
+            ServeBytes(s, toggleData, hdrs["range"], isHead, 0);
             return;
         }
         if (path.starts_with("/redirect/")) {
@@ -221,10 +275,19 @@ struct LocalTestServer::Impl {
         }
         if (path.starts_with("/chunked/")) {
             SendText(s,
-                     "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: "
-                     "close\r\n\r\n");
+                     "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
+                     "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
             if (!isHead) {
-                SendAll(s, reinterpret_cast<const char*>(chunkedData.data()), chunkedData.size());
+                constexpr std::size_t kChunkBytes = 4096;
+                for (std::size_t off = 0; off < chunkedData.size(); off += kChunkBytes) {
+                    const std::size_t n = std::min(kChunkBytes, chunkedData.size() - off);
+                    if (!SendText(s, std::format("{:x}\r\n", n))
+                        || !SendAll(s, reinterpret_cast<const char*>(chunkedData.data() + off), n)
+                        || !SendText(s, "\r\n")) {
+                        return;
+                    }
+                }
+                (void)SendText(s, "0\r\n\r\n");
             }
             return;
         }

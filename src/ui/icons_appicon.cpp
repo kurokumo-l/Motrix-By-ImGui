@@ -170,9 +170,11 @@ void DrawMotrixAppIcon(const AppIconSpec& spec) {
     if (spec.host != nullptr && spec.cache != nullptr) {
         CachedTextureSlot& cache = *spec.cache;
         const int targetPx = std::clamp(static_cast<int>(std::lround(spec.size * 2.5f)), 128, 256);
-        if (cache.owner != spec.host) {
+        const std::uint64_t hostGen = spec.host->TextureGeneration();
+        if (cache.owner != spec.host || cache.generation != hostGen) {
             cache.texId = 0;
             cache.owner = spec.host;
+            cache.generation = 0;
         }
         if (cache.texId == 0 || cache.texW != targetPx || cache.dark != spec.dark) {
             const auto pixels = BuildAppIconPixels(targetPx, spec.dark);
@@ -180,6 +182,7 @@ void DrawMotrixAppIcon(const AppIconSpec& spec) {
                 spec.host->UploadRgbaTexture(cache.texId, targetPx, targetPx, pixels);
             if (uploaded != 0) {
                 cache.texId = uploaded;
+                cache.generation = hostGen;
                 cache.texW = targetPx;
                 cache.texH = targetPx;
                 cache.dark = spec.dark;

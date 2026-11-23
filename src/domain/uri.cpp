@@ -7,6 +7,15 @@ namespace motrix::domain {
 
 namespace {
 
+[[nodiscard]] bool HasAsciiControlChars(std::string_view text) noexcept {
+    for (const unsigned char ch : text) {
+        if (ch < 0x20u || ch == 0x7Fu) {
+            return true;
+        }
+    }
+    return false;
+}
+
 [[nodiscard]] int Base64Value(unsigned char ch) noexcept {
     if (ch >= 'A' && ch <= 'Z')
         return ch - 'A';
@@ -22,26 +31,47 @@ namespace {
 }
 
 [[nodiscard]] motrix::core::Result<std::string> DecodeBase64(std::string_view input) {
+    std::size_t padCount = 0;
+    while (padCount < input.size() && input[input.size() - 1u - padCount] == '=') {
+        ++padCount;
+    }
+    if (padCount > 2u || (padCount > 0u && input.size() % 4u != 0u)) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Domain,
+                                                       motrix::core::ErrorCode::ParseFailure,
+                                                       "Invalid base64 padding in thunder URI"));
+    }
+
+    const std::string_view payload = input.substr(0, input.size() - padCount);
+    const std::size_t rem = payload.size() % 4u;
+    if (rem == 1u || (padCount > 0u && padCount != (4u - rem))) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Domain,
+                                                       motrix::core::ErrorCode::ParseFailure,
+                                                       "Invalid base64 length in thunder URI"));
+    }
+
     std::string out;
-    out.reserve((input.size() * 3) / 4);
-    int val = 0;
+    out.reserve((payload.size() / 4u) * 3u + 2u);
+    std::uint32_t val = 0;
     int valb = -8;
-    for (unsigned char ch : input) {
-        if (ch == '=') {
-            break;
-        }
+    for (const unsigned char ch : payload) {
         const int d = Base64Value(ch);
         if (d < 0) {
             return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Domain,
                                                            motrix::core::ErrorCode::ParseFailure,
                                                            "Invalid base64 character in thunder URI"));
         }
-        val = (val << 6) + d;
+        val = (val << 6) | static_cast<std::uint32_t>(d);
         valb += 6;
         if (valb >= 0) {
-            out.push_back(static_cast<char>((val >> valb) & 0xFF));
+            out.push_back(static_cast<char>((val >> valb) & 0xFFu));
+            val &= (valb == 0) ? 0u : ((1u << valb) - 1u);
             valb -= 8;
         }
+    }
+    if (val != 0u) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Domain,
+                                                       motrix::core::ErrorCode::ParseFailure,
+                                                       "Non-zero base64 padding bits in thunder URI"));
     }
     return out;
 }
@@ -56,11 +86,11 @@ namespace {
     return -1;
 }
 
-[[nodiscard]] std::string UrlDecode(std::string_view text) {
+[[nodiscard]] std::string PercentDecodeImpl(std::string_view text, bool plusAsSpace) {
     std::string out;
     out.reserve(text.size());
     for (std::size_t i = 0; i < text.size(); ++i) {
-        if (text[i] == '+') {
+        if (plusAsSpace && text[i] == '+') {
             out.push_back(' ');
             continue;
         }
@@ -74,6 +104,25 @@ namespace {
             }
         }
         out.push_back(text[i]);
+    }
+    return out;
+}
+
+[[nodiscard]] std::string UrlDecode(std::string_view text) {
+    return PercentDecodeImpl(text, true);
+}
+
+[[nodiscard]] std::string PercentDecodeUri(std::string_view text) {
+    return PercentDecodeImpl(text, false);
+}
+
+[[nodiscard]] std::string StripControlChars(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for (const unsigned char ch : text) {
+        if (ch >= 0x20u && ch != 0x7Fu) {
+            out.push_back(static_cast<char>(ch));
+        }
     }
     return out;
 }
@@ -97,8 +146,12 @@ using motrix::core::StartsWithAsciiInsensitive;
 
 motrix::core::Result<std::string> DecodeThunderUri(std::string_view uri) {
     const std::string_view trimmed = motrix::core::TrimAscii(uri);
-    const std::string lowerPrefix = motrix::core::AsciiLower(trimmed.substr(0, 10));
-    if (lowerPrefix != "thunder://") {
+    if (HasAsciiControlChars(trimmed)) {
+        return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Domain,
+                                                       motrix::core::ErrorCode::ParseFailure,
+                                                       "URI contains control characters"));
+    }
+    if (!StartsWithAsciiInsensitive(trimmed, "thunder://")) {
         return std::string(trimmed);
     }
 
@@ -112,7 +165,17 @@ motrix::core::Result<std::string> DecodeThunderUri(std::string_view uri) {
                                                        motrix::core::ErrorCode::ParseFailure,
                                                        "Thunder payload missing AA/ZZ delimiters"));
     }
-    return decoded->substr(2, decoded->size() - 4);
+    const std::string inner = decoded->substr(2, decoded->size() - 4);
+    const std::string_view innerTrimmed = motrix::core::TrimAscii(inner);
+    if (HasAsciiControlChars(inner) || innerTrimmed.empty() || innerTrimmed.starts_with('-')
+        || StartsWithAsciiInsensitive(innerTrimmed, "thunder://")
+        || !IsSupportedDownloadUri(innerTrimmed)) {
+        return std::unexpected(
+            motrix::core::MakeError(motrix::core::ErrorDomain::Domain,
+                                    motrix::core::ErrorCode::ParseFailure,
+                                    "Thunder payload is not a supported download URI"));
+    }
+    return std::string(innerTrimmed);
 }
 
 std::vector<std::string> SplitAndNormalizeUris(std::string_view rawInput) {
@@ -124,15 +187,17 @@ std::vector<std::string> SplitAndNormalizeUris(std::string_view rawInput) {
         const std::string_view line = motrix::core::TrimAscii(rawInput.substr(pos, end - pos));
         pos = end + 1;
 
-        if (line.empty()) {
+        if (line.empty() || HasAsciiControlChars(line)) {
             continue;
         }
-        auto decoded = DecodeThunderUri(line);
-        if (decoded && !decoded->empty()) {
-            result.push_back(std::move(*decoded));
-        } else {
-            result.emplace_back(line);
+        if (StartsWithAsciiInsensitive(line, "thunder://")) {
+            auto decoded = DecodeThunderUri(line);
+            if (decoded && !decoded->empty()) {
+                result.push_back(std::move(*decoded));
+            }
+            continue;
         }
+        result.emplace_back(line);
     }
     return result;
 }
@@ -156,19 +221,23 @@ bool IsMagnetUri(std::string_view uri) noexcept {
 }
 
 std::string ExtractMagnetDisplayName(std::string_view uri) {
-    if (!IsMagnetUri(uri)) {
+    const std::string_view trimmed = motrix::core::TrimAscii(uri);
+    if (!IsMagnetUri(trimmed)) {
         return {};
     }
-    const std::size_t q = uri.find('?');
+    const std::size_t q = trimmed.find('?');
     if (q == std::string_view::npos) {
         return {};
     }
-    std::string_view query = uri.substr(q + 1);
+    std::string_view query = trimmed.substr(q + 1);
+    if (const std::size_t hashPos = query.find('#'); hashPos != std::string_view::npos) {
+        query = query.substr(0, hashPos);
+    }
     while (!query.empty()) {
         const std::size_t amp = query.find('&');
         const std::string_view part = (amp == std::string_view::npos) ? query : query.substr(0, amp);
-        if (part.starts_with("dn=")) {
-            return UrlDecode(part.substr(3));
+        if (StartsWithAsciiInsensitive(part, "dn=")) {
+            return StripControlChars(UrlDecode(part.substr(3)));
         }
         if (amp == std::string_view::npos) {
             break;
@@ -180,7 +249,7 @@ std::string ExtractMagnetDisplayName(std::string_view uri) {
 
 bool IsSupportedDownloadUri(std::string_view uri) noexcept {
     const std::string_view trimmed = motrix::core::TrimAscii(uri);
-    if (trimmed.empty()) {
+    if (trimmed.empty() || HasAsciiControlChars(trimmed)) {
         return false;
     }
     constexpr std::array<std::string_view, 6> kSchemes = {
@@ -203,7 +272,7 @@ ParsedDeepLink ParseMotrixDeepLink(std::string_view uri) {
     ParsedDeepLink out{};
     const std::string_view trimmed = motrix::core::TrimAscii(uri);
     std::size_t prefixLen = 0;
-    if (!IsMotrixDeepLinkScheme(trimmed, prefixLen)) {
+    if (HasAsciiControlChars(trimmed) || !IsMotrixDeepLinkScheme(trimmed, prefixLen)) {
         return out;
     }
 
@@ -251,7 +320,14 @@ ParsedDeepLink ParseMotrixDeepLink(std::string_view uri) {
         if (const std::size_t eq = part.find('='); eq != std::string_view::npos) {
             const std::string keyLower = motrix::core::AsciiLower(part.substr(0, eq));
             if (keyLower == "uri") {
-                out.uriParam = UrlDecode(part.substr(eq + 1));
+                const std::string decodedUri = PercentDecodeUri(part.substr(eq + 1));
+                const std::string_view decodedTrimmed = motrix::core::TrimAscii(decodedUri);
+                if (!HasAsciiControlChars(decodedUri) && !decodedTrimmed.starts_with('-')
+                    && IsSupportedDownloadUri(decodedTrimmed)) {
+                    out.uriParam = std::string(decodedTrimmed);
+                } else {
+                    out.uriParam.clear();
+                }
             }
         }
         if (amp == std::string_view::npos) {
@@ -265,7 +341,7 @@ ParsedDeepLink ParseMotrixDeepLink(std::string_view uri) {
 ClassifiedStartupArg ClassifyStartupArg(std::string_view arg) {
     ClassifiedStartupArg out{};
     const std::string_view cleaned = motrix::core::TrimQuotedArg(arg);
-    if (cleaned.empty() || cleaned.starts_with('-')) {
+    if (cleaned.empty() || cleaned.starts_with('-') || HasAsciiControlChars(cleaned)) {
         return out;
     }
 
@@ -278,14 +354,16 @@ ClassifiedStartupArg ClassifyStartupArg(std::string_view arg) {
     }
 
     if (IsSupportedDownloadUri(cleaned)) {
-        out.kind = StartupArgKind::ResourceUri;
         if (StartsWithAsciiInsensitive(cleaned, "thunder://")) {
             auto decoded = DecodeThunderUri(cleaned);
-            if (decoded && !decoded->empty()) {
-                out.uri = std::move(*decoded);
+            if (!decoded || decoded->empty()) {
                 return out;
             }
+            out.kind = StartupArgKind::ResourceUri;
+            out.uri = std::move(*decoded);
+            return out;
         }
+        out.kind = StartupArgKind::ResourceUri;
         out.uri = std::string(cleaned);
         return out;
     }

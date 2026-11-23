@@ -53,24 +53,139 @@ private:
     HINTERNET handle_ = nullptr;
 };
 
-struct CancelableWinHttp {
-    std::mutex mu;
-    HINTERNET handle = nullptr;
-    explicit CancelableWinHttp(UniqueWinHttpHandle& u) noexcept : handle(u.Release()) {}
-    ~CancelableWinHttp() { Close(); }
-    HINTERNET Raw() noexcept {
-        std::scoped_lock lk(mu);
-        return handle;
+struct AsyncHttpContext {
+    motrix::core::UniqueHandle opEvent;
+    motrix::core::UniqueHandle cancelEvent;
+    motrix::core::UniqueHandle closedEvent;
+    std::atomic<DWORD> opError{ERROR_SUCCESS};
+    std::atomic<DWORD> availBytes{0};
+    std::atomic<DWORD> bytesRead{0};
+    std::array<char, kReadChunkBytes> readBuffer{};
+};
+
+void CALLBACK AsyncWinHttpStatusCallback(HINTERNET,
+                                         DWORD_PTR dwContext,
+                                         DWORD dwInternetStatus,
+                                         LPVOID lpvStatusInformation,
+                                         DWORD dwStatusInformationLength) {
+    if (dwContext == 0) {
+        return;
     }
-    HINTERNET Detach() noexcept {
-        std::scoped_lock lk(mu);
-        return std::exchange(handle, nullptr);
+    auto* ctx = reinterpret_cast<AsyncHttpContext*>(dwContext);
+    switch (dwInternetStatus) {
+        case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING: ::SetEvent(ctx->closedEvent.Get()); return;
+        case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
+        case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
+            ctx->opError.store(ERROR_SUCCESS, std::memory_order_release);
+            ::SetEvent(ctx->opEvent.Get());
+            return;
+        case WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE: {
+            const DWORD avail = (lpvStatusInformation && dwStatusInformationLength >= sizeof(DWORD))
+                                    ? *static_cast<const DWORD*>(lpvStatusInformation)
+                                    : 0u;
+            ctx->availBytes.store(avail, std::memory_order_release);
+            ctx->opError.store(ERROR_SUCCESS, std::memory_order_release);
+            ::SetEvent(ctx->opEvent.Get());
+            return;
+        }
+        case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
+            ctx->bytesRead.store(dwStatusInformationLength, std::memory_order_release);
+            ctx->opError.store(ERROR_SUCCESS, std::memory_order_release);
+            ::SetEvent(ctx->opEvent.Get());
+            return;
+        case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR: {
+            const auto* res = static_cast<const WINHTTP_ASYNC_RESULT*>(lpvStatusInformation);
+            const DWORD err = res ? res->dwError : ERROR_WINHTTP_OPERATION_CANCELLED;
+            ctx->opError.store(err, std::memory_order_release);
+            ::SetEvent(ctx->opEvent.Get());
+            return;
+        }
+        default: return;
     }
-    void Close() noexcept {
-        if (HINTERNET raw = Detach()) {
-            ::WinHttpCloseHandle(raw);
+}
+
+class AsyncHttpRequest {
+public:
+    AsyncHttpRequest() = default;
+    ~AsyncHttpRequest() {
+        Cancel();
+        if (callbackBound_ && ctx_ && ctx_->closedEvent.IsValid()) {
+            ::WaitForSingleObject(ctx_->closedEvent.Get(), INFINITE);
         }
     }
+
+    AsyncHttpRequest(const AsyncHttpRequest&) = delete;
+    AsyncHttpRequest& operator=(const AsyncHttpRequest&) = delete;
+
+    [[nodiscard]] bool Init(UniqueWinHttpHandle& rawReq) {
+        auto ctx = std::make_unique<AsyncHttpContext>();
+        ctx->opEvent.Reset(::CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        ctx->cancelEvent.Reset(::CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        ctx->closedEvent.Reset(::CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!ctx->opEvent.IsValid() || !ctx->cancelEvent.IsValid() || !ctx->closedEvent.IsValid()) {
+            return false;
+        }
+
+        DWORD_PTR ctxVal = reinterpret_cast<DWORD_PTR>(ctx.get());
+        if (!::WinHttpSetOption(rawReq.Get(), WINHTTP_OPTION_CONTEXT_VALUE, &ctxVal, sizeof(ctxVal))) {
+            return false;
+        }
+        const WINHTTP_STATUS_CALLBACK prev = ::WinHttpSetStatusCallback(
+            rawReq.Get(),
+            &AsyncWinHttpStatusCallback,
+            WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_HANDLES,
+            0);
+        if (prev == WINHTTP_INVALID_STATUS_CALLBACK) {
+            return false;
+        }
+        ctx_ = std::move(ctx);
+        callbackBound_ = true;
+        handle_ = rawReq.Release();
+        return true;
+    }
+
+    HINTERNET BeginApiCall() noexcept {
+        std::scoped_lock lk(mu_);
+        if (closing_ || handle_ == nullptr) {
+            return nullptr;
+        }
+        ++inFlightCalls_;
+        return handle_;
+    }
+
+    void EndApiCall() noexcept {
+        std::scoped_lock lk(mu_);
+        if (--inFlightCalls_ == 0 && closing_) {
+            cv_.notify_all();
+        }
+    }
+
+    void Cancel() noexcept {
+        HINTERNET toClose = nullptr;
+        {
+            std::unique_lock lk(mu_);
+            closing_ = true;
+            if (ctx_ && ctx_->cancelEvent.IsValid()) {
+                ::SetEvent(ctx_->cancelEvent.Get());
+            }
+            cv_.wait(lk, [&] { return inFlightCalls_ == 0; });
+            toClose = std::exchange(handle_, nullptr);
+        }
+        if (toClose != nullptr) {
+            ::WinHttpCloseHandle(toClose);
+        }
+    }
+
+    [[nodiscard]] AsyncHttpContext* Context() const noexcept { return ctx_.get(); }
+
+private:
+    std::mutex mu_;
+    std::condition_variable cv_;
+    std::unique_ptr<AsyncHttpContext> ctx_;
+    HINTERNET handle_ = nullptr;
+    int inFlightCalls_ = 0;
+    bool closing_ = false;
+    bool callbackBound_ = false;
 };
 
 [[nodiscard]] std::string FormatWinHttpError(DWORD err) {
@@ -92,16 +207,27 @@ struct CancelableWinHttp {
     return std::format("{} (code {})", motrix::core::TrimAscii(utf8), err);
 }
 
-[[nodiscard]] std::string NormalizeWinHttpProxy(std::string_view proxyUrl) {
+[[nodiscard]] std::expected<std::string, std::string> NormalizeWinHttpProxy(std::string_view proxyUrl) {
     std::string_view trimmed = motrix::core::TrimAscii(proxyUrl);
     if (trimmed.empty()) {
-        return {};
+        return std::string{};
+    }
+    for (const char ch : trimmed) {
+        if (static_cast<unsigned char>(ch) < 0x20u || ch == 0x7Fu) {
+            return std::unexpected(std::string("Proxy URL contains invalid control characters"));
+        }
     }
     const std::string lower = motrix::core::AsciiLower(trimmed);
+    if (lower.starts_with("socks")) {
+        return std::unexpected(std::string("SOCKS proxy is not supported by WinHTTP"));
+    }
     if (lower.starts_with("http://")) {
         trimmed.remove_prefix(7);
     } else if (lower.starts_with("https://")) {
         trimmed.remove_prefix(8);
+    }
+    if (trimmed.find('@') != std::string_view::npos) {
+        return std::unexpected(std::string("Proxy credentials in URL are not supported by WinHTTP"));
     }
     while (!trimmed.empty() && trimmed.back() == '/') {
         trimmed.remove_suffix(1);
@@ -116,8 +242,8 @@ struct CrackedHttpUrl {
     INTERNET_PORT port = INTERNET_DEFAULT_HTTP_PORT;
 };
 
-[[nodiscard]] std::string FormatUrlErr(std::string_view op, std::string_view url) {
-    return std::format("{} failed for '{}': {}", op, url, FormatWinHttpError(::GetLastError()));
+[[nodiscard]] std::string FormatUrlErr(std::string_view op, std::string_view url, DWORD err) {
+    return std::format("{} failed for '{}': {}", op, url, FormatWinHttpError(err));
 }
 
 [[nodiscard]] std::expected<CrackedHttpUrl, std::string> CrackHttpUrl(std::string_view trimmedUrl) {
@@ -135,7 +261,7 @@ struct CrackedHttpUrl {
     uc.lpszUrlPath = out.path.data();
     uc.dwUrlPathLength = static_cast<DWORD>(out.path.size());
     if (!::WinHttpCrackUrl(urlW.c_str(), static_cast<DWORD>(urlW.size()), 0, &uc)) {
-        return std::unexpected(FormatUrlErr("Invalid URL", trimmedUrl));
+        return std::unexpected(FormatUrlErr("Invalid URL", trimmedUrl, ::GetLastError()));
     }
     if (uc.nScheme != INTERNET_SCHEME_HTTP && uc.nScheme != INTERNET_SCHEME_HTTPS) {
         return std::unexpected(std::format("Unsupported scheme for '{}'", trimmedUrl));
@@ -155,8 +281,11 @@ struct CrackedHttpUrl {
 
 [[nodiscard]] std::expected<UniqueWinHttpHandle, std::string>
 CreateConfiguredSession(std::string_view proxyUrl, std::chrono::milliseconds timeout) {
-    const std::string normalizedProxy = NormalizeWinHttpProxy(proxyUrl);
-    const std::wstring proxyW = motrix::core::Utf8ToWide(normalizedProxy);
+    const auto normalizedProxy = NormalizeWinHttpProxy(proxyUrl);
+    if (!normalizedProxy) {
+        return std::unexpected(normalizedProxy.error());
+    }
+    const std::wstring proxyW = motrix::core::Utf8ToWide(*normalizedProxy);
     const DWORD accessType =
         proxyW.empty() ? WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY : WINHTTP_ACCESS_TYPE_NAMED_PROXY;
 
@@ -164,19 +293,48 @@ CreateConfiguredSession(std::string_view proxyUrl, std::chrono::milliseconds tim
                                               accessType,
                                               proxyW.empty() ? WINHTTP_NO_PROXY_NAME : proxyW.c_str(),
                                               WINHTTP_NO_PROXY_BYPASS,
-                                              0));
+                                              WINHTTP_FLAG_ASYNC));
     if (!session) {
         return std::unexpected(std::format("Failed to initialize WinHTTP session: {}",
                                            FormatWinHttpError(::GetLastError())));
     }
     const int timeoutMs = static_cast<int>(std::clamp<std::int64_t>(timeout.count(), 100, 600000));
     ::WinHttpSetTimeouts(session.Get(), timeoutMs, timeoutMs, timeoutMs, timeoutMs);
+    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
+    ::WinHttpSetOption(
+        session.Get(), WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
     return session;
+}
+
+template <typename Fn>
+[[nodiscard]] DWORD ExecuteAsyncWinHttpOp(AsyncHttpRequest& req, std::stop_token st, Fn&& issueCall) {
+    if (st.stop_requested()) {
+        return ERROR_WINHTTP_OPERATION_CANCELLED;
+    }
+    AsyncHttpContext* ctx = req.Context();
+    ::ResetEvent(ctx->opEvent.Get());
+    HINTERNET h = req.BeginApiCall();
+    if (!h) {
+        return ERROR_WINHTTP_OPERATION_CANCELLED;
+    }
+    const BOOL queued = issueCall(h);
+    const DWORD issueErr = queued ? ERROR_SUCCESS : ::GetLastError();
+    req.EndApiCall();
+    if (!queued) {
+        return issueErr;
+    }
+
+    HANDLE waits[2] = {ctx->opEvent.Get(), ctx->cancelEvent.Get()};
+    const DWORD wr = ::WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+    if (wr != WAIT_OBJECT_0 || st.stop_requested()) {
+        return ERROR_WINHTTP_OPERATION_CANCELLED;
+    }
+    return ctx->opError.load(std::memory_order_acquire);
 }
 
 struct OpenedHttpGet {
     UniqueWinHttpHandle connect;
-    UniqueWinHttpHandle request;
+    std::unique_ptr<AsyncHttpRequest> request;
 };
 
 [[nodiscard]] std::expected<OpenedHttpGet, std::string> OpenAndSendHttpGet(HINTERNET session,
@@ -196,55 +354,76 @@ struct OpenedHttpGet {
     }
     UniqueWinHttpHandle connect(::WinHttpConnect(session, cracked->host.c_str(), cracked->port, 0));
     if (!connect) {
-        return std::unexpected(FormatUrlErr("Connect", trimmedUrl));
+        return std::unexpected(FormatUrlErr("Connect", trimmedUrl, ::GetLastError()));
     }
     const DWORD reqFlags = (cracked->scheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0u;
-    UniqueWinHttpHandle request(::WinHttpOpenRequest(connect.Get(),
-                                                     L"GET",
-                                                     cracked->path.c_str(),
-                                                     nullptr,
-                                                     WINHTTP_NO_REFERER,
-                                                     WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                                     reqFlags));
-    if (!request) {
-        return std::unexpected(FormatUrlErr("OpenRequest", trimmedUrl));
+    UniqueWinHttpHandle rawReq(::WinHttpOpenRequest(connect.Get(),
+                                                    L"GET",
+                                                    cracked->path.c_str(),
+                                                    nullptr,
+                                                    WINHTTP_NO_REFERER,
+                                                    WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                    reqFlags));
+    if (!rawReq) {
+        return std::unexpected(FormatUrlErr("OpenRequest", trimmedUrl, ::GetLastError()));
     }
     if (!acceptHeader.empty()) {
         const std::wstring hdrW = motrix::core::Utf8ToWide(std::format("Accept: {}\r\n", acceptHeader));
         if (!hdrW.empty()) {
             ::WinHttpAddRequestHeaders(
-                request.Get(), hdrW.c_str(), static_cast<DWORD>(-1), WINHTTP_ADDREQ_FLAG_ADD);
+                rawReq.Get(), hdrW.c_str(), static_cast<DWORD>(-1), WINHTTP_ADDREQ_FLAG_ADD);
         }
     }
-    {
-        CancelableWinHttp cancelReq(request);
-        std::stop_callback onStop(st, [&] { cancelReq.Close(); });
-        const HINTERNET hReq = cancelReq.Raw();
-        const bool sent = ::WinHttpSendRequest(
-                              hReq, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
-                          && ::WinHttpReceiveResponse(hReq, nullptr);
-        request.Reset(cancelReq.Detach());
-        if (st.stop_requested()) {
-            return std::unexpected(std::string("Cancelled"));
-        }
-        if (!sent || !request) {
-            return std::unexpected(FormatUrlErr("HTTP request", trimmedUrl));
-        }
+
+    auto asyncReq = std::make_unique<AsyncHttpRequest>();
+    if (!asyncReq->Init(rawReq)) {
+        return std::unexpected(FormatUrlErr("AsyncInit", trimmedUrl, ::GetLastError()));
     }
+    std::stop_callback onStop(st, [&] { asyncReq->Cancel(); });
+
+    const DWORD sendErr = ExecuteAsyncWinHttpOp(*asyncReq, st, [&](HINTERNET h) {
+        return ::WinHttpSendRequest(h,
+                                    WINHTTP_NO_ADDITIONAL_HEADERS,
+                                    0,
+                                    WINHTTP_NO_REQUEST_DATA,
+                                    0,
+                                    0,
+                                    reinterpret_cast<DWORD_PTR>(asyncReq->Context()));
+    });
+    if (sendErr != ERROR_SUCCESS) {
+        return std::unexpected(st.stop_requested() ? std::string("Cancelled")
+                                                   : FormatUrlErr("HTTP send", trimmedUrl, sendErr));
+    }
+
+    const DWORD recvErr = ExecuteAsyncWinHttpOp(
+        *asyncReq, st, [](HINTERNET h) { return ::WinHttpReceiveResponse(h, nullptr); });
+    if (recvErr != ERROR_SUCCESS) {
+        return std::unexpected(st.stop_requested() ? std::string("Cancelled")
+                                                   : FormatUrlErr("HTTP receive", trimmedUrl, recvErr));
+    }
+
     DWORD statusCode = 0;
     DWORD statusSize = sizeof(statusCode);
-    if (!::WinHttpQueryHeaders(request.Get(),
-                               WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                               WINHTTP_HEADER_NAME_BY_INDEX,
-                               &statusCode,
-                               &statusSize,
-                               WINHTTP_NO_HEADER_INDEX)) {
-        return std::unexpected(FormatUrlErr("QueryHeaders", trimmedUrl));
+    HINTERNET h = asyncReq->BeginApiCall();
+    const BOOL queryOk = h != nullptr
+                         && ::WinHttpQueryHeaders(h,
+                                                  WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                                  WINHTTP_HEADER_NAME_BY_INDEX,
+                                                  &statusCode,
+                                                  &statusSize,
+                                                  WINHTTP_NO_HEADER_INDEX);
+    const DWORD queryErr = queryOk ? ERROR_SUCCESS : ::GetLastError();
+    if (h != nullptr) {
+        asyncReq->EndApiCall();
+    }
+    if (!queryOk) {
+        return std::unexpected(st.stop_requested() ? std::string("Cancelled")
+                                                   : FormatUrlErr("QueryHeaders", trimmedUrl, queryErr));
     }
     if (statusCode < 200u || statusCode >= 300u) {
         return std::unexpected(std::format("HTTP {} for '{}'", statusCode, trimmedUrl));
     }
-    return OpenedHttpGet{std::move(connect), std::move(request)};
+    return OpenedHttpGet{std::move(connect), std::move(asyncReq)};
 }
 
 struct ReadBodyOptions {
@@ -255,21 +434,23 @@ struct ReadBodyOptions {
 };
 
 [[nodiscard]] std::expected<std::size_t, std::string>
-StreamWinHttpBody(CancelableWinHttp& cancelReq,
+StreamWinHttpBody(AsyncHttpRequest& req,
                   const ReadBodyOptions& opt,
                   const std::function<bool(std::string_view)>& onChunk) {
     std::size_t totalBytes = 0;
-    std::string chunk(kReadChunkBytes, '\0');
+    AsyncHttpContext* ctx = req.Context();
     for (;;) {
         if (opt.stopToken.stop_requested()) {
             return std::unexpected(std::string("Request cancelled"));
         }
-        DWORD avail = 0;
-        if (!::WinHttpQueryDataAvailable(cancelReq.Raw(), &avail)) {
+        const DWORD availErr = ExecuteAsyncWinHttpOp(
+            req, opt.stopToken, [](HINTERNET h) { return ::WinHttpQueryDataAvailable(h, nullptr); });
+        if (availErr != ERROR_SUCCESS) {
             return std::unexpected(opt.stopToken.stop_requested()
                                        ? std::string("Request cancelled")
-                                       : FormatUrlErr("QueryDataAvailable", opt.url));
+                                       : FormatUrlErr("QueryDataAvailable", opt.url, availErr));
         }
+        const DWORD avail = ctx->availBytes.load(std::memory_order_acquire);
         if (avail == 0) {
             break;
         }
@@ -280,14 +461,18 @@ StreamWinHttpBody(CancelableWinHttp& cancelReq,
             }
             break;
         }
-        const std::size_t rem = opt.failOnLimit ? chunk.size() : (opt.maxBytes - totalBytes);
+        const std::size_t rem = opt.failOnLimit ? ctx->readBuffer.size() : (opt.maxBytes - totalBytes);
         const DWORD toRead = static_cast<DWORD>(
-            (std::min<std::size_t>)(avail, (std::min<std::size_t>)(rem, chunk.size())));
-        DWORD bytesRead = 0;
-        if (!::WinHttpReadData(cancelReq.Raw(), chunk.data(), toRead, &bytesRead)) {
-            return std::unexpected(opt.stopToken.stop_requested() ? std::string("Request cancelled")
-                                                                  : FormatUrlErr("ReadData", opt.url));
+            (std::min<std::size_t>)(avail, (std::min<std::size_t>)(rem, ctx->readBuffer.size())));
+        const DWORD readErr = ExecuteAsyncWinHttpOp(req, opt.stopToken, [&](HINTERNET h) {
+            return ::WinHttpReadData(h, ctx->readBuffer.data(), toRead, nullptr);
+        });
+        if (readErr != ERROR_SUCCESS) {
+            return std::unexpected(opt.stopToken.stop_requested()
+                                       ? std::string("Request cancelled")
+                                       : FormatUrlErr("ReadData", opt.url, readErr));
         }
+        const DWORD bytesRead = ctx->bytesRead.load(std::memory_order_acquire);
         if (bytesRead == 0) {
             break;
         }
@@ -296,7 +481,7 @@ StreamWinHttpBody(CancelableWinHttp& cancelReq,
             return std::unexpected(std::format(
                 "Response exceeded maximum limit ({} bytes) for '{}'", opt.maxBytes, opt.url));
         }
-        if (!onChunk(std::string_view(chunk.data(), bytesRead))) {
+        if (!onChunk(std::string_view(ctx->readBuffer.data(), bytesRead))) {
             return std::unexpected(std::string("Failed to write response data"));
         }
     }
@@ -304,9 +489,9 @@ StreamWinHttpBody(CancelableWinHttp& cancelReq,
 }
 
 [[nodiscard]] std::expected<std::string, std::string>
-ReadWinHttpResponseBody(CancelableWinHttp& cancelReq, const ReadBodyOptions& opt) {
+ReadWinHttpResponseBody(AsyncHttpRequest& req, const ReadBodyOptions& opt) {
     std::string body;
-    auto total = StreamWinHttpBody(cancelReq, opt, [&](std::string_view part) {
+    auto total = StreamWinHttpBody(req, opt, [&](std::string_view part) {
         body.append(part);
         return true;
     });
@@ -332,11 +517,15 @@ struct HttpSessionRequest {
 [[nodiscard]] motrix::core::Result<HttpSessionRequest> OpenHttpSessionGet(const HttpRequestSpec& spec) {
     auto session = CreateConfiguredSession(spec.proxyUrl, spec.timeout);
     if (!session) {
-        return MakeEngineError(ErrorCode::IoFailure, session.error());
+        return MakeEngineError(spec.stopToken.stop_requested() ? ErrorCode::Cancelled
+                                                               : ErrorCode::InvalidArgument,
+                               session.error());
     }
     auto opened = OpenAndSendHttpGet(session->Get(), spec.url, spec.acceptHeader, spec.stopToken);
     if (!opened) {
-        return MakeEngineError(ErrorCode::ConnectionFailed, opened.error());
+        const auto code =
+            spec.stopToken.stop_requested() ? ErrorCode::Cancelled : ErrorCode::ConnectionFailed;
+        return MakeEngineError(code, opened.error());
     }
     return HttpSessionRequest{std::move(*session), std::move(*opened)};
 }
@@ -348,13 +537,13 @@ motrix::core::Result<std::string> HttpGetUtf8OrBytes(const HttpRequestSpec& spec
     if (!req) {
         return std::unexpected(req.error());
     }
-    CancelableWinHttp cancelReq(req->opened.request);
-    std::stop_callback onStop(spec.stopToken, [&] { cancelReq.Close(); });
+    std::stop_callback onStop(spec.stopToken, [&] { req->opened.request->Cancel(); });
     auto body = ReadWinHttpResponseBody(
-        cancelReq,
+        *req->opened.request,
         ReadBodyOptions{motrix::core::TrimAscii(spec.url), spec.maxBytes, true, spec.stopToken});
     if (!body) {
-        return MakeEngineError(ErrorCode::IoFailure, body.error());
+        const auto code = spec.stopToken.stop_requested() ? ErrorCode::Cancelled : ErrorCode::IoFailure;
+        return MakeEngineError(code, body.error());
     }
     return *body;
 }
@@ -368,15 +557,18 @@ motrix::core::Result<std::size_t> HttpDownloadToFile(const HttpRequestSpec& spec
     std::error_code ec;
     if (destPath.has_parent_path()) {
         std::filesystem::create_directories(destPath.parent_path(), ec);
+        if (ec) {
+            return MakeEngineError(
+                ErrorCode::IoFailure, "Failed to create staging directory", ec.message());
+        }
     }
     std::ofstream out(destPath, std::ios::binary | std::ios::trunc);
     if (!out) {
         return MakeEngineError(ErrorCode::IoFailure, "Failed to create staging download file");
     }
-    CancelableWinHttp cancelReq(req->opened.request);
-    std::stop_callback onStop(spec.stopToken, [&] { cancelReq.Close(); });
+    std::stop_callback onStop(spec.stopToken, [&] { req->opened.request->Cancel(); });
     auto totalBytes = StreamWinHttpBody(
-        cancelReq,
+        *req->opened.request,
         ReadBodyOptions{motrix::core::TrimAscii(spec.url), spec.maxBytes, true, spec.stopToken},
         [&](std::string_view part) {
             out.write(part.data(), static_cast<std::streamsize>(part.size()));
@@ -386,7 +578,7 @@ motrix::core::Result<std::size_t> HttpDownloadToFile(const HttpRequestSpec& spec
         out.close();
         std::filesystem::remove(destPath, ec);
         const auto code =
-            spec.stopToken.stop_requested() ? ErrorCode::Timeout : ErrorCode::ConnectionFailed;
+            spec.stopToken.stop_requested() ? ErrorCode::Cancelled : ErrorCode::ConnectionFailed;
         return MakeEngineError(code, totalBytes.error());
     }
     out.flush();
@@ -408,22 +600,27 @@ motrix::core::Result<std::vector<HttpBatchItem>> HttpGetBatchUtf8(const HttpBatc
     items.reserve(spec.urls.size());
     for (const auto& url : spec.urls) {
         if (spec.stopToken.stop_requested()) {
-            break;
+            return MakeEngineError(ErrorCode::Cancelled, "HTTP batch request cancelled");
         }
         auto opened = OpenAndSendHttpGet(session->Get(), url, {}, spec.stopToken);
         if (!opened) {
+            if (spec.stopToken.stop_requested()) {
+                return MakeEngineError(ErrorCode::Cancelled, "HTTP batch request cancelled");
+            }
             items.push_back(HttpBatchItem{.error = opened.error()});
             continue;
         }
-        CancelableWinHttp cancelReq(opened->request);
-        std::stop_callback onStop(spec.stopToken, [&] { cancelReq.Close(); });
+        std::stop_callback onStop(spec.stopToken, [&] { opened->request->Cancel(); });
         auto body = ReadWinHttpResponseBody(
-            cancelReq,
+            *opened->request,
             ReadBodyOptions{
                 motrix::core::TrimAscii(url), spec.maxBytes, spec.failOnLimit, spec.stopToken});
         if (body) {
             items.push_back(HttpBatchItem{.body = std::move(*body)});
         } else {
+            if (spec.stopToken.stop_requested()) {
+                return MakeEngineError(ErrorCode::Cancelled, "HTTP batch request cancelled");
+            }
             items.push_back(HttpBatchItem{.error = body.error()});
         }
     }

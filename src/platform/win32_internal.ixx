@@ -19,7 +19,7 @@ export struct Win32WindowState {
     float titlebarHeightPx = 36.0f;
     bool darkFrame = false;
     bool systemDark = false;
-    bool hiddenToTray = false;
+    std::atomic<bool> hiddenToTray{false};
     bool bindCloseToHide = false;
     bool autoHideOnBlur = false;
     bool enableTrayIcon = true;
@@ -39,10 +39,85 @@ export struct Win32WindowState {
     std::uint32_t trayDpi = 0;
     std::uint32_t pendingResizeW = 0;
     std::uint32_t pendingResizeH = 0;
-    int activeFramesRemaining = 3;
+    std::atomic<int> activeFramesRemaining{3};
+    int modalLoopDepth = 0;
+    bool hasPendingDpi = false;
+    float pendingDpiScale = 1.0f;
+    std::int32_t pendingDpiX = 0;
+    std::int32_t pendingDpiY = 0;
+    std::int32_t pendingDpiW = 0;
+    std::int32_t pendingDpiH = 0;
     std::string trayTooltipUtf8;
     std::string lastToastTargetDir;
     std::vector<TitlebarRect> titlebarRects;
+
+    void BumpActiveFrames(int minFrames = 3) noexcept {
+        int cur = activeFramesRemaining.load(std::memory_order_relaxed);
+        while (cur < minFrames
+               && !activeFramesRemaining.compare_exchange_weak(
+                   cur, minFrames, std::memory_order_acq_rel, std::memory_order_relaxed)) {}
+    }
+
+    void ResetForSession(const WindowHostConfig& cfg, bool sysDark, bool taskbarDark) {
+        config = cfg;
+        hwnd = nullptr;
+        hInstance = nullptr;
+        trayIdleIcon = nullptr;
+        trayActiveIcon = nullptr;
+        taskbarList = nullptr;
+        dpiScale = 1.0f;
+        titlebarHeightPx = 36.0f;
+        darkFrame = cfg.initialDark;
+        systemDark = sysDark;
+        hiddenToTray.store(false, std::memory_order_release);
+        bindCloseToHide = cfg.bindCloseToHide;
+        autoHideOnBlur = cfg.autoHideOnBlur;
+        enableTrayIcon = cfg.enableTrayIcon;
+        trayInstalled = false;
+        trayActiveDownloads = false;
+        trayIsZhCn = cfg.initialZhCn;
+        trayDarkTaskbar = taskbarDark;
+        explicitQuitRequested = false;
+        titlebarBlocked = false;
+        inPickerDialog = false;
+        modalLoopDepth = 0;
+        hasPendingDpi = false;
+        pendingDpiScale = 1.0f;
+        pendingDpiX = 0;
+        pendingDpiY = 0;
+        pendingDpiW = 0;
+        pendingDpiH = 0;
+        trimRequested = false;
+        wmTaskbarCreated = 0;
+        wmTaskbarButtonCreated = 0;
+        lastProgressMode = TaskbarProgressMode::None;
+        lastProgressCompleted = 0;
+        lastProgressTotal = 0;
+        trayDpi = 0;
+        pendingResizeW = 0;
+        pendingResizeH = 0;
+        activeFramesRemaining.store(3, std::memory_order_release);
+        trayTooltipUtf8.clear();
+        lastToastTargetDir.clear();
+        titlebarRects.clear();
+    }
+};
+
+export void Win32FlushDeferredDpi(Win32WindowState& state) noexcept;
+
+export struct ScopedModalLoop {
+    Win32WindowState& state;
+    explicit ScopedModalLoop(Win32WindowState& s) noexcept : state(s) { ++state.modalLoopDepth; }
+    ~ScopedModalLoop() {
+        if (state.modalLoopDepth > 0) {
+            --state.modalLoopDepth;
+        }
+        if (state.modalLoopDepth == 0 && state.hasPendingDpi) {
+            Win32FlushDeferredDpi(state);
+        }
+    }
+    ScopedModalLoop(const ScopedModalLoop&) = delete;
+    ScopedModalLoop& operator=(const ScopedModalLoop&) = delete;
 };
 
 export void Win32EnableDpiAwareness() noexcept;

@@ -73,6 +73,7 @@ private:
     void StartLiveEngineIfEnabled(const CoordinatorOptions& options);
     void CreateAndStartEngineRuntime(const AppStateSnapshot& state,
                                      const std::string& binPathOverride = {});
+    void ReconfigureLiveEngine(const AppStateSnapshot& state, bool restartEngine, bool updateUpnp);
     void EnqueueGlobalOptionsWork(std::vector<std::pair<std::string, std::string>> options);
     void PublishMutated(const std::function<void(AppStateSnapshot&)>& mutator);
     void RecomputeStats(AppStateSnapshot& state);
@@ -123,12 +124,18 @@ private:
     TaskCompletionTracker completionTracker_;
     std::mutex writeMutex_;
     std::mutex platformStatusMu_;
+    std::mutex workerMutex_;
     mutable std::mutex engineLifecycleMu_;
+    std::shared_ptr<std::mutex> configPersistMutex_ = std::make_shared<std::mutex>();
     AppStateSnapshot mutableState_;
     std::atomic<std::shared_ptr<const AppStateSnapshot>> published_;
     std::uint64_t nextLocalGid_ = 1000;
     std::string enginePathOverride_;
     std::unique_ptr<EngineRuntime> engineRuntime_;
+    bool engineReplacing_ = false;
+    bool trackerSyncRunning_ = false;
+    bool engineUpdateRunning_ = false;
+    std::vector<std::function<void(EngineRuntime&)>> deferredEngineOps_;
     std::jthread trackerSyncWorker_;
     std::jthread engineUpdateWorker_;
 };

@@ -41,6 +41,7 @@ ResolveTaskDisplayName(const UiFrameContext& ctx, std::string_view gid, std::str
 void CloseDeleteConfirm(DeleteConfirmState& dc) {
     dc.open = false;
     dc.requestOpen = false;
+    dc.deleteFiles = false;
     dc.gids.clear();
     dc.taskName.clear();
     ImGui::CloseCurrentPopup();
@@ -202,11 +203,10 @@ void RequestTasksRemoval(UiFrameContext& ctx,
         }
         return;
     }
-    const bool shiftHeld = ImGui::GetIO().KeyShift;
     const bool bypassConfirm =
-        ctx.state.prefs.noConfirmBeforeDeleteTask || shiftHeld || (ctx.deleteConfirm == nullptr);
+        ctx.state.prefs.noConfirmBeforeDeleteTask || (ctx.deleteConfirm == nullptr);
     if (bypassConfirm) {
-        const bool deleteFiles = ctx.state.prefs.deleteFilesWhenDeleteTask || shiftHeld;
+        const bool deleteFiles = ctx.state.prefs.deleteFilesWhenDeleteTask;
         if (gids.size() == 1) {
             ctx.sink.Dispatch(motrix::app::RemoveTaskCmd{std::move(gids.front()), deleteFiles});
         } else {

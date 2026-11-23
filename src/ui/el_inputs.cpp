@@ -104,6 +104,7 @@ void DrawNumericChrome(ImDrawList* dl, const NumericBoxLayout& lay, const Motrix
 NumericStepperResult
 RenderNumericSteppers(const ElStyle& st, const char* id, const NumericBoxLayout& lay) {
     NumericStepperResult res{};
+    const char* safeId = (id != nullptr && id[0] != '\0') ? id : "##num";
     const MotrixPalette& p = st.palette;
     const float s = st.dpiScale;
     const float halfH = lay.h * 0.5f;
@@ -111,7 +112,7 @@ RenderNumericSteppers(const ElStyle& st, const char* id, const NumericBoxLayout&
     const float icoX = lay.rMax.x - lay.capW + (lay.capW - icoSz) * 0.5f;
 
     ImGui::SetCursorScreenPos(ImVec2(lay.rMax.x - lay.capW, lay.rMin.y));
-    if (ImGui::InvisibleButton(std::format("{}_up", id).c_str(), ImVec2(lay.capW, halfH))) {
+    if (ImGui::InvisibleButton(std::format("{}_up", safeId).c_str(), ImVec2(lay.capW, halfH))) {
         res.delta = 1;
     }
     const bool upHov = ImGui::IsItemHovered();
@@ -131,7 +132,7 @@ RenderNumericSteppers(const ElStyle& st, const char* id, const NumericBoxLayout&
     });
 
     ImGui::SetCursorScreenPos(ImVec2(lay.rMax.x - lay.capW, lay.rMin.y + halfH));
-    if (ImGui::InvisibleButton(std::format("{}_dn", id).c_str(), ImVec2(lay.capW, halfH))) {
+    if (ImGui::InvisibleButton(std::format("{}_dn", safeId).c_str(), ImVec2(lay.capW, halfH))) {
         res.delta = -1;
     }
     const bool dnHov = ImGui::IsItemHovered();
@@ -178,9 +179,10 @@ RenderNumericBoxImpl(const ElStyle& st, const NumericBoxSpec& spec, DrawFieldFn&
     StyleVarGuard fp(ImGuiStyleVar_FramePadding, 8.0f * s, padY);
     StyleColorGuard bgClear(ImGuiCol_FrameBg, RgbaColor{0.0f, 0.0f, 0.0f, 0.0f});
 
+    const char* safeId = (spec.id != nullptr && spec.id[0] != '\0') ? spec.id : "##num";
     ImGuiStorage* store = ImGui::GetStateStorage();
-    const ImGuiID editKey = ImGui::GetID(std::format("{}_edit", spec.id).c_str());
-    const ImGuiID focusKey = ImGui::GetID(std::format("{}_focus", spec.id).c_str());
+    const ImGuiID editKey = ImGui::GetID(std::format("{}_edit", safeId).c_str());
+    const ImGuiID focusKey = ImGui::GetID(std::format("{}_focus", safeId).c_str());
     NumericOutcome out{};
     bool inputFocused = false;
     bool inputHovered = false;
@@ -203,25 +205,27 @@ RenderNumericBoxImpl(const ElStyle& st, const NumericBoxSpec& spec, DrawFieldFn&
         out.editing = store->GetBool(editKey, false);
     } else {
         ImGui::SetCursorScreenPos(rMin);
-        if (ImGui::InvisibleButton(std::format("{}_hit", spec.id).c_str(), ImVec2(numW, h))) {
+        if (ImGui::InvisibleButton(std::format("{}_hit", safeId).c_str(), ImVec2(numW, h))) {
             store->SetBool(editKey, true);
             store->SetBool(focusKey, true);
         }
         inputHovered = ImGui::IsItemHovered();
-        const ImVec2 txtSz = ImGui::CalcTextSize(spec.displayText.data(),
-                                                 spec.displayText.data() + spec.displayText.size());
-        dl->AddText(ImVec2(rMin.x + (numW - txtSz.x) * 0.5f, rMin.y + (h - txtSz.y) * 0.5f),
-                    ToAbgrU32(p.panelTitle),
-                    spec.displayText.data(),
-                    spec.displayText.data() + spec.displayText.size());
+        if (!spec.displayText.empty()) {
+            const ImVec2 txtSz = ImGui::CalcTextSize(
+                spec.displayText.data(), spec.displayText.data() + spec.displayText.size(), false);
+            dl->AddText(ImVec2(rMin.x + (numW - txtSz.x) * 0.5f, rMin.y + (h - txtSz.y) * 0.5f),
+                        ToAbgrU32(p.panelTitle),
+                        spec.displayText.data(),
+                        spec.displayText.data() + spec.displayText.size());
+        }
     }
 
-    const NumericStepperResult stepRes = RenderNumericSteppers(st, spec.id, lay);
+    const NumericStepperResult stepRes = RenderNumericSteppers(st, safeId, lay);
     out.stepDelta = stepRes.delta;
     dl->AddRect(
         rMin,
         lay.rMax,
-        ToAbgrU32(AnimateElBorderColor(st, spec.id, inputFocused, inputHovered || stepRes.hovered)),
+        ToAbgrU32(AnimateElBorderColor(st, safeId, inputFocused, inputHovered || stepRes.hovered)),
         4.0f * s,
         0,
         1.0f);
@@ -234,6 +238,7 @@ RenderNumericBoxImpl(const ElStyle& st, const NumericBoxSpec& spec, DrawFieldFn&
 
 ElCompositeResult ElCompositeInput(const ElStyle& st, const ElCompositeSpec& spec) {
     ElCompositeResult res{};
+    const char* safeId = (spec.id != nullptr && spec.id[0] != '\0') ? spec.id : "##comp";
     const MotrixPalette& p = st.palette;
     const float s = st.dpiScale;
     FontGuard fnt(st.fonts, FontRole::Regular, 14.5f);
@@ -248,12 +253,9 @@ ElCompositeResult ElCompositeInput(const ElStyle& st, const ElCompositeSpec& spe
     const bool mutedBg = spec.readOnly && spec.mutedReadOnly;
     dl->AddRectFilled(rMin, rMax, ToAbgrU32(mutedBg ? p.inputAddonBg : p.inputBg), 4.0f * s);
     if (spec.leftIcon) {
-        res.leftClicked = DrawAddonSlot(st,
-                                        {std::format("{}_L", spec.id).c_str(),
-                                         rMin,
-                                         ImVec2(rMin.x + leftW, rMax.y),
-                                         *spec.leftIcon,
-                                         true});
+        const std::string leftId = std::format("{}_L", safeId);
+        res.leftClicked = DrawAddonSlot(
+            st, {leftId.c_str(), rMin, ImVec2(rMin.x + leftW, rMax.y), *spec.leftIcon, true});
     }
 
     StyleVarGuard noBorder(ImGuiStyleVar_FrameBorderSize, 0.0f);
@@ -269,39 +271,57 @@ ElCompositeResult ElCompositeInput(const ElStyle& st, const ElCompositeSpec& spe
     const int flags = (spec.readOnly ? ImGuiInputTextFlags_ReadOnly : 0)
                       | (spec.password ? ImGuiInputTextFlags_Password : 0);
     const std::string hint(spec.placeholder);
-    res.textChanged = ImGui::InputTextWithHint(spec.id, hint.c_str(), spec.buf, spec.cap, flags);
-    res.active = ImGui::IsItemActive();
-    res.deactivated = ImGui::IsItemDeactivated();
-    const bool focused = res.active || ImGui::IsItemFocused();
-    const bool hovered = ImGui::IsItemHovered();
+    const bool validBuf = spec.buf != nullptr && spec.cap > 0
+                          && spec.cap <= static_cast<std::size_t>(std::numeric_limits<int>::max());
+    bool focused = false;
+    bool hovered = false;
+    if (validBuf) {
+        res.textChanged = ImGui::InputTextWithHint(safeId, hint.c_str(), spec.buf, spec.cap, flags);
+        res.active = ImGui::IsItemActive();
+        res.deactivated = ImGui::IsItemDeactivated();
+        focused = res.active || ImGui::IsItemFocused();
+        hovered = ImGui::IsItemHovered();
+    } else {
+        ImGui::Dummy(ImVec2(midW, h));
+    }
 
     if (spec.rightIcon) {
-        res.rightClicked = DrawAddonSlot(st,
-                                         {std::format("{}_R", spec.id).c_str(),
-                                          ImVec2(rMax.x - rightW, rMin.y),
-                                          rMax,
-                                          *spec.rightIcon,
-                                          false});
+        const std::string rightId = std::format("{}_R", safeId);
+        res.rightClicked = DrawAddonSlot(
+            st, {rightId.c_str(), ImVec2(rMax.x - rightW, rMin.y), rMax, *spec.rightIcon, false});
     }
     dl->AddRect(
-        rMin, rMax, ToAbgrU32(AnimateElBorderColor(st, spec.id, focused, hovered)), 4.0f * s, 0, 1.0f);
+        rMin, rMax, ToAbgrU32(AnimateElBorderColor(st, safeId, focused, hovered)), 4.0f * s, 0, 1.0f);
     ImGui::SetCursorScreenPos(rMin);
     ImGui::Dummy(ImVec2(spec.width, h));
     return res;
 }
 
 bool ElInputNumberInt(const ElStyle& st, const char* id, const ElIntSpec& spec) {
+    if (spec.value == nullptr) {
+        return false;
+    }
+    const char* safeId = (id != nullptr && id[0] != '\0') ? id : "##int";
+    const int lo = std::min(spec.minVal, spec.maxVal);
+    const int hi = std::max(spec.minVal, spec.maxVal);
     const NumericOutcome out =
-        RenderNumericBoxImpl(st, NumericBoxSpec{id, std::to_string(*spec.value), spec.width}, [&]() {
-            return ImGui::InputInt(id, spec.value, 0, 0);
+        RenderNumericBoxImpl(st, NumericBoxSpec{safeId, std::to_string(*spec.value), spec.width}, [&]() {
+            return ImGui::InputInt(safeId, spec.value, 0, 0);
         });
     bool changed = out.valueChanged;
     if (out.stepDelta != 0) {
-        *spec.value += out.stepDelta * spec.step;
-        changed = true;
+        const std::int64_t stepped =
+            static_cast<std::int64_t>(*spec.value)
+            + static_cast<std::int64_t>(out.stepDelta) * static_cast<std::int64_t>(spec.step);
+        const int clamped = static_cast<int>(
+            std::clamp(stepped, static_cast<std::int64_t>(lo), static_cast<std::int64_t>(hi)));
+        if (clamped != *spec.value) {
+            *spec.value = clamped;
+            changed = true;
+        }
     }
     if (!out.editing || out.stepDelta != 0) {
-        const int clamped = std::clamp(*spec.value, spec.minVal, spec.maxVal);
+        const int clamped = std::clamp(*spec.value, lo, hi);
         if (clamped != *spec.value) {
             *spec.value = clamped;
             changed = true;
@@ -311,20 +331,43 @@ bool ElInputNumberInt(const ElStyle& st, const char* id, const ElIntSpec& spec) 
 }
 
 bool ElInputNumberFloat(const ElStyle& st, const char* id, const ElFloatSpec& spec) {
+    if (spec.value == nullptr) {
+        return false;
+    }
+    const char* safeId = (id != nullptr && id[0] != '\0') ? id : "##flt";
+    const float rawLo = std::isfinite(spec.minVal) ? spec.minVal : 0.0f;
+    const float rawHi = std::isfinite(spec.maxVal) ? spec.maxVal : rawLo;
+    const float lo = std::min(rawLo, rawHi);
+    const float hi = std::max(rawLo, rawHi);
+    bool changed = false;
+    if (!std::isfinite(*spec.value)) {
+        *spec.value = lo;
+        changed = true;
+    }
     std::string disp = std::format("{:.1f}", *spec.value);
     if (disp.ends_with(".0")) {
         disp.resize(disp.size() - 2);
     }
-    const NumericOutcome out = RenderNumericBoxImpl(st, NumericBoxSpec{id, disp, spec.width}, [&]() {
-        return ImGui::InputFloat(id, spec.value, 0.0f, 0.0f, "%.1f");
+    const NumericOutcome out = RenderNumericBoxImpl(st, NumericBoxSpec{safeId, disp, spec.width}, [&]() {
+        return ImGui::InputFloat(
+            safeId, spec.value, 0.0f, 0.0f, "%.1f", ImGuiInputTextFlags_CharsDecimal);
     });
-    bool changed = out.valueChanged;
-    if (out.stepDelta != 0) {
-        *spec.value += static_cast<float>(out.stepDelta) * spec.step;
+    changed = changed || out.valueChanged;
+    if (!std::isfinite(*spec.value)) {
+        *spec.value = lo;
         changed = true;
     }
+    if (out.stepDelta != 0 && std::isfinite(spec.step)) {
+        const double stepped = static_cast<double>(*spec.value)
+                               + static_cast<double>(out.stepDelta) * static_cast<double>(spec.step);
+        const float nextVal = std::isfinite(stepped) ? static_cast<float>(stepped) : hi;
+        if (nextVal != *spec.value) {
+            *spec.value = nextVal;
+            changed = true;
+        }
+    }
     if (!out.editing || out.stepDelta != 0) {
-        const float clamped = std::clamp(*spec.value, spec.minVal, spec.maxVal);
+        const float clamped = std::isfinite(*spec.value) ? std::clamp(*spec.value, lo, hi) : lo;
         if (clamped != *spec.value) {
             *spec.value = clamped;
             changed = true;

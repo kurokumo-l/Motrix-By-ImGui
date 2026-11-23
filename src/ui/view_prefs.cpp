@@ -67,6 +67,64 @@ void LoadSpeedLimit(std::uint64_t bytesPerSec, bool& unitMb, int& val) noexcept 
     val = static_cast<int>(unitMb ? (kb / 1024ULL) : kb);
 }
 
+void LoadTrackerBufferAndBaseline(std::string_view btTrackerRaw, PrefsFormState& ps) {
+    const std::string lineTrackers = motrix::domain::ConvertTrackerDataToLine(btTrackerRaw);
+    CopyUtf8ToBuffer(lineTrackers, ps.btTrackerBuffer.data(), ps.btTrackerBuffer.size());
+    ps.lastSnapBtTrackerRaw = std::string(btTrackerRaw);
+    ps.lastSnapBtTrackerLoadedComma =
+        motrix::domain::ConvertTrackerDataToComma(ps.btTrackerBuffer.data());
+}
+
+[[nodiscard]] bool IsPortFieldDirty(std::string_view buf, int draftPort, int snapPort) {
+    const int clampedDraft = std::clamp(draftPort, 1024, 65535);
+    const int clampedSnap = std::clamp(snapPort, 1024, 65535);
+    if (clampedDraft != clampedSnap) {
+        return true;
+    }
+    return buf != std::to_string(snapPort);
+}
+
+[[nodiscard]] std::size_t Utf8SequenceLen(unsigned char lead) noexcept {
+    if (lead < 0x80u) {
+        return 1;
+    }
+    if ((lead & 0xE0u) == 0xC0u) {
+        return 2;
+    }
+    if ((lead & 0xF0u) == 0xE0u) {
+        return 3;
+    }
+    if ((lead & 0xF8u) == 0xF0u) {
+        return 4;
+    }
+    return 0;
+}
+
+[[nodiscard]] std::size_t TruncateUtf8Length(std::string_view src, std::size_t maxCopy) noexcept {
+    if (src.size() <= maxCopy) {
+        return src.size();
+    }
+    if (maxCopy == 0) {
+        return 0;
+    }
+    std::size_t lead = maxCopy;
+    while (lead > 0 && (static_cast<unsigned char>(src[lead - 1]) & 0xC0u) == 0x80u) {
+        --lead;
+    }
+    if (lead == 0) {
+        return 0;
+    }
+    const std::size_t seqLen = Utf8SequenceLen(static_cast<unsigned char>(src[lead - 1]));
+    if (seqLen == 0) {
+        return lead - 1;
+    }
+    if (seqLen == 1) {
+        return lead;
+    }
+    const std::size_t copied = maxCopy - (lead - 1);
+    return (copied < seqLen) ? (lead - 1) : ((lead - 1) + seqLen);
+}
+
 void LoadSysPrefsFromSnapshot(const motrix::domain::SystemConfig& sys, PrefsFormState& ps) {
     CopyUtf8ToBuffer(sys.dir, ps.dirBuffer.data(), ps.dirBuffer.size());
     ps.maxConcurrent = std::clamp(sys.maxConcurrentDownloads, 1, 64);
@@ -87,9 +145,12 @@ void LoadSysPrefsFromSnapshot(const motrix::domain::SystemConfig& sys, PrefsForm
     ps.seedRatio = static_cast<float>(sys.seedRatio);
     ps.seedTime = sys.seedTime;
     ps.rpcPort = static_cast<int>(sys.rpcListenPort);
+    CopyUtf8ToBuffer(std::to_string(ps.rpcPort), ps.rpcPortBuf.data(), ps.rpcPortBuf.size());
     CopyUtf8ToBuffer(sys.rpcSecret, ps.rpcSecretBuffer.data(), ps.rpcSecretBuffer.size());
     ps.btPort = sys.listenPort;
+    CopyUtf8ToBuffer(std::to_string(ps.btPort), ps.btPortBuf.data(), ps.btPortBuf.size());
     ps.dhtPort = sys.dhtListenPort;
+    CopyUtf8ToBuffer(std::to_string(ps.dhtPort), ps.dhtPortBuf.data(), ps.dhtPortBuf.size());
     ps.enableDht = sys.enableDht;
     ps.enablePeerExchange = sys.enablePeerExchange;
     ps.btEnableLpd = sys.btEnableLpd;
@@ -105,8 +166,7 @@ void LoadSysPrefsFromSnapshot(const motrix::domain::SystemConfig& sys, PrefsForm
 
     CopyUtf8ToBuffer(sys.allProxy, ps.allProxyBuffer.data(), ps.allProxyBuffer.size());
     CopyUtf8ToBuffer(sys.noProxy, ps.noProxyBuffer.data(), ps.noProxyBuffer.size());
-    const std::string lineTrackers = motrix::domain::ConvertTrackerDataToLine(sys.btTracker);
-    CopyUtf8ToBuffer(lineTrackers, ps.btTrackerBuffer.data(), ps.btTrackerBuffer.size());
+    LoadTrackerBufferAndBaseline(sys.btTracker, ps);
     CopyUtf8ToBuffer(sys.userAgent, ps.userAgentBuffer.data(), ps.userAgentBuffer.size());
 }
 
@@ -158,7 +218,12 @@ void ApplySysPrefsDraft(const PrefsFormState& ps, motrix::domain::SystemConfig& 
     sys.detachShareOnly = ps.detachShareOnly;
     sys.allProxy = ps.allProxyBuffer.data();
     sys.noProxy = ps.noProxyBuffer.data();
-    sys.btTracker = motrix::domain::ConvertTrackerDataToComma(ps.btTrackerBuffer.data());
+    const std::string draftTrackerComma =
+        motrix::domain::ConvertTrackerDataToComma(ps.btTrackerBuffer.data());
+    if (ps.lastSnapBtTrackerRaw != sys.btTracker
+        || draftTrackerComma != ps.lastSnapBtTrackerLoadedComma) {
+        sys.btTracker = draftTrackerComma;
+    }
     sys.userAgent = ps.userAgentBuffer.data();
 }
 
@@ -187,8 +252,7 @@ void SyncPrefsFormState(const UiFrameContext& ctx, PrefsFormState& ps) {
     }
     if (pr.lastSyncTrackerTime != ps.loadedSyncTrackerTime) {
         ps.loadedSyncTrackerTime = pr.lastSyncTrackerTime;
-        const std::string lineTrackers = motrix::domain::ConvertTrackerDataToLine(sys.btTracker);
-        CopyUtf8ToBuffer(lineTrackers, ps.btTrackerBuffer.data(), ps.btTrackerBuffer.size());
+        LoadTrackerBufferAndBaseline(sys.btTracker, ps);
     }
 }
 
@@ -272,10 +336,9 @@ bool IsSysConfigDraftDirty(const motrix::domain::SystemConfig& sys, const PrefsF
     }
     if (std::abs(ps.seedRatio - static_cast<float>(sys.seedRatio)) > 0.001f
         || ps.seedTime != sys.seedTime
-        || std::clamp(ps.rpcPort, 1024, 65535)
-               != std::clamp(static_cast<int>(sys.rpcListenPort), 1024, 65535)
-        || std::clamp(ps.btPort, 1024, 65535) != std::clamp(sys.listenPort, 1024, 65535)
-        || std::clamp(ps.dhtPort, 1024, 65535) != std::clamp(sys.dhtListenPort, 1024, 65535)
+        || IsPortFieldDirty(ps.rpcPortBuf.data(), ps.rpcPort, static_cast<int>(sys.rpcListenPort))
+        || IsPortFieldDirty(ps.btPortBuf.data(), ps.btPort, sys.listenPort)
+        || IsPortFieldDirty(ps.dhtPortBuf.data(), ps.dhtPort, sys.dhtListenPort)
         || std::clamp(ps.btMaxPeers, 0, 1000) != std::clamp(sys.btMaxPeers, 0, 1000)) {
         return true;
     }
@@ -286,8 +349,16 @@ bool IsSysConfigDraftDirty(const motrix::domain::SystemConfig& sys, const PrefsF
         || std::string_view(ps.userAgentBuffer.data()) != sys.userAgent) {
         return true;
     }
-    return motrix::domain::ConvertTrackerDataToComma(ps.btTrackerBuffer.data())
-           != motrix::domain::ConvertTrackerDataToComma(sys.btTracker);
+    std::string baselineComma;
+    if (ps.lastSnapBtTrackerRaw == sys.btTracker) {
+        baselineComma = ps.lastSnapBtTrackerLoadedComma;
+    } else {
+        const std::string line = motrix::domain::ConvertTrackerDataToLine(sys.btTracker);
+        std::vector<char> tmp(ps.btTrackerBuffer.size());
+        CopyUtf8ToBuffer(line, tmp.data(), tmp.size());
+        baselineComma = motrix::domain::ConvertTrackerDataToComma(tmp.data());
+    }
+    return motrix::domain::ConvertTrackerDataToComma(ps.btTrackerBuffer.data()) != baselineComma;
 }
 
 PillColorSet MakePillColors(const MotrixPalette& p, FeedbackTone tone, float alpha) noexcept {
@@ -589,7 +660,7 @@ void CopyUtf8ToBuffer(std::string_view src, char* dst, std::size_t cap) noexcept
     if (!dst || cap == 0) {
         return;
     }
-    const std::size_t n = std::min(src.size(), cap - 1);
+    const std::size_t n = TruncateUtf8Length(src, cap - 1);
     if (n > 0) {
         std::memcpy(dst, src.data(), n);
     }

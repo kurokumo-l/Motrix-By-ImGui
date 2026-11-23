@@ -6,6 +6,7 @@ module;
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 // clang-format on
 
 module motrix.test_server_util;
@@ -18,6 +19,27 @@ namespace {
 
 std::mutex gWsaMu;
 int gWsaRefs = 0;
+std::atomic<std::uint64_t> gTempDirSeq{0};
+
+[[nodiscard]] std::uint16_t PickFreePortImpl(int sockType, int protocol) {
+    WsaLease lease;
+    SOCKET s = ::socket(AF_INET, sockType, protocol);
+    if (s == INVALID_SOCKET) {
+        return 0;
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    std::uint16_t port = 0;
+    socklen_t len = sizeof(addr);
+    if (::bind(s, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0
+        && ::getsockname(s, reinterpret_cast<sockaddr*>(&addr), &len) == 0) {
+        port = ::ntohs(addr.sin_port);
+    }
+    ::closesocket(s);
+    return port;
+}
 
 [[nodiscard]] std::uint8_t HexVal(char c) noexcept {
     if (c >= '0' && c <= '9') {
@@ -164,18 +186,31 @@ ParsedRange ParseByteRange(std::string_view hdr, std::size_t total) {
 }
 
 std::uint16_t PickFreeLoopbackPort() {
-    WsaLease lease;
-    SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0;
-    ::bind(s, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
-    socklen_t len = sizeof(addr);
-    ::getsockname(s, reinterpret_cast<sockaddr*>(&addr), &len);
-    const std::uint16_t port = ::ntohs(addr.sin_port);
-    ::closesocket(s);
-    return port;
+    return PickFreePortImpl(SOCK_STREAM, IPPROTO_TCP);
+}
+
+std::uint16_t PickFreeUdpLoopbackPort() {
+    return PickFreePortImpl(SOCK_DGRAM, IPPROTO_UDP);
+}
+
+std::filesystem::path MakeUniqueTempDir(std::string_view prefix) {
+    const std::uint64_t seq = gTempDirSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto pid = static_cast<std::uint32_t>(::GetCurrentProcessId());
+    const auto dir = std::filesystem::temp_directory_path() / std::format("{}_{}_{}", prefix, pid, seq);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
+bool ShouldRequireLiveTests() {
+    wchar_t buf[32]{};
+    const DWORD n = ::GetEnvironmentVariableW(L"MOTRIX_REQUIRE_LIVE_TESTS", buf, 32);
+    if (n == 0 || n >= 32) {
+        return false;
+    }
+    const std::wstring_view val(buf, n);
+    return val == L"1" || val == L"true" || val == L"TRUE";
 }
 
 }  // namespace motrix::test

@@ -46,6 +46,7 @@ std::string GenerateRandomSecret(std::size_t len) {
 struct PortFieldSpec {
     const char* id = nullptr;
     int& portVal;
+    std::array<char, 16>& portBuf;
     float x = 0.0f;
     float y = 0.0f;
     float width = 0.0f;
@@ -53,64 +54,34 @@ struct PortFieldSpec {
     int randHigh = 60000;
 };
 
-struct PortDraftEntry {
-    std::array<char, 16> buf{};
-    bool active = false;
-};
-
-PortDraftEntry LoadPortDraft(const char* id, int portVal) {
-    ImGuiStorage* store = ImGui::GetStateStorage();
-    const ImGuiID baseId = ImGui::GetID(id);
-    PortDraftEntry entry{};
-    entry.active = store->GetBool(baseId ^ 0x5041u, false);
-    if (!entry.active) {
-        CopyUtf8ToBuffer(std::to_string(portVal), entry.buf.data(), entry.buf.size());
-        return entry;
-    }
-    for (int i = 0; i < 4; ++i) {
-        const int word = store->GetInt(baseId ^ static_cast<ImGuiID>(i + 1), 0);
-        std::memcpy(entry.buf.data() + static_cast<std::size_t>(i) * 4, &word, sizeof(int));
-    }
-    entry.buf.back() = '\0';
-    return entry;
-}
-
-void SavePortDraft(const char* id, const PortDraftEntry& entry) {
-    ImGuiStorage* store = ImGui::GetStateStorage();
-    const ImGuiID baseId = ImGui::GetID(id);
-    store->SetBool(baseId ^ 0x5041u, entry.active);
-    for (int i = 0; i < 4; ++i) {
-        int word = 0;
-        std::memcpy(&word, entry.buf.data() + static_cast<std::size_t>(i) * 4, sizeof(int));
-        store->SetInt(baseId ^ static_cast<ImGuiID>(i + 1), word);
-    }
-}
-
 void DrawPortCompositeField(UiFrameContext& ctx, const PortFieldSpec& spec) {
     const float s = ctx.dpiScale;
-    PortDraftEntry entry = LoadPortDraft(spec.id, spec.portVal);
     ImGui::SetCursorScreenPos(ImVec2(spec.x, spec.y));
     const ElStyle elSt{ctx.palette, ctx.fonts, s, &ctx.anim};
-    const ElCompositeResult res = ElCompositeInput(
-        elSt,
-        ElCompositeSpec{
-            spec.id, entry.buf.data(), entry.buf.size(), spec.width, std::nullopt, MotrixIcon::Dice});
-    if (res.active) {
-        entry.active = true;
+    const ElCompositeResult res = ElCompositeInput(elSt,
+                                                   ElCompositeSpec{spec.id,
+                                                                   spec.portBuf.data(),
+                                                                   spec.portBuf.size(),
+                                                                   spec.width,
+                                                                   std::nullopt,
+                                                                   MotrixIcon::Dice});
+    if (res.textChanged) {
+        if (const auto parsed = motrix::core::ParseStrictInt(spec.portBuf.data())) {
+            if (*parsed >= 1024 && *parsed <= 65535) {
+                spec.portVal = *parsed;
+            }
+        }
     }
     if (res.deactivated) {
-        entry.active = false;
-        if (const auto parsed = motrix::core::ParseStrictInt(entry.buf.data())) {
+        if (const auto parsed = motrix::core::ParseStrictInt(spec.portBuf.data())) {
             spec.portVal = std::clamp(*parsed, 1024, 65535);
         }
-        CopyUtf8ToBuffer(std::to_string(spec.portVal), entry.buf.data(), entry.buf.size());
+        CopyUtf8ToBuffer(std::to_string(spec.portVal), spec.portBuf.data(), spec.portBuf.size());
     }
     if (res.rightClicked) {
-        entry.active = false;
         spec.portVal = RandomPortInRange(spec.randLow, spec.randHigh);
-        CopyUtf8ToBuffer(std::to_string(spec.portVal), entry.buf.data(), entry.buf.size());
+        CopyUtf8ToBuffer(std::to_string(spec.portVal), spec.portBuf.data(), spec.portBuf.size());
     }
-    SavePortDraft(spec.id, entry);
 }
 
 struct SyncBtnSpec {
@@ -290,8 +261,9 @@ void RenderAdvRpcRow(UiFrameContext& ctx, PrefsFormState& ps) {
         const float fullW = std::min(bw, 460.0f * s);
         DrawSubCaption(ctx, bx, cy, ctx.tr.Tr("prefs.rpc_port"));
         cy += 24.0f * s;
-        DrawPortCompositeField(ctx,
-                               PortFieldSpec{"##adv_rpc_port", ps.rpcPort, bx, cy, portW, 10000, 60000});
+        DrawPortCompositeField(
+            ctx,
+            PortFieldSpec{"##adv_rpc_port", ps.rpcPort, ps.rpcPortBuf, bx, cy, portW, 10000, 60000});
         cy += 44.0f * s;
 
         DrawSubCaption(ctx, bx, cy, ctx.tr.Tr("prefs.rpc_secret"));
@@ -334,14 +306,15 @@ void RenderAdvBtNetworkRow(UiFrameContext& ctx, PrefsFormState& ps) {
 
         DrawSubCaption(ctx, bx, cy, ctx.tr.Tr("prefs.bt_port"));
         cy += 24.0f * s;
-        DrawPortCompositeField(ctx,
-                               PortFieldSpec{"##adv_bt_port", ps.btPort, bx, cy, portW, 20000, 29999});
+        DrawPortCompositeField(
+            ctx, PortFieldSpec{"##adv_bt_port", ps.btPort, ps.btPortBuf, bx, cy, portW, 20000, 29999});
         cy += 44.0f * s;
 
         DrawSubCaption(ctx, bx, cy, ctx.tr.Tr("prefs.dht_port"));
         cy += 24.0f * s;
-        DrawPortCompositeField(ctx,
-                               PortFieldSpec{"##adv_dht_port", ps.dhtPort, bx, cy, portW, 20000, 29999});
+        DrawPortCompositeField(
+            ctx,
+            PortFieldSpec{"##adv_dht_port", ps.dhtPort, ps.dhtPortBuf, bx, cy, portW, 20000, 29999});
         cy += 44.0f * s;
 
         const std::array<PrefsCheckboxItem, 4> netItems{{

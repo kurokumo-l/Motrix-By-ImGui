@@ -56,7 +56,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if ($Test) {
     Write-Host "Running ctest ($Config)..." -ForegroundColor Cyan
-    & ctest --test-dir $BuildDir --output-on-failure
+    & ctest --test-dir $BuildDir --output-on-failure --no-tests=error --timeout 120
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

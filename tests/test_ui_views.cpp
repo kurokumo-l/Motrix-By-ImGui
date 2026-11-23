@@ -364,3 +364,104 @@ TEST_CASE("motrix.ui Large BT bitfield heatmap stays bounded in vertex count", "
     CHECK(dd->Valid);
     CHECK(dd->TotalVtxCount < 30000);
 }
+
+TEST_CASE("motrix.ui Shift+Delete opens confirmation modal instead of silent file deletion",
+          "[ui][delete][safety]") {
+    HeadlessUiRunner ui(900.0f, 640.0f);
+    motrix::app::AppStateSnapshot state;
+    auto activeTask = MakeSampleTask(false);
+    state.downloadingTasks.push_back(activeTask);
+    state.activeCategory = motrix::domain::TaskCategory::Downloading;
+    state.selectedTaskGid = activeTask.gid;
+    state.selectedTaskGids = {activeTask.gid};
+    state.prefs.noConfirmBeforeDeleteTask = false;
+    state.prefs.deleteFilesWhenDeleteTask = false;
+
+    (void)ui.Step(state, 900.0f, 640.0f);
+    ImDrawData* ddBase = ui.Step(state, 900.0f, 640.0f);
+    REQUIRE(ddBase != nullptr);
+    const int baseVtx = ddBase->TotalVtxCount;
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddKeyEvent(ImGuiMod_Shift, true);
+    io.AddKeyEvent(ImGuiKey_Delete, true);
+    ImDrawData* ddModalInit = ui.Step(state, 900.0f, 640.0f);
+    REQUIRE(ddModalInit != nullptr);
+    CHECK(ddModalInit->Valid);
+    CHECK(ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup));
+
+    io.AddKeyEvent(ImGuiKey_Delete, false);
+    io.AddKeyEvent(ImGuiMod_Shift, false);
+    ImDrawData* ddModalVisible = ui.Step(state, 900.0f, 640.0f);
+    REQUIRE(ddModalVisible != nullptr);
+    CHECK(ddModalVisible->Valid);
+    CHECK(ddModalVisible->TotalVtxCount > baseVtx);
+    CHECK(ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup));
+
+    for (const auto& cmd : ui.sink.commands) {
+        CHECK_FALSE(std::holds_alternative<motrix::app::RemoveTaskCmd>(cmd));
+        CHECK_FALSE(std::holds_alternative<motrix::app::RemoveTasksCmd>(cmd));
+    }
+}
+
+TEST_CASE("motrix.ui CopyUtf8ToBuffer and PrefsFormState preserve UTF-8 boundaries, trackers, and ports",
+          "[ui][prefs][utf8]") {
+    // 3-byte Chinese characters: "中文测试" (12 bytes)
+    const std::string zh = "\xE4\xB8\xAD\xE6\x96\x87\xE6\xB5\x8B\xE8\xAF\x95";
+    std::array<char, 16> buf{};
+
+    motrix::ui::CopyUtf8ToBuffer(zh, buf.data(), 1);
+    CHECK(std::string_view(buf.data()).empty());
+
+    motrix::ui::CopyUtf8ToBuffer(zh, buf.data(), 3);
+    CHECK(std::string_view(buf.data()).empty());
+
+    motrix::ui::CopyUtf8ToBuffer(zh, buf.data(), 4);
+    CHECK(std::string_view(buf.data()) == "\xE4\xB8\xAD");
+
+    motrix::ui::CopyUtf8ToBuffer(zh, buf.data(), 6);
+    CHECK(std::string_view(buf.data()) == "\xE4\xB8\xAD");
+
+    motrix::ui::CopyUtf8ToBuffer(zh, buf.data(), 7);
+    CHECK(std::string_view(buf.data()) == "\xE4\xB8\xAD\xE6\x96\x87");
+
+    // Mixed ASCII + 4-byte emoji + 3-byte CJK: "a\xF0\x9F\x98\x80\xE4\xB8\xAD"
+    const std::string mixed = "a\xF0\x9F\x98\x80\xE4\xB8\xAD";
+    motrix::ui::CopyUtf8ToBuffer(mixed, buf.data(), 5);
+    CHECK(std::string_view(buf.data()) == "a");
+    motrix::ui::CopyUtf8ToBuffer(mixed, buf.data(), 6);
+    CHECK(std::string_view(buf.data()) == "a\xF0\x9F\x98\x80");
+
+    // Verify oversized btTracker preservation & port draft dirty/reset lifecycle
+    motrix::app::AppStateSnapshot state;
+    std::string hugeTrackers;
+    for (int i = 0; i < 1200; ++i) {
+        if (i > 0) {
+            hugeTrackers.push_back(',');
+        }
+        hugeTrackers += std::format("udp://tracker{}.example.com:6969/announce", i);
+    }
+    REQUIRE(hugeTrackers.size() > 35000u);
+    state.sysConfig.btTracker = hugeTrackers;
+
+    motrix::ui::PrefsFormState ps;
+    motrix::ui::LoadPrefsFromSnapshot(state, ps);
+    CHECK_FALSE(motrix::ui::IsPrefsDraftDirty(state, ps));
+    CHECK(std::string_view(ps.rpcPortBuf.data()) == std::to_string(state.sysConfig.rpcListenPort));
+
+    // In-progress invalid port text triggers dirty and Discard/reload resets cleanly
+    motrix::ui::CopyUtf8ToBuffer("80", ps.rpcPortBuf.data(), ps.rpcPortBuf.size());
+    CHECK(motrix::ui::IsPrefsDraftDirty(state, ps));
+    motrix::ui::LoadPrefsFromSnapshot(state, ps);
+    CHECK_FALSE(motrix::ui::IsPrefsDraftDirty(state, ps));
+
+    // Saving an unrelated pref preserves full untruncated sysConfig.btTracker
+    ps.maxConcurrent = 8;
+    NullViewSink sink;
+    (void)motrix::ui::ApplyPrefsDraft(state, sink, ps);
+    REQUIRE(sink.commands.size() == 1);
+    const auto* saved = std::get_if<motrix::app::SavePreferencesCmd>(&sink.commands.front());
+    REQUIRE(saved != nullptr);
+    CHECK(saved->sysConfig.maxConcurrentDownloads == 8);
+    CHECK(saved->sysConfig.btTracker == hugeTrackers);
+}

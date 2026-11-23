@@ -134,8 +134,14 @@ void Win32OpenPathInExplorer(std::string_view utf8Path) {
     if (utf8Path.empty()) {
         return;
     }
+    if (std::ranges::any_of(utf8Path, [](char ch) { return ch == '\0'; })) {
+        return;
+    }
     if (motrix::core::StartsWithAsciiInsensitive(utf8Path, "http://")
         || motrix::core::StartsWithAsciiInsensitive(utf8Path, "https://")) {
+        if (std::ranges::any_of(utf8Path, [](char ch) { return ch == '\r' || ch == '\n'; })) {
+            return;
+        }
         const std::wstring wide = motrix::core::Utf8ToWide(utf8Path);
         ::ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         return;
@@ -148,10 +154,12 @@ void Win32OpenPathInExplorer(std::string_view utf8Path) {
         ::ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(), nullptr, SW_SHOWNORMAL);
         return;
     }
-    std::filesystem::path target = std::filesystem::exists(p, ec) ? p : p.parent_path();
+    std::filesystem::path target = std::filesystem::is_directory(p, ec) ? p : p.parent_path();
     target.make_preferred();
-    const std::wstring wide = target.empty() ? motrix::core::Utf8ToWide(utf8Path) : target.wstring();
-    ::ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    ec.clear();
+    if (!target.empty() && std::filesystem::is_directory(target, ec)) {
+        ::ShellExecuteW(nullptr, L"explore", target.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
 }
 
 }  // namespace motrix::platform

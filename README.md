@@ -16,7 +16,7 @@
 
 直接从 GitHub Actions / Releases 下载构建好的压缩包，将 `aria2-next.exe`（或 `aria2c.exe`）放到同级 `engine/` 目录下即可运行，也可以在程序设置里指定引擎路径或在线拉取。
 
-如果需要自己编译（Windows + VS2022/2026 + CMake >= 4.1 + Ninja）：
+如果需要自己编译（Windows + VS2022/2026 + CMake >= 4.3 + Ninja）：
 
 ```powershell
 pwsh -NoProfile -File .\scripts\build.ps1 -Config Release -Test

@@ -26,15 +26,18 @@ export struct PrefsFormState {
     bool keepSeeding = false;
     std::array<char, 512> allProxyBuffer{};
     std::array<char, 1024> noProxyBuffer{};
-    std::array<char, 8192> btTrackerBuffer{};
+    std::array<char, 32768> btTrackerBuffer{};
     std::array<char, 512> userAgentBuffer{};
     std::array<char, 512> enginePathBuffer{};
     float seedRatio = 1.0f;
     int seedTime = 60;
     int rpcPort = 16800;
+    std::array<char, 16> rpcPortBuf{};
     std::array<char, 256> rpcSecretBuffer{};
     int btPort = 21301;
+    std::array<char, 16> btPortBuf{};
     int dhtPort = 26701;
+    std::array<char, 16> dhtPortBuf{};
     int runModeIndex = 0;  // 0=Standard, 1=Tray, 2=HideTray
     bool keepWindowState = false;
     bool autoHideWindow = false;
@@ -60,6 +63,8 @@ export struct PrefsFormState {
     std::string lastSnapEnginePath;
     std::string lastSnapFontFamily;
     std::string lastSnapRpcSecret;
+    std::string lastSnapBtTrackerRaw;
+    std::string lastSnapBtTrackerLoadedComma;
     bool rpcSaveUploadMetadata = true;
     bool btAutoDownloadContent = true;
     int btEncryptionIdx = 0;  // 0=preferred,1=required,2=disabled

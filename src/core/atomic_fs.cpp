@@ -1,3 +1,10 @@
+module;
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 module motrix.core;
 
 import std;
@@ -6,9 +13,100 @@ import :error;
 
 namespace motrix::core {
 
+namespace {
+
+std::atomic<std::uint64_t> g_atomicTempSeq{0};
+
+[[nodiscard]] std::string FormatWin32ErrorDetail(DWORD code) {
+    return std::format("win32 error {}", code);
+}
+
+[[nodiscard]] Result<std::pair<std::filesystem::path, UniqueHandle>>
+CreateUniqueTempFile(const std::filesystem::path& targetPath) {
+    const DWORD pid = ::GetCurrentProcessId();
+    constexpr int kMaxAttempts = 64;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        const std::uint64_t seq = g_atomicTempSeq.fetch_add(1, std::memory_order_relaxed);
+        std::filesystem::path candidate = targetPath;
+        candidate += std::format(".{}.{}.tmp", pid, seq);
+        HANDLE raw = ::CreateFileW(
+            candidate.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (raw != INVALID_HANDLE_VALUE) {
+            return std::make_pair(std::move(candidate), UniqueHandle(raw));
+        }
+        const DWORD err = ::GetLastError();
+        if (err != ERROR_FILE_EXISTS && err != ERROR_ALREADY_EXISTS) {
+            return std::unexpected(MakeError(ErrorDomain::Core,
+                                             ErrorCode::IoFailure,
+                                             "Failed to open temp file",
+                                             FormatWin32ErrorDetail(err)));
+        }
+    }
+    return std::unexpected(MakeError(ErrorDomain::Core,
+                                     ErrorCode::IoFailure,
+                                     "Failed to allocate unique temp file",
+                                     PathToUtf8(targetPath)));
+}
+
+[[nodiscard]] Result<void> WriteAllAndFlush(HANDLE handle, std::span<const std::uint8_t> bytes) {
+    constexpr std::size_t kMaxChunk = 64u * 1024u * 1024u;
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const DWORD toWrite = static_cast<DWORD>(std::min(kMaxChunk, bytes.size() - offset));
+        DWORD written = 0;
+        if (!::WriteFile(handle, bytes.data() + offset, toWrite, &written, nullptr) || written == 0) {
+            const DWORD err = ::GetLastError();
+            return std::unexpected(MakeError(ErrorDomain::Core,
+                                             ErrorCode::IoFailure,
+                                             "Failed writing temp file",
+                                             FormatWin32ErrorDetail(err)));
+        }
+        offset += written;
+    }
+    if (!::FlushFileBuffers(handle)) {
+        const DWORD err = ::GetLastError();
+        return std::unexpected(MakeError(ErrorDomain::Core,
+                                         ErrorCode::IoFailure,
+                                         "Failed flushing temp file",
+                                         FormatWin32ErrorDetail(err)));
+    }
+    return {};
+}
+
+[[nodiscard]] Result<void> MoveTempIntoPlace(const std::filesystem::path& tmpPath,
+                                             const std::filesystem::path& targetPath) {
+    constexpr int kMaxAttempts = 5;
+    DWORD lastErr = ERROR_SUCCESS;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        if (::MoveFileExW(tmpPath.c_str(),
+                          targetPath.c_str(),
+                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            return {};
+        }
+        lastErr = ::GetLastError();
+        if (lastErr != ERROR_SHARING_VIOLATION && lastErr != ERROR_ACCESS_DENIED) {
+            break;
+        }
+        if (attempt + 1 < kMaxAttempts) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(15));
+        }
+    }
+    return std::unexpected(MakeError(ErrorDomain::Core,
+                                     ErrorCode::IoFailure,
+                                     "Failed atomic rename",
+                                     FormatWin32ErrorDetail(lastErr)));
+}
+
+}  // namespace
+
 Result<std::vector<std::uint8_t>> ReadFileBytes(const std::filesystem::path& path) {
     std::error_code ec;
-    if (!std::filesystem::exists(path, ec)) {
+    const bool exists = std::filesystem::exists(path, ec);
+    if (ec) {
+        return std::unexpected(
+            MakeError(ErrorDomain::Core, ErrorCode::IoFailure, "Failed to inspect file", ec.message()));
+    }
+    if (!exists) {
         return std::unexpected(
             MakeError(ErrorDomain::Core, ErrorCode::NotFound, "File does not exist", PathToUtf8(path)));
     }
@@ -50,9 +148,9 @@ Result<std::string> ReadFileUtf8(const std::filesystem::path& path) {
 }
 
 Result<void> WriteFileAtomic(const std::filesystem::path& path, std::span<const std::uint8_t> bytes) {
-    if (path.empty()) {
+    if (path.empty() || std::wstring_view(path.native()).find(L'\0') != std::wstring_view::npos) {
         return std::unexpected(
-            MakeError(ErrorDomain::Core, ErrorCode::InvalidArgument, "Target path is empty"));
+            MakeError(ErrorDomain::Core, ErrorCode::InvalidArgument, "Target path is invalid"));
     }
 
     std::error_code ec;
@@ -66,38 +164,35 @@ Result<void> WriteFileAtomic(const std::filesystem::path& path, std::span<const 
         }
     }
 
-    std::filesystem::path tmpPath = path;
-    tmpPath += std::format(".{}.tmp", std::this_thread::get_id());
-
-    {
-        std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
-        if (!out.is_open()) {
-            return std::unexpected(MakeError(ErrorDomain::Core,
-                                             ErrorCode::IoFailure,
-                                             "Failed to open temp file",
-                                             PathToUtf8(tmpPath)));
-        }
-        if (!bytes.empty()) {
-            out.write(reinterpret_cast<const char*>(bytes.data()),
-                      static_cast<std::streamsize>(bytes.size()));
-        }
-        out.flush();
-        if (!out.good()) {
-            out.close();
-            std::filesystem::remove(tmpPath, ec);
-            return std::unexpected(MakeError(ErrorDomain::Core,
-                                             ErrorCode::IoFailure,
-                                             "Failed writing temp file",
-                                             PathToUtf8(tmpPath)));
-        }
+    auto created = CreateUniqueTempFile(path);
+    if (!created) {
+        return std::unexpected(created.error());
     }
+    std::filesystem::path tmpPath = std::move(created->first);
+    UniqueHandle tmpFile = std::move(created->second);
 
-    std::filesystem::rename(tmpPath, path, ec);
-    if (ec) {
+    if (const auto writeRes = WriteAllAndFlush(tmpFile.Get(), bytes); !writeRes) {
+        tmpFile.Reset();
         std::error_code rmEc;
         std::filesystem::remove(tmpPath, rmEc);
-        return std::unexpected(
-            MakeError(ErrorDomain::Core, ErrorCode::IoFailure, "Failed atomic rename", ec.message()));
+        return std::unexpected(writeRes.error());
+    }
+
+    const HANDLE rawHandle = tmpFile.Release();
+    if (!::CloseHandle(rawHandle)) {
+        const DWORD err = ::GetLastError();
+        std::error_code rmEc;
+        std::filesystem::remove(tmpPath, rmEc);
+        return std::unexpected(MakeError(ErrorDomain::Core,
+                                         ErrorCode::IoFailure,
+                                         "Failed closing temp file",
+                                         FormatWin32ErrorDetail(err)));
+    }
+
+    if (const auto moveRes = MoveTempIntoPlace(tmpPath, path); !moveRes) {
+        std::error_code rmEc;
+        std::filesystem::remove(tmpPath, rmEc);
+        return std::unexpected(moveRes.error());
     }
     return {};
 }

@@ -99,7 +99,7 @@ void DispatchDroppedFiles(Win32WindowState& state, HDROP hDrop) {
     ::DragFinish(hDrop);
     if (!paths.empty() && state.config.onFilesDropped) {
         state.config.onFilesDropped(std::move(paths));
-        state.activeFramesRemaining = std::max(state.activeFramesRemaining, 3);
+        state.BumpActiveFrames(3);
     }
 }
 
@@ -172,7 +172,8 @@ void HandleSizeMessage(Win32WindowState& state, const WindowMsg& m) {
 
 void HandleBlurAutoHide(Win32WindowState& state, const WindowMsg& m) {
     if (LOWORD(m.wParam) != WA_INACTIVE || !state.autoHideOnBlur || state.inPickerDialog
-        || !state.config.screenshotPath.empty() || !::IsWindowVisible(m.hWnd) || ::IsIconic(m.hWnd)) {
+        || state.modalLoopDepth > 0 || !state.config.screenshotPath.empty() || !::IsWindowVisible(m.hWnd)
+        || ::IsIconic(m.hWnd)) {
         return;
     }
     HWND next = reinterpret_cast<HWND>(m.lParam);
@@ -182,14 +183,14 @@ void HandleBlurAutoHide(Win32WindowState& state, const WindowMsg& m) {
     }
     if (!next || nextPid != ::GetCurrentProcessId()) {
         Win32ShowWindow(m.hWnd, false, false);
-        state.hiddenToTray = true;
+        state.hiddenToTray.store(true, std::memory_order_release);
         state.trimRequested = true;
     }
 }
 
 LRESULT HandleMessage(Win32WindowState& state, const WindowMsg& m) {
     if (ShouldWakeFrameForMessage(m.msg)) {
-        state.activeFramesRemaining = std::max(state.activeFramesRemaining, 3);
+        state.BumpActiveFrames(3);
     }
 
     switch (m.msg) {
@@ -207,10 +208,20 @@ LRESULT HandleMessage(Win32WindowState& state, const WindowMsg& m) {
         }
         case WM_DPICHANGED: {
             const UINT newDpi = HIWORD(m.wParam);
-            if (newDpi > 0) {
-                state.dpiScale = static_cast<float>(newDpi) / 96.0f;
-            }
+            const float nextScale = (newDpi > 0) ? (static_cast<float>(newDpi) / 96.0f) : state.dpiScale;
             const auto* s = reinterpret_cast<const RECT*>(m.lParam);
+            if (state.modalLoopDepth > 0) {
+                state.pendingDpiScale = nextScale;
+                if (s != nullptr) {
+                    state.pendingDpiX = s->left;
+                    state.pendingDpiY = s->top;
+                    state.pendingDpiW = s->right - s->left;
+                    state.pendingDpiH = s->bottom - s->top;
+                }
+                state.hasPendingDpi = true;
+                return 0;
+            }
+            state.dpiScale = nextScale;
             ::SetWindowPos(m.hWnd,
                            nullptr,
                            s->left,
@@ -238,14 +249,15 @@ LRESULT HandleMessage(Win32WindowState& state, const WindowMsg& m) {
             }
             if (state.bindCloseToHide && !state.explicitQuitRequested) {
                 Win32ShowWindow(m.hWnd, false, false);
-                state.hiddenToTray = true;
+                state.hiddenToTray.store(true, std::memory_order_release);
                 state.trimRequested = true;
                 return 0;
             }
             if (state.config.onQuitRequested) {
                 state.config.onQuitRequested();
             }
-            break;
+            ::PostQuitMessage(0);
+            return 0;
         case WM_SYSCOMMAND:
             if ((m.wParam & 0xFFF0u) == SC_KEYMENU) {
                 return 0;
@@ -256,6 +268,10 @@ LRESULT HandleMessage(Win32WindowState& state, const WindowMsg& m) {
             state.hwnd = nullptr;
             ::PostQuitMessage(0);
             return 0;
+        case WM_NCDESTROY:
+            state.hwnd = nullptr;
+            ::SetWindowLongPtrW(m.hWnd, GWLP_USERDATA, 0);
+            break;
         default:
             if (LRESULT sr = 0; Win32HandleShellOrEndSession(state, m.msg, m.wParam, sr)) {
                 return sr;
@@ -278,10 +294,11 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         DispatchDroppedFiles(*state, reinterpret_cast<HDROP>(wParam));
         return 0;
     }
-    if (ImGui::GetCurrentContext() != nullptr
+    const bool inModalLoop = (state != nullptr && state->modalLoopDepth > 0);
+    if (!inModalLoop && ImGui::GetCurrentContext() != nullptr
         && ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) {
         if (state) {
-            state->activeFramesRemaining = std::max(state->activeFramesRemaining, 3);
+            state->BumpActiveFrames(3);
         }
         return TRUE;
     }
@@ -381,6 +398,30 @@ void Win32DestroyWindow(Win32WindowState& state) noexcept {
         ::UnregisterClassW(kWindowClassName, static_cast<HINSTANCE>(state.hInstance));
         state.hInstance = nullptr;
     }
+}
+
+void Win32FlushDeferredDpi(Win32WindowState& state) noexcept {
+    try {
+        if (!state.hasPendingDpi) {
+            return;
+        }
+        state.hasPendingDpi = false;
+        state.dpiScale = state.pendingDpiScale;
+        HWND hwnd = static_cast<HWND>(state.hwnd);
+        if (hwnd && ::IsWindow(hwnd) && state.pendingDpiW > 0 && state.pendingDpiH > 0) {
+            ::SetWindowPos(hwnd,
+                           nullptr,
+                           state.pendingDpiX,
+                           state.pendingDpiY,
+                           state.pendingDpiW,
+                           state.pendingDpiH,
+                           SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        state.pendingDpiW = 0;
+        state.pendingDpiH = 0;
+        Win32RefreshIconsOnThemeOrDpi(state);
+        state.BumpActiveFrames(3);
+    } catch (...) {}
 }
 
 void Win32ShowWindow(void* hwnd, bool show, bool activate) noexcept {

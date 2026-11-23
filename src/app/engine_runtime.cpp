@@ -193,11 +193,12 @@ void EngineRuntime::RunConnectedSession(std::stop_token st) {
                            || restartRequested_.load(std::memory_order_acquire);
                 });
             }
+            if (st.stop_requested() || IsShutdownBlocked()
+                || restartRequested_.load(std::memory_order_acquire)
+                || disconnectedFlag_.load(std::memory_order_acquire)) {
+                return;
+            }
             pending.swap(queue_);
-        }
-        if (st.stop_requested() || IsShutdownBlocked()
-            || restartRequested_.load(std::memory_order_acquire)) {
-            return;
         }
 
         bool needSync = wakeSync_.exchange(false, std::memory_order_acq_rel);
@@ -205,9 +206,17 @@ void EngineRuntime::RunConnectedSession(std::stop_token st) {
         while (!pending.empty()) {
             ProcessCommand(pending.front(), needSync, cmdErr);
             pending.pop_front();
-            if (resetSessionRequested_ || st.stop_requested()
-                || restartRequested_.load(std::memory_order_acquire)) {
+            if (resetSessionRequested_ || st.stop_requested() || IsShutdownBlocked()
+                || restartRequested_.load(std::memory_order_acquire)
+                || disconnectedFlag_.load(std::memory_order_acquire)) {
                 break;
+            }
+        }
+        if (!pending.empty() && !st.stop_requested()) {
+            std::scoped_lock lock(queueMutex_);
+            while (!pending.empty()) {
+                queue_.push_front(std::move(pending.back()));
+                pending.pop_back();
             }
         }
         if (resetSessionRequested_) {
@@ -258,7 +267,17 @@ EngineRuntime::PreparedLaunch EngineRuntime::PrepareLaunchSpec(const std::filesy
     globalOpts.push_back({"bt-port-mapping", config_.enableUpnp ? "true" : "false"});
     const auto filteredOpts = dialect_->FilterGlobalOptions(globalOpts);
     const std::filesystem::path confPath = config_.appDataDir / "aria2.conf";
-    if (motrix::core::WriteTextAtomic(confPath, motrix::engine::FormatAria2Conf(filteredOpts))) {
+    bool wroteConf = false;
+    {
+        std::unique_lock<std::mutex> persistLock;
+        if (config_.configPersistMutex) {
+            persistLock = std::unique_lock<std::mutex>(*config_.configPersistMutex);
+        }
+        wroteConf =
+            motrix::core::WriteTextAtomic(confPath, motrix::engine::FormatAria2Conf(filteredOpts))
+                .has_value();
+    }
+    if (wroteConf) {
         launch.confPath = confPath;
     }
 

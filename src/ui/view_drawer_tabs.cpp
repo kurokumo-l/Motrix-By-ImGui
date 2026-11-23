@@ -474,8 +474,10 @@ void RenderTrackersTab(UiFrameContext& ctx, std::span<const std::string> tracker
 
     FontGuard tf(ctx.fonts, FontRole::Regular, 13.5f);
     const float lineStep = ImGui::GetTextLineHeight() + 6.0f * s;
+    const float minH = std::min(54.0f * s, std::max(1.0f, avail.y));
+    const float maxH = std::max(minH, avail.y);
     const float boxH =
-        std::clamp(static_cast<float>(trackers.size()) * lineStep + 18.0f * s, 54.0f * s, avail.y);
+        std::clamp(static_cast<float>(trackers.size()) * lineStep + 18.0f * s, minH, maxH);
 
     dl->AddRectFilled(
         boxMin, ImVec2(boxMin.x + avail.x, boxMin.y + boxH), ToAbgrU32(ctx.palette.inputBg), 4.0f * s);
@@ -500,12 +502,13 @@ void RenderPeersTab(UiFrameContext& ctx, std::span<const motrix::domain::TaskPee
     const std::size_t rowCount = peers.empty() ? 1u : peers.size();
     const ImVec2 tableMin = ImGui::GetCursorScreenPos();
     const float padY = 11.0f * s;
-    float tableH = avail.y;
+    const float maxTableH = std::max(1.0f, avail.y);
+    float tableH = maxTableH;
 
     {
         FontGuard pf(ctx.fonts, FontRole::Regular, 13.0f);
         const float exactRowH = ImGui::GetTextLineHeight() + padY * 2.0f + 1.0f;
-        tableH = std::min(avail.y, static_cast<float>(rowCount + 1) * exactRowH);
+        tableH = std::max(1.0f, std::min(maxTableH, static_cast<float>(rowCount + 1) * exactRowH));
 
         StyleColorGuard hdrBg(ImGuiCol_TableHeaderBg, ctx.palette.modalBg);
         StyleColorGuard rowBg(ImGuiCol_TableRowBg, ctx.palette.modalBg);

@@ -152,6 +152,73 @@ TEST_CASE("motrix.domain ParseTorrentBytes rejects malformed and overly nested i
     CHECK_FALSE(ParseTorrentBytes(ToBytes(deepTorrent)).has_value());
 }
 
+TEST_CASE("motrix.domain ParseTorrentBytes enforces strict BEP-3 sorting, path safety, and bounds",
+          "[domain][bencode][security]") {
+    using namespace motrix::domain;
+    const std::string fakePiece(20, '\x22');
+
+    // Duplicate dictionary key in root and info must be rejected.
+    const std::string validInfo = "d" + BencodeBytes("length") + BencodeInt(100) + BencodeBytes("name")
+                                  + BencodeBytes("ok.bin") + BencodeBytes("piece length")
+                                  + BencodeInt(16384) + BencodeBytes("pieces") + BencodeBytes(fakePiece)
+                                  + "e";
+    const std::string dupRoot =
+        "d" + BencodeBytes("info") + validInfo + BencodeBytes("info") + validInfo + "e";
+    CHECK_FALSE(ParseTorrentBytes(ToBytes(dupRoot)).has_value());
+
+    const std::string dupInfo = "d" + BencodeBytes("length") + BencodeInt(100) + BencodeBytes("length")
+                                + BencodeInt(200) + BencodeBytes("name") + BencodeBytes("ok.bin")
+                                + BencodeBytes("piece length") + BencodeInt(16384)
+                                + BencodeBytes("pieces") + BencodeBytes(fakePiece) + "e";
+    CHECK_FALSE(ParseTorrentBytes(ToBytes("d" + BencodeBytes("info") + dupInfo + "e")).has_value());
+
+    // Unsorted dictionary keys must be rejected.
+    const std::string unsortedInfo = "d" + BencodeBytes("name") + BencodeBytes("ok.bin")
+                                     + BencodeBytes("length") + BencodeInt(100)
+                                     + BencodeBytes("piece length") + BencodeInt(16384)
+                                     + BencodeBytes("pieces") + BencodeBytes(fakePiece) + "e";
+    CHECK_FALSE(ParseTorrentBytes(ToBytes("d" + BencodeBytes("info") + unsortedInfo + "e")).has_value());
+
+    // Path traversal / unsafe names in single-file and multi-file torrents must be rejected.
+    auto makeSingleWithName = [&](std::string_view name) {
+        const std::string info = "d" + BencodeBytes("length") + BencodeInt(10) + BencodeBytes("name")
+                                 + BencodeBytes(name) + BencodeBytes("piece length") + BencodeInt(16384)
+                                 + BencodeBytes("pieces") + BencodeBytes(fakePiece) + "e";
+        return "d" + BencodeBytes("info") + info + "e";
+    };
+    for (const std::string_view badName : std::array<std::string_view, 7>{
+             "", ".", "..", "a/b", "a\\b", "C:evil", std::string_view("a\0b", 3)}) {
+        CHECK_FALSE(ParseTorrentBytes(ToBytes(makeSingleWithName(badName))).has_value());
+    }
+
+    auto makeMultiWithSeg = [&](std::string_view seg) {
+        const std::string f1 = "d" + BencodeBytes("length") + BencodeInt(10) + BencodeBytes("path") + "l"
+                               + BencodeBytes(seg) + BencodeBytes("file.bin") + "e" + "e";
+        const std::string info = "d" + BencodeBytes("files") + "l" + f1 + "e" + BencodeBytes("name")
+                                 + BencodeBytes("pack") + BencodeBytes("piece length")
+                                 + BencodeInt(16384) + BencodeBytes("pieces") + BencodeBytes(fakePiece)
+                                 + "e";
+        return "d" + BencodeBytes("info") + info + "e";
+    };
+    for (const std::string_view badSeg : std::array<std::string_view, 7>{
+             "", ".", "..", "sub/dir", "sub\\dir", "D:", std::string_view("x\0y", 3)}) {
+        CHECK_FALSE(ParseTorrentBytes(ToBytes(makeMultiWithSeg(badSeg))).has_value());
+    }
+
+    // Node count > 250000 must fail cleanly without OOM.
+    std::string manyNodes = "d4:infol";
+    manyNodes.reserve(250010u * 3u + 16u);
+    for (int i = 0; i < 250005; ++i) {
+        manyNodes += "i0e";
+    }
+    manyNodes += "ee";
+    CHECK_FALSE(ParseTorrentBytes(ToBytes(manyNodes)).has_value());
+
+    // Buffer > 32 MiB must fail immediately.
+    std::vector<std::uint8_t> oversized(32u * 1024u * 1024u + 1u, 'd');
+    CHECK_FALSE(ParseTorrentBytes(oversized).has_value());
+}
+
 TEST_CASE("motrix.domain BT UI helpers format select-file, peers, extensions, timestamps, bitfields",
           "[domain][bencode][helpers]") {
     using namespace motrix::domain;

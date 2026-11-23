@@ -103,10 +103,55 @@ struct DiscoveredIgd {
     std::string wanAddr;
 };
 
-[[nodiscard]] motrix::core::Result<DiscoveredIgd> DiscoverValidIgd(motrix::core::Logger& logger) {
+[[nodiscard]] motrix::core::AppError MakeUpnpCancelledError() {
+    return motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
+                                   motrix::core::ErrorCode::Cancelled,
+                                   "UPnP operation cancelled");
+}
+
+void DeletePortMappingsUnlocked(motrix::core::Logger& logger,
+                                std::string_view controlUrl,
+                                std::string_view serviceType,
+                                std::span<const ActivePortMapping> mappings) {
+    if (controlUrl.empty() || serviceType.empty() || mappings.empty()) {
+        return;
+    }
+    const std::string ctrl(controlUrl);
+    const std::string svc(serviceType);
+    for (const auto& item : mappings) {
+        const int rc = ::UPNP_DeletePortMapping(
+            ctrl.c_str(), svc.c_str(), item.port.c_str(), item.proto.c_str(), nullptr);
+        if (rc != UPNPCOMMAND_SUCCESS) {
+            const char* errText = ::strupnperror(rc);
+            logger.Debug("upnp",
+                         "UPNP_DeletePortMapping({}/{}) returned {}: {}",
+                         item.port,
+                         item.proto,
+                         rc,
+                         errText ? errText : "unknown");
+        }
+    }
+}
+
+[[nodiscard]] motrix::core::Result<DiscoveredIgd>
+DiscoverValidIgd(motrix::core::Logger& logger,
+                 const std::atomic<bool>& stopRequested,
+                 const std::atomic<std::uint64_t>& generation,
+                 std::uint64_t expectedGen) {
+    auto cancelled = [&]() noexcept {
+        return stopRequested.load(std::memory_order_acquire)
+               || generation.load(std::memory_order_acquire) != expectedGen;
+    };
+
+    if (cancelled()) {
+        return std::unexpected(MakeUpnpCancelledError());
+    }
     int discoverErr = UPNPDISCOVER_SUCCESS;
     UniqueDevList devlist(::upnpDiscover(
         1500, nullptr, nullptr, UPNP_LOCAL_PORT_ANY, 0, static_cast<unsigned char>(2), &discoverErr));
+    if (cancelled()) {
+        return std::unexpected(MakeUpnpCancelledError());
+    }
     if (devlist.Get() == nullptr) {
         logger.Debug("upnp", "UPnP discovery found no IGD (err={})", discoverErr);
         return std::unexpected(
@@ -127,6 +172,9 @@ struct DiscoveredIgd {
     if (status != 0) {
         igd.urls.active = true;
     }
+    if (cancelled()) {
+        return std::unexpected(MakeUpnpCancelledError());
+    }
     if (status != UPNP_CONNECTED_IGD && status != UPNP_PRIVATEIP_IGD) {
         logger.Debug("upnp", "No connected UPnP IGD found (status={})", status);
         return std::unexpected(
@@ -145,7 +193,18 @@ struct DiscoveredIgd {
 }
 
 [[nodiscard]] motrix::core::Result<std::vector<ActivePortMapping>>
-ApplyPortMappings(motrix::core::Logger& logger, const DiscoveredIgd& igd, int btPort, int dhtPort) {
+ApplyPortMappings(motrix::core::Logger& logger,
+                  const DiscoveredIgd& igd,
+                  int btPort,
+                  int dhtPort,
+                  const std::atomic<bool>& stopRequested,
+                  const std::atomic<std::uint64_t>& generation,
+                  std::uint64_t expectedGen) {
+    auto cancelled = [&]() noexcept {
+        return stopRequested.load(std::memory_order_acquire)
+               || generation.load(std::memory_order_acquire) != expectedGen;
+    };
+
     std::vector<ActivePortMapping> requested;
     requested.push_back({std::to_string(btPort), "TCP"});
     requested.push_back({std::to_string(btPort), "UDP"});
@@ -154,6 +213,11 @@ ApplyPortMappings(motrix::core::Logger& logger, const DiscoveredIgd& igd, int bt
     }
     std::vector<ActivePortMapping> added;
     for (const auto& item : requested) {
+        if (cancelled()) {
+            DeletePortMappingsUnlocked(
+                logger, igd.urls.urls.controlURL, igd.data.first.servicetype, added);
+            return std::unexpected(MakeUpnpCancelledError());
+        }
         const int rc = ::UPNP_AddPortMapping(igd.urls.urls.controlURL,
                                              igd.data.first.servicetype,
                                              item.port.c_str(),
@@ -171,13 +235,7 @@ ApplyPortMappings(motrix::core::Logger& logger, const DiscoveredIgd& igd, int bt
         const std::string detail = errText ? errText : "unknown";
         logger.Warn(
             "upnp", "UPNP_AddPortMapping({}/{}) failed (rc={}): {}", item.port, item.proto, rc, detail);
-        for (const auto& prev : added) {
-            (void)::UPNP_DeletePortMapping(igd.urls.urls.controlURL,
-                                           igd.data.first.servicetype,
-                                           prev.port.c_str(),
-                                           prev.proto.c_str(),
-                                           nullptr);
-        }
+        DeletePortMappingsUnlocked(logger, igd.urls.urls.controlURL, igd.data.first.servicetype, added);
         return std::unexpected(motrix::core::MakeError(
             motrix::core::ErrorDomain::Engine,
             motrix::core::ErrorCode::IoFailure,
@@ -199,31 +257,49 @@ public:
                                                            "Invalid UPnP port number"));
         }
 
-        std::lock_guard lock(mutex_);
-        if (state_.mapped && state_.btPort == btPort && state_.dhtPort == dhtPort) {
-            return state_;
-        }
-        UnmapLocked();
+        stopRequested_.store(false, std::memory_order_release);
+        const std::uint64_t myGen = generation_.fetch_add(1u, std::memory_order_acq_rel) + 1u;
 
+        std::string prevCtrl;
+        std::string prevSvc;
+        std::vector<ActivePortMapping> prevMappings;
+        {
+            std::lock_guard lock(stateMutex_);
+            if (state_.mapped && state_.btPort == btPort && state_.dhtPort == dhtPort) {
+                return state_;
+            }
+            prevCtrl = std::move(controlUrl_);
+            prevSvc = std::move(serviceType_);
+            prevMappings = std::move(activeMappings_);
+            controlUrl_.clear();
+            serviceType_.clear();
+            activeMappings_.clear();
+            state_ = UpnpMappedPorts{};
+        }
+
+        DeletePortMappingsUnlocked(logger_, prevCtrl, prevSvc, prevMappings);
+        if (IsCancelled(myGen)) {
+            return std::unexpected(MakeUpnpCancelledError());
+        }
         if (!wsa_.initialized) {
             return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Engine,
                                                            motrix::core::ErrorCode::IoFailure,
                                                            "Winsock initialization failed for UPnP"));
         }
 
-        auto igd = DiscoverValidIgd(logger_);
+        auto igd = DiscoverValidIgd(logger_, stopRequested_, generation_, myGen);
         if (!igd) {
             return std::unexpected(igd.error());
         }
-        auto added = ApplyPortMappings(logger_, *igd, btPort, dhtPort);
+        auto added =
+            ApplyPortMappings(logger_, *igd, btPort, dhtPort, stopRequested_, generation_, myGen);
         if (!added) {
             return std::unexpected(added.error());
         }
 
-        controlUrl_ = igd->urls.urls.controlURL;
-        serviceType_ = igd->data.first.servicetype;
-        activeMappings_ = std::move(*added);
-        state_ = UpnpMappedPorts{
+        const std::string newCtrl = igd->urls.urls.controlURL;
+        const std::string newSvc = igd->data.first.servicetype;
+        UpnpMappedPorts nextState{
             .btPort = btPort,
             .dhtPort = dhtPort,
             .mapped = true,
@@ -231,49 +307,62 @@ public:
             .gatewayDesc =
                 igd->urls.urls.rootdescURL ? igd->urls.urls.rootdescURL : igd->data.first.servicetype,
         };
-        logger_.Info("upnp", "UPnP mapped BT={} DHT={} extIp={}", btPort, dhtPort, state_.externalIp);
-        return state_;
+
+        bool committed = false;
+        {
+            std::lock_guard lock(stateMutex_);
+            if (!IsCancelled(myGen)) {
+                controlUrl_ = newCtrl;
+                serviceType_ = newSvc;
+                activeMappings_ = std::move(*added);
+                state_ = nextState;
+                committed = true;
+            }
+        }
+        if (!committed) {
+            DeletePortMappingsUnlocked(logger_, newCtrl, newSvc, *added);
+            return std::unexpected(MakeUpnpCancelledError());
+        }
+        logger_.Info("upnp", "UPnP mapped BT={} DHT={} extIp={}", btPort, dhtPort, nextState.externalIp);
+        return nextState;
     }
 
     void UnmapAll() override {
-        std::lock_guard lock(mutex_);
-        UnmapLocked();
+        stopRequested_.store(true, std::memory_order_release);
+        generation_.fetch_add(1u, std::memory_order_acq_rel);
+
+        std::string ctrl;
+        std::string svc;
+        std::vector<ActivePortMapping> mappings;
+        {
+            std::lock_guard lock(stateMutex_);
+            ctrl = std::move(controlUrl_);
+            svc = std::move(serviceType_);
+            mappings = std::move(activeMappings_);
+            controlUrl_.clear();
+            serviceType_.clear();
+            activeMappings_.clear();
+            state_ = UpnpMappedPorts{};
+        }
+        DeletePortMappingsUnlocked(logger_, ctrl, svc, mappings);
     }
 
     UpnpMappedPorts CurrentState() const override {
-        std::lock_guard lock(mutex_);
+        std::lock_guard lock(stateMutex_);
         return state_;
     }
 
 private:
-    void UnmapLocked() {
-        if (!controlUrl_.empty() && !serviceType_.empty()) {
-            for (const auto& item : activeMappings_) {
-                const int rc = ::UPNP_DeletePortMapping(controlUrl_.c_str(),
-                                                        serviceType_.c_str(),
-                                                        item.port.c_str(),
-                                                        item.proto.c_str(),
-                                                        nullptr);
-                if (rc != UPNPCOMMAND_SUCCESS) {
-                    const char* errText = ::strupnperror(rc);
-                    logger_.Debug("upnp",
-                                  "UPNP_DeletePortMapping({}/{}) returned {}: {}",
-                                  item.port,
-                                  item.proto,
-                                  rc,
-                                  errText ? errText : "unknown");
-                }
-            }
-        }
-        activeMappings_.clear();
-        controlUrl_.clear();
-        serviceType_.clear();
-        state_ = UpnpMappedPorts{};
+    [[nodiscard]] bool IsCancelled(std::uint64_t expectedGen) const noexcept {
+        return stopRequested_.load(std::memory_order_acquire)
+               || generation_.load(std::memory_order_acquire) != expectedGen;
     }
 
     motrix::core::Logger& logger_;
     ScopedWsaStartup wsa_;
-    mutable std::mutex mutex_;
+    std::atomic<bool> stopRequested_{false};
+    std::atomic<std::uint64_t> generation_{0};
+    mutable std::mutex stateMutex_;
     std::string controlUrl_;
     std::string serviceType_;
     std::vector<ActivePortMapping> activeMappings_;

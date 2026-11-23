@@ -121,7 +121,7 @@ AddFontFile(ImFontAtlas& atlas, const std::filesystem::path& path, ImFontConfig 
 
 [[nodiscard]] ImFont*
 AddSystemFont(ImFontAtlas& atlas, int weight, std::string_view familyUtf8, ImFontConfig cfg) {
-    if (familyUtf8.empty()) {
+    if (familyUtf8.empty() || GetDWriteFontLoader() == nullptr) {
         return nullptr;
     }
     const std::string spec = std::format("MOTRIX_SYS:{}:{}", weight, familyUtf8);
@@ -253,14 +253,15 @@ bool FontRegistry::LoadAll(const std::filesystem::path& assetsDir,
         return false;
     }
 
-    if (const ImFontLoader* dwriteLoader = GetDWriteFontLoader()) {
+    const ImFontLoader* dwriteLoader = GetDWriteFontLoader();
+    if (dwriteLoader != nullptr) {
         atlas->SetFontLoader(dwriteLoader);
     }
 
     const GenericUiFontFiles assetFonts = ProbeGenericAssetFonts(assetsDir);
-    const ResolvedFontSource primarySrc = assetFonts.regular
-                                              ? ResolvedFontSource{assetFonts.regular, {}}
-                                              : ResolveRequestedSource(fontFamily, kDefaultUiFamily);
+    ResolvedFontSource primarySrc = assetFonts.regular
+                                        ? ResolvedFontSource{assetFonts.regular, {}}
+                                        : ResolveRequestedSource(fontFamily, kDefaultUiFamily);
 
     if (assetFonts.regular) {
         regular_ = LoadFontWithFallback(*atlas, assetFonts.regular, {}, 400);
@@ -272,6 +273,17 @@ bool FontRegistry::LoadAll(const std::filesystem::path& assetsDir,
         medium_ = LoadFontWithFallback(*atlas, primarySrc.filePath, primarySrc.sysFamily, 500);
         semibold_ = LoadFontWithFallback(*atlas, primarySrc.filePath, primarySrc.sysFamily, 600);
         bold_ = LoadFontWithFallback(*atlas, primarySrc.filePath, primarySrc.sysFamily, 700);
+    }
+
+    if (!regular_ && primarySrc.filePath.has_value()) {
+        const ResolvedFontSource sysFallback = ResolveRequestedSource({}, kDefaultUiFamily);
+        if (!sysFallback.sysFamily.empty()) {
+            primarySrc = sysFallback;
+            regular_ = LoadFontWithFallback(*atlas, std::nullopt, primarySrc.sysFamily, 400);
+            medium_ = LoadFontWithFallback(*atlas, std::nullopt, primarySrc.sysFamily, 500);
+            semibold_ = LoadFontWithFallback(*atlas, std::nullopt, primarySrc.sysFamily, 600);
+            bold_ = LoadFontWithFallback(*atlas, std::nullopt, primarySrc.sysFamily, 700);
+        }
     }
 
     ResolvedFontSource monoSrc;
@@ -289,6 +301,12 @@ bool FontRegistry::LoadAll(const std::filesystem::path& assetsDir,
     mono_ = LoadMonoFont(*atlas, monoSrc, primarySrc);
 
     if (!regular_) {
+        atlas->ClearFonts();
+        atlas->SetFontLoader(nullptr);
+        medium_ = nullptr;
+        semibold_ = nullptr;
+        bold_ = nullptr;
+        mono_ = nullptr;
         regular_ = atlas->AddFontDefault();
     }
     if (!medium_) {

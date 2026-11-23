@@ -45,7 +45,7 @@ DumpRpcCall(std::string_view id, std::string_view method, nlohmann::json params)
         {"method", method},
         {"params", std::move(params)},
     };
-    return req.dump();
+    return req.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
 }  // namespace

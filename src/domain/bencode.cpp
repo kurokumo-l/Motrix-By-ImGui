@@ -7,6 +7,8 @@ namespace motrix::domain {
 namespace {
 
 constexpr int kMaxBencodeDepth = 64;
+constexpr std::size_t kMaxTorrentBytes = 32u * 1024u * 1024u;
+constexpr std::size_t kMaxBencodeNodes = 250000u;
 
 struct BencodeValue {
     enum class Kind {
@@ -17,10 +19,10 @@ struct BencodeValue {
     };
 
     Kind kind = Kind::Bytes;
-    std::string bytes;
+    std::string_view bytes;
     std::int64_t integer = 0;
     std::vector<BencodeValue> list;
-    std::vector<std::pair<std::string, BencodeValue>> dict;
+    std::vector<std::pair<std::string_view, BencodeValue>> dict;
     std::size_t rawStart = 0;
     std::size_t rawEnd = 0;
 
@@ -51,7 +53,19 @@ motrix::core::AppError MakeParseError(std::string msg) {
         motrix::core::ErrorDomain::Domain, motrix::core::ErrorCode::ParseFailure, std::move(msg));
 }
 
-motrix::core::Result<std::string> ParseByteString(BencodeCursor& cur) {
+[[nodiscard]] bool IsSafePathSegment(std::string_view seg) noexcept {
+    if (seg.empty() || seg == "." || seg == "..") {
+        return false;
+    }
+    for (const unsigned char ch : seg) {
+        if (ch == '/' || ch == '\\' || ch == ':' || ch < 0x20u || ch == 0x7Fu) {
+            return false;
+        }
+    }
+    return true;
+}
+
+motrix::core::Result<std::string_view> ParseByteString(BencodeCursor& cur) {
     if (cur.AtEnd()) {
         return std::unexpected(MakeParseError("Unexpected EOF parsing bencode string length"));
     }
@@ -87,7 +101,7 @@ motrix::core::Result<std::string> ParseByteString(BencodeCursor& cur) {
     }
 
     const std::size_t byteLen = static_cast<std::size_t>(len);
-    std::string out(reinterpret_cast<const char*>(cur.data.data() + cur.pos), byteLen);
+    const std::string_view out(reinterpret_cast<const char*>(cur.data.data() + cur.pos), byteLen);
     cur.pos += byteLen;
     return out;
 }
@@ -143,9 +157,12 @@ motrix::core::Result<std::int64_t> ParseInteger(BencodeCursor& cur) {
     return static_cast<std::int64_t>(mag);
 }
 
-motrix::core::Result<BencodeValue> ParseValue(BencodeCursor& cur, int depth) {
+motrix::core::Result<BencodeValue> ParseValue(BencodeCursor& cur, int depth, std::size_t& nodeCount) {
     if (depth > kMaxBencodeDepth) {
         return std::unexpected(MakeParseError("Bencode nesting depth exceeds safety limit"));
+    }
+    if (++nodeCount > kMaxBencodeNodes) {
+        return std::unexpected(MakeParseError("Bencode node count exceeds safety limit"));
     }
     if (cur.AtEnd()) {
         return std::unexpected(MakeParseError("Unexpected EOF parsing bencode value"));
@@ -166,7 +183,7 @@ motrix::core::Result<BencodeValue> ParseValue(BencodeCursor& cur, int depth) {
         ++cur.pos;
         val.kind = BencodeValue::Kind::List;
         while (!cur.AtEnd() && cur.Peek() != 'e') {
-            auto elem = ParseValue(cur, depth + 1);
+            auto elem = ParseValue(cur, depth + 1, nodeCount);
             if (!elem) {
                 return std::unexpected(elem.error());
             }
@@ -179,6 +196,8 @@ motrix::core::Result<BencodeValue> ParseValue(BencodeCursor& cur, int depth) {
     } else if (tag == 'd') {
         ++cur.pos;
         val.kind = BencodeValue::Kind::Dict;
+        bool hasPrevKey = false;
+        std::string_view prevKey;
         while (!cur.AtEnd() && cur.Peek() != 'e') {
             if (cur.Peek() < '0' || cur.Peek() > '9') {
                 return std::unexpected(MakeParseError("Bencode dictionary key must be byte string"));
@@ -187,11 +206,17 @@ motrix::core::Result<BencodeValue> ParseValue(BencodeCursor& cur, int depth) {
             if (!key) {
                 return std::unexpected(key.error());
             }
-            auto entryVal = ParseValue(cur, depth + 1);
+            if (hasPrevKey && !(prevKey < *key)) {
+                return std::unexpected(
+                    MakeParseError("Bencode dictionary keys must be strictly sorted and unique"));
+            }
+            prevKey = *key;
+            hasPrevKey = true;
+            auto entryVal = ParseValue(cur, depth + 1, nodeCount);
             if (!entryVal) {
                 return std::unexpected(entryVal.error());
             }
-            val.dict.emplace_back(std::move(*key), std::move(*entryVal));
+            val.dict.emplace_back(*key, std::move(*entryVal));
         }
         if (cur.AtEnd()) {
             return std::unexpected(MakeParseError("Unterminated bencode dictionary"));
@@ -203,7 +228,7 @@ motrix::core::Result<BencodeValue> ParseValue(BencodeCursor& cur, int depth) {
             return std::unexpected(bs.error());
         }
         val.kind = BencodeValue::Kind::Bytes;
-        val.bytes = std::move(*bs);
+        val.bytes = *bs;
     } else {
         return std::unexpected(MakeParseError("Unknown bencode type tag"));
     }
@@ -246,10 +271,10 @@ std::string PreferredUtf8Field(const BencodeValue& dict, std::string_view key) {
     const std::string utf8Key = std::string(key) + ".utf-8";
     if (const auto* u = dict.FindKey(utf8Key);
         u != nullptr && u->kind == BencodeValue::Kind::Bytes && !u->bytes.empty()) {
-        return u->bytes;
+        return std::string(u->bytes);
     }
     if (const auto* v = dict.FindKey(key); v != nullptr && v->kind == BencodeValue::Kind::Bytes) {
-        return v->bytes;
+        return std::string(v->bytes);
     }
     return {};
 }
@@ -306,13 +331,13 @@ void ExtractAnnounceTrackers(const BencodeValue& root, TorrentMetadata& meta) {
 
         std::string relPath;
         for (const auto& seg : pathList->list) {
-            if (seg.kind != BencodeValue::Kind::Bytes || seg.bytes.empty()) {
-                return std::unexpected(MakeParseError("Invalid torrent path segment"));
+            if (seg.kind != BencodeValue::Kind::Bytes || !IsSafePathSegment(seg.bytes)) {
+                return std::unexpected(MakeParseError("Unsafe or invalid torrent path segment"));
             }
             if (!relPath.empty()) {
                 relPath.push_back('/');
             }
-            relPath += seg.bytes;
+            relPath.append(seg.bytes);
         }
 
         const std::uint64_t fileLen = static_cast<std::uint64_t>(lenNode->integer);
@@ -339,9 +364,13 @@ motrix::core::Result<TorrentMetadata> ParseTorrentBytes(std::span<const std::uin
     if (bytes.empty()) {
         return std::unexpected(MakeParseError("Empty torrent buffer"));
     }
+    if (bytes.size() > kMaxTorrentBytes) {
+        return std::unexpected(MakeParseError("Torrent buffer exceeds maximum allowed size"));
+    }
 
     BencodeCursor cur{bytes, 0};
-    auto root = ParseValue(cur, 0);
+    std::size_t nodeCount = 0;
+    auto root = ParseValue(cur, 0, nodeCount);
     if (!root) {
         return std::unexpected(root.error());
     }
@@ -360,10 +389,13 @@ motrix::core::Result<TorrentMetadata> ParseTorrentBytes(std::span<const std::uin
     TorrentMetadata meta{};
     meta.infoHash = Sha1Hex(bytes.subspan(info->rawStart, info->rawEnd - info->rawStart));
     meta.name = PreferredUtf8Field(*info, "name");
+    if (!IsSafePathSegment(meta.name)) {
+        return std::unexpected(MakeParseError("Unsafe or invalid torrent 'name'"));
+    }
     meta.comment = PreferredUtf8Field(*root, "comment");
     if (const auto* cb = root->FindKey("created by");
         cb != nullptr && cb->kind == BencodeValue::Kind::Bytes) {
-        meta.createdBy = cb->bytes;
+        meta.createdBy = std::string(cb->bytes);
     }
     if (const auto* cd = root->FindKey("creation date");
         cd != nullptr && cd->kind == BencodeValue::Kind::Integer && cd->integer > 0) {

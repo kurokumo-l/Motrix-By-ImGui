@@ -30,10 +30,8 @@ using namespace motrix::test;
 
 struct UpdaterTempDir {
     std::filesystem::path root;
-    explicit UpdaterTempDir(std::string_view suffix)
-        : root(std::filesystem::temp_directory_path() / suffix) {
+    explicit UpdaterTempDir(std::string_view suffix) : root(MakeUniqueTempDir(suffix)) {
         std::error_code ec;
-        std::filesystem::remove_all(root, ec);
         std::filesystem::create_directories(root / "app", ec);
         std::filesystem::create_directories(root / "dl", ec);
     }
@@ -127,7 +125,7 @@ void WriteUpdaterConfig(const UpdaterTempDir& td, std::uint16_t rpcPort) {
     sys.dir = motrix::core::PathToUtf8(td.root / "dl");
     sys.maxOverallDownloadLimit = 64 * 1024;
     sys.listenPort = PickFreeEphemeralPort();
-    sys.dhtListenPort = PickFreeEphemeralPort();
+    sys.dhtListenPort = PickFreeUdpLoopbackPort();
 
     REQUIRE(
         motrix::core::WriteTextAtomic(td.root / "app" / "user.json", SerializeUserPreferencesJson(prefs))
@@ -207,6 +205,90 @@ TEST_CASE("aria2-next release JSON parser, mirror prefix, and PE validation", "[
     REQUIRE(motrix::core::WriteTextAtomic(junkPath, "not-an-exe").has_value());
     CHECK(LooksLikePeExecutableHeader(pePath));
     CHECK_FALSE(LooksLikePeExecutableHeader(junkPath));
+
+    auto dllBytes = MakeSyntheticPeBytes();
+    dllBytes[0x96] = 0x22;
+    dllBytes[0x97] = 0x20;  // IMAGE_FILE_DLL
+    const auto dllPath = td.root / "plugin.dll";
+    {
+        std::ofstream out(dllPath, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(dllBytes.data()),
+                  static_cast<std::streamsize>(dllBytes.size()));
+    }
+    CHECK_FALSE(LooksLikePeExecutableHeader(dllPath));
+
+    auto x86Bytes = MakeSyntheticPeBytes();
+    x86Bytes[0x84] = 0x4C;
+    x86Bytes[0x85] = 0x01;  // IMAGE_FILE_MACHINE_I386
+    const auto x86Path = td.root / "x86.exe";
+    {
+        std::ofstream out(x86Path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(x86Bytes.data()),
+                  static_cast<std::streamsize>(x86Bytes.size()));
+    }
+    CHECK_FALSE(LooksLikePeExecutableHeader(x86Path));
+}
+
+TEST_CASE("aria2-next updater enforces HTTPS, host policy, and mandatory SHA-256 before execution",
+          "[engine][updater]") {
+    CHECK(ApplyGitHubMirrorPrefix(R"(https://evil.com\x.github.com/a.exe)", "https://ghproxy.net")
+          == R"(https://evil.com\x.github.com/a.exe)");
+    CHECK(ApplyGitHubMirrorPrefix("http://github.com/a/b/releases/download/v1/a.exe",
+                                  "https://ghproxy.net")
+          == "http://github.com/a/b/releases/download/v1/a.exe");
+
+    CHECK_FALSE(ParseAria2NextReleaseJson(
+                    R"({"tag_name":"v1.0.0","assets":[{"name":"aria2-next-windows-x86_64.exe",)"
+                    R"("browser_download_url":"http://evil.com/a.exe"}]})",
+                    {})
+                    .has_value());
+    CHECK_FALSE(ParseAria2NextReleaseJson(
+                    R"({"tag_name":"v1.0.0","assets":[{"name":"aria2-next-windows-x86_64.exe",)"
+                    R"("browser_download_url":"https://evil.com\\x.github.com/a.exe"}]})",
+                    "https://ghproxy.net")
+                    .has_value());
+    CHECK_FALSE(ParseAria2NextReleaseJson(
+                    R"({"tag_name":"v1.0.0","assets":[{"name":"aria2-next-windows-x86_64.exe",)"
+                    R"("browser_download_url":"https://github.com/a/b/releases/download/v1/a.exe"}]})",
+                    "http://insecure-mirror.example.com")
+                    .has_value());
+
+    UpdaterTempDir td("motrix_native_sec_updater");
+    const auto targetExe = ManagedAria2NextExecutablePath(td.root / "app");
+
+    Aria2NextUpdateSpec httpRemoteSpec{
+        .updateUrl = "http://example.com/aria2-next/releases/latest",
+        .targetExePath = targetExe,
+    };
+    const auto httpRemoteRes = StageAria2NextUpdate(httpRemoteSpec);
+    REQUIRE_FALSE(httpRemoteRes.has_value());
+    CHECK(httpRemoteRes.error().code == motrix::core::ErrorCode::InvalidArgument);
+
+    Aria2NextUpdateSpec directNoShaSpec{
+        .updateUrl = "https://github.com/AnInsomniacy/aria2-next/releases/download/v1.0/aria2-next.exe",
+        .targetExePath = targetExe,
+    };
+    const auto directNoShaRes = StageAria2NextUpdate(directNoShaSpec);
+    REQUIRE_FALSE(directNoShaRes.has_value());
+    CHECK(directNoShaRes.error().code == motrix::core::ErrorCode::ParseFailure);
+
+    LocalTestServer server;
+    server.SetCustomRoute("/aria2-next/nodigest.exe", MakeSyntheticPeBytes());
+    server.SetCustomRoute(
+        "/aria2-next/nodigest.json",
+        ToBytes(
+            std::format(R"({{"tag_name":"v9.9.9","assets":[{{"name":"aria2-next-windows-x86_64.exe",)"
+                        R"("browser_download_url":"{}/aria2-next/nodigest.exe"}}]}})",
+                        server.BaseUrl())),
+        "application/json");
+    Aria2NextUpdateSpec noDigestSpec{
+        .updateUrl = server.BaseUrl() + "/aria2-next/nodigest.json",
+        .targetExePath = targetExe,
+    };
+    const auto noDigestRes = StageAria2NextUpdate(noDigestSpec);
+    REQUIRE_FALSE(noDigestRes.has_value());
+    CHECK(noDigestRes.error().code == motrix::core::ErrorCode::ParseFailure);
+    CHECK(server.Stats().totalRequests == 1);
 }
 
 TEST_CASE("StageAria2NextUpdate rejects corrupt binaries and verifies valid aria2-next offline",
@@ -250,13 +332,14 @@ TEST_CASE("StageAria2NextUpdate rejects corrupt binaries and verifies valid aria
 
     const auto exeOpt = DiscoverEngineExecutable("");
     if (!exeOpt.has_value()) {
-        SUCCEED("No local aria2c/aria2-next binary found; skipping full PE stage/swap.");
-        return;
+        if (ShouldRequireLiveTests()) {
+            FAIL("No local aria2c/aria2-next binary found while MOTRIX_REQUIRE_LIVE_TESTS=1.");
+        }
+        SKIP("No local aria2c/aria2-next binary found; skipping full PE stage/swap.");
     }
     const auto probe = ProbeEngineBinaryVersion(*exeOpt);
     if (!probe || probe->kind != EngineKind::Aria2Next) {
-        SUCCEED("Local engine is not aria2-next; skipping aria2-next binary swap check.");
-        return;
+        SKIP("Local engine is not aria2-next; skipping aria2-next binary swap check.");
     }
 
     auto binBytes = ReadFileBytes(*exeOpt);
@@ -351,7 +434,10 @@ TEST_CASE("AppCoordinator parity: speedometer toggle, tray speed, and live aria2
           "[app][parity][live]") {
     const auto exeOpt = DiscoverEngineExecutable("");
     if (!exeOpt.has_value()) {
-        return;
+        if (ShouldRequireLiveTests()) {
+            FAIL("No local aria2c/aria2-next binary found while MOTRIX_REQUIRE_LIVE_TESTS=1.");
+        }
+        SKIP("No local aria2c/aria2-next binary found; skipping live parity test.");
     }
 
     motrix::core::Logger logger;
@@ -391,7 +477,7 @@ TEST_CASE("AppCoordinator parity: speedometer toggle, tray speed, and live aria2
 
     const auto probe = ProbeEngineBinaryVersion(*exeOpt);
     if (!probe || probe->kind != EngineKind::Aria2Next) {
-        return;
+        SKIP("Local engine is not aria2-next; skipping live aria2-next swap check.");
     }
     auto binBytes = ReadFileBytes(*exeOpt);
     REQUIRE(!binBytes.empty());

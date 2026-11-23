@@ -20,6 +20,7 @@ namespace {
 inline constexpr std::size_t kMaxIpcPayloadBytes = 1024u * 1024u;
 inline constexpr DWORD kPipeConnectWaitMs = 1500u;
 inline constexpr DWORD kPipeReadTimeoutMs = 2000u;
+inline constexpr DWORD kPipeWriteTimeoutMs = 2000u;
 inline constexpr DWORD kPipeBufferBytes = 65536u;
 
 [[nodiscard]] motrix::core::AppError IpcError(motrix::core::ErrorCode code, std::string msg) {
@@ -163,39 +164,115 @@ void ReadStringArray(const nlohmann::json& j, const char* key, std::vector<std::
     }
 }
 
-[[nodiscard]] bool ReadExactOverlapped(
-    HANDLE pipe, HANDLE stopEvent, HANDLE ovEvent, void* dest, std::size_t bytesNeeded) noexcept {
+[[nodiscard]] bool ReadChunkOverlapped(HANDLE pipe,
+                                       HANDLE stopEvent,
+                                       HANDLE ovEvent,
+                                       void* dest,
+                                       DWORD chunk,
+                                       DWORD waitMs,
+                                       DWORD& outRead) noexcept {
+    OVERLAPPED ov{};
+    ov.hEvent = ovEvent;
+    ::ResetEvent(ovEvent);
+
+    outRead = 0;
+    if (::ReadFile(pipe, dest, chunk, &outRead, &ov)) {
+        return outRead > 0;
+    }
+    const DWORD err = ::GetLastError();
+    if (err == ERROR_MORE_DATA) {
+        return outRead > 0;
+    }
+    if (err != ERROR_IO_PENDING) {
+        return false;
+    }
+    HANDLE waitHandles[2] = {stopEvent, ovEvent};
+    if (::WaitForMultipleObjects(2, waitHandles, FALSE, waitMs) != WAIT_OBJECT_0 + 1) {
+        ::CancelIoEx(pipe, &ov);
+        DWORD dummy = 0;
+        (void)::GetOverlappedResult(pipe, &ov, &dummy, TRUE);
+        return false;
+    }
+    if (!::GetOverlappedResult(pipe, &ov, &outRead, FALSE) && ::GetLastError() != ERROR_MORE_DATA) {
+        return false;
+    }
+    return outRead > 0;
+}
+
+[[nodiscard]] bool ReadExactOverlapped(HANDLE pipe,
+                                       HANDLE stopEvent,
+                                       HANDLE ovEvent,
+                                       void* dest,
+                                       std::size_t bytesNeeded,
+                                       std::chrono::steady_clock::time_point deadline) noexcept {
     std::size_t offset = 0;
     auto* out = static_cast<std::uint8_t*>(dest);
     while (offset < bytesNeeded) {
-        OVERLAPPED ov{};
-        ov.hEvent = ovEvent;
-        ::ResetEvent(ovEvent);
-
-        DWORD bytesRead = 0;
-        const DWORD chunk = static_cast<DWORD>(bytesNeeded - offset);
-        if (!::ReadFile(pipe, out + offset, chunk, &bytesRead, &ov)) {
-            if (::GetLastError() != ERROR_IO_PENDING) {
-                return false;
-            }
-            HANDLE waitHandles[2] = {stopEvent, ovEvent};
-            if (::WaitForMultipleObjects(2, waitHandles, FALSE, kPipeReadTimeoutMs)
-                != WAIT_OBJECT_0 + 1) {
-                ::CancelIoEx(pipe, &ov);
-                DWORD dummy = 0;
-                (void)::GetOverlappedResult(pipe, &ov, &dummy, TRUE);
-                return false;
-            }
-            if (!::GetOverlappedResult(pipe, &ov, &bytesRead, FALSE)) {
-                return false;
-            }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            return false;
         }
-        if (bytesRead == 0) {
+        const auto remMs = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+        const DWORD waitMs = static_cast<DWORD>(std::max<std::int64_t>(1, remMs));
+        const DWORD chunk = static_cast<DWORD>(bytesNeeded - offset);
+        DWORD bytesRead = 0;
+        if (!ReadChunkOverlapped(pipe, stopEvent, ovEvent, out + offset, chunk, waitMs, bytesRead)) {
             return false;
         }
         offset += bytesRead;
     }
     return true;
+}
+
+[[nodiscard]] motrix::core::Result<void>
+WriteExactOverlapped(HANDLE pipe,
+                     HANDLE ovEvent,
+                     std::span<const std::uint8_t> data,
+                     std::chrono::steady_clock::time_point deadline) {
+    std::size_t writtenTotal = 0;
+    while (writtenTotal < data.size()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            return std::unexpected(
+                IpcError(motrix::core::ErrorCode::Timeout, "Timed out writing to primary pipe"));
+        }
+        const auto remMs = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+        const DWORD waitMs = static_cast<DWORD>(std::max<std::int64_t>(1, remMs));
+
+        OVERLAPPED ov{};
+        ov.hEvent = ovEvent;
+        ::ResetEvent(ovEvent);
+
+        DWORD written = 0;
+        const DWORD toWrite = static_cast<DWORD>(data.size() - writtenTotal);
+        if (!::WriteFile(pipe, data.data() + writtenTotal, toWrite, &written, &ov)) {
+            const DWORD err = ::GetLastError();
+            if (err != ERROR_IO_PENDING) {
+                return std::unexpected(
+                    IpcError(motrix::core::ErrorCode::IoFailure,
+                             std::format("WriteFile to primary pipe failed (code {})", err)));
+            }
+            if (::WaitForSingleObject(ovEvent, waitMs) != WAIT_OBJECT_0) {
+                ::CancelIoEx(pipe, &ov);
+                DWORD dummy = 0;
+                (void)::GetOverlappedResult(pipe, &ov, &dummy, TRUE);
+                return std::unexpected(
+                    IpcError(motrix::core::ErrorCode::Timeout, "Timed out writing to primary pipe"));
+            }
+            if (!::GetOverlappedResult(pipe, &ov, &written, FALSE)) {
+                return std::unexpected(
+                    IpcError(motrix::core::ErrorCode::IoFailure,
+                             std::format("Overlapped WriteFile to primary pipe failed (code {})",
+                                         ::GetLastError())));
+            }
+        }
+        if (written == 0) {
+            return std::unexpected(
+                IpcError(motrix::core::ErrorCode::IoFailure, "WriteFile to primary pipe wrote 0 bytes"));
+        }
+        writtenTotal += written;
+    }
+    return {};
 }
 
 class NamedPipeSingleInstanceChannel final : public ISingleInstanceChannel {
@@ -261,13 +338,14 @@ public:
         motrix::core::UniqueHandle client;
         DWORD lastErr = ERROR_SUCCESS;
         for (int attempt = 0; attempt < 3; ++attempt) {
-            HANDLE raw = ::CreateFileW(pipeW.c_str(),
-                                       GENERIC_WRITE,
-                                       0,
-                                       nullptr,
-                                       OPEN_EXISTING,
-                                       SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
-                                       nullptr);
+            HANDLE raw =
+                ::CreateFileW(pipeW.c_str(),
+                              GENERIC_WRITE,
+                              0,
+                              nullptr,
+                              OPEN_EXISTING,
+                              FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                              nullptr);
             if (raw != INVALID_HANDLE_VALUE) {
                 client.Reset(raw);
                 break;
@@ -285,25 +363,16 @@ public:
                          std::format("Failed to connect to primary pipe (code {})", lastErr)));
         }
 
-        std::size_t writtenTotal = 0;
-        while (writtenTotal < frame.size()) {
-            DWORD written = 0;
-            const DWORD toWrite = static_cast<DWORD>(frame.size() - writtenTotal);
-            if (!::WriteFile(client.Get(), frame.data() + writtenTotal, toWrite, &written, nullptr)) {
-                return std::unexpected(IpcError(
-                    motrix::core::ErrorCode::IoFailure,
-                    std::format("WriteFile to primary pipe failed (code {})", ::GetLastError())));
-            }
-            if (written == 0) {
-                return std::unexpected(IpcError(motrix::core::ErrorCode::IoFailure,
-                                                "WriteFile to primary pipe wrote 0 bytes"));
-            }
-            writtenTotal += written;
+        const motrix::core::UniqueHandle writeEvent(::CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!writeEvent.IsValid()) {
+            return std::unexpected(
+                IpcError(motrix::core::ErrorCode::IoFailure, "Failed to create IPC write event"));
         }
-
-        (void)::FlushFileBuffers(client.Get());
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(kPipeWriteTimeoutMs);
+        auto writeRes = WriteExactOverlapped(client.Get(), writeEvent.Get(), frame, deadline);
         client.Reset();
-        return {};
+        return writeRes;
     }
 
     void Close() override {
@@ -330,7 +399,7 @@ private:
             return true;
         }
         const DWORD err = ::GetLastError();
-        if (err == ERROR_PIPE_CONNECTED) {
+        if (err == ERROR_PIPE_CONNECTED || err == ERROR_NO_DATA) {
             return true;
         }
         if (err != ERROR_IO_PENDING) {
@@ -354,7 +423,11 @@ private:
 
         DWORD dummy = 0;
         if (!::GetOverlappedResult(pipe_.Get(), &ov, &dummy, FALSE)) {
-            shouldBreak = (::GetLastError() == ERROR_OPERATION_ABORTED || st.stop_requested());
+            const DWORD ovErr = ::GetLastError();
+            if (ovErr == ERROR_PIPE_CONNECTED || ovErr == ERROR_NO_DATA) {
+                return true;
+            }
+            shouldBreak = (ovErr == ERROR_OPERATION_ABORTED || st.stop_requested());
             if (!shouldBreak) {
                 (void)::DisconnectNamedPipe(pipe_.Get());
             }
@@ -364,14 +437,17 @@ private:
     }
 
     void ProcessClientPayload(HANDLE ovEvent) {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(kPipeReadTimeoutMs);
         std::uint32_t payloadLen = 0;
-        const bool gotLen =
-            ReadExactOverlapped(pipe_.Get(), stopEvent_.Get(), ovEvent, &payloadLen, sizeof(payloadLen));
+        const bool gotLen = ReadExactOverlapped(
+            pipe_.Get(), stopEvent_.Get(), ovEvent, &payloadLen, sizeof(payloadLen), deadline);
         if (!gotLen || payloadLen == 0 || payloadLen > kMaxIpcPayloadBytes) {
             return;
         }
         std::string jsonBuf(payloadLen, '\0');
-        if (!ReadExactOverlapped(pipe_.Get(), stopEvent_.Get(), ovEvent, jsonBuf.data(), payloadLen)) {
+        if (!ReadExactOverlapped(
+                pipe_.Get(), stopEvent_.Get(), ovEvent, jsonBuf.data(), payloadLen, deadline)) {
             return;
         }
         auto parsed = DeserializeStartupPayload(jsonBuf);
@@ -425,7 +501,7 @@ std::string SerializeStartupPayload(const StartupPayload& payload) {
         {"deepLinks", payload.deepLinks},
         {"activateWindow", payload.activateWindow},
     };
-    return j.dump();
+    return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
 motrix::core::Result<StartupPayload> DeserializeStartupPayload(std::string_view jsonText) {

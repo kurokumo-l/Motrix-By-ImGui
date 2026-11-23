@@ -54,10 +54,13 @@ void ClearTaskDetailFields(AppStateSnapshot& state, bool clearTask) {
 ApplySavePrefsEngine(EngineRuntime& runtime,
                      const AppStateSnapshot& state,
                      const std::filesystem::path& engineDataDir,
-                     bool restartEngine) {
+                     bool restartEngine,
+                     const std::shared_ptr<std::mutex>& configPersistMutex) {
     const auto effSys =
         motrix::domain::BuildEffectiveSystemConfig(state.sysConfig, state.prefs, state.speedLimitPaused);
-    runtime.UpdateUpnpPreference(state.prefs.enableUpnp, effSys.listenPort, effSys.dhtListenPort);
+    if (!restartEngine) {
+        runtime.UpdateUpnpPreference(state.prefs.enableUpnp, effSys.listenPort, effSys.dhtListenPort);
+    }
     runtime.Reconfigure(
         EngineRuntimeConfig{
             .appDataDir = engineDataDir,
@@ -66,6 +69,7 @@ ApplySavePrefsEngine(EngineRuntime& runtime,
             .logLevel = state.prefs.logLevel,
             .enableUpnp = state.prefs.enableUpnp,
             .resumeAllWhenLaunched = state.prefs.resumeAllWhenAppLaunched,
+            .configPersistMutex = configPersistMutex,
         },
         restartEngine);
     if (restartEngine) {
@@ -229,6 +233,7 @@ struct AppCoordinator::DispatchOutcome {
     bool prefsUpdated = false;
     bool visualsUpdated = false;
     bool clearDetailGid = false;
+    bool syncRuntimeConfig = false;
     std::vector<EngineWorkCommand> engineWorks;
 };
 
@@ -255,6 +260,9 @@ void AppCoordinator::Dispatch(Command cmd) {
         }
         UpdateLivePlatformStatus(*snap);
     }
+    if (outcome.syncRuntimeConfig) {
+        ReconfigureLiveEngine(*Snapshot(), false, false);
+    }
     if (outcome.clearDetailGid || !outcome.engineWorks.empty()) {
         std::scoped_lock lock(engineLifecycleMu_);
         if (engineRuntime_) {
@@ -264,17 +272,26 @@ void AppCoordinator::Dispatch(Command cmd) {
             for (auto& work : outcome.engineWorks) {
                 engineRuntime_->Enqueue(std::move(work));
             }
+        } else if (!previewMockMode_ && engineReplacing_ && !stopping_.load(std::memory_order_acquire)) {
+            if (outcome.clearDetailGid) {
+                deferredEngineOps_.push_back([](EngineRuntime& rt) { rt.SetDetailGid({}); });
+            }
+            for (auto& work : outcome.engineWorks) {
+                auto sharedWork = std::make_shared<EngineWorkCommand>(std::move(work));
+                deferredEngineOps_.push_back(
+                    [sharedWork](EngineRuntime& rt) { rt.Enqueue(*sharedWork); });
+            }
         }
     }
 }
 
 namespace {
 
-void ApplyToggleSpeedLimit(AppStateSnapshot& state,
-                           std::vector<EngineWorkCommand>& works,
-                           bool previewMockMode) {
+[[nodiscard]] bool ApplyToggleSpeedLimit(AppStateSnapshot& state,
+                                         std::vector<EngineWorkCommand>& works,
+                                         bool previewMockMode) {
     if (state.sysConfig.maxOverallDownloadLimit == 0 && state.sysConfig.maxOverallUploadLimit == 0) {
-        return;
+        return false;
     }
     state.speedLimitPaused = !state.speedLimitPaused;
     const auto effSys =
@@ -284,7 +301,9 @@ void ApplyToggleSpeedLimit(AppStateSnapshot& state,
             .kind = EngineWorkCommand::Kind::ApplyGlobalOptions,
             .options = motrix::domain::SystemConfigToOptionPairs(effSys),
         });
+        return true;
     }
+    return false;
 }
 
 }  // namespace
@@ -304,7 +323,7 @@ void AppCoordinator::ApplyStateCommand(AppStateSnapshot& state,
         return;
     }
     if (std::holds_alternative<ToggleSpeedLimitCmd>(cmd)) {
-        ApplyToggleSpeedLimit(state, outcome.engineWorks, previewMockMode_);
+        outcome.syncRuntimeConfig = ApplyToggleSpeedLimit(state, outcome.engineWorks, previewMockMode_);
         return;
     }
     if (const auto* c = std::get_if<SelectSectionCmd>(&cmd)) {
@@ -346,14 +365,15 @@ void AppCoordinator::ApplyStateCommand(AppStateSnapshot& state,
     if (ApplySystemAndFileCommand(state, cmd, outcome)) {
         return;
     }
-    bool hasRuntime = false;
-    {
-        std::scoped_lock lk(engineLifecycleMu_);
-        hasRuntime = (engineRuntime_ != nullptr);
-    }
-    if (previewMockMode_ || !hasRuntime) {
+    if (previewMockMode_) {
         HandleTaskAction(state, cmd);
         return;
+    }
+    {
+        std::scoped_lock lk(engineLifecycleMu_);
+        if (!engineRuntime_ && !engineReplacing_) {
+            return;
+        }
     }
     if (ApplyLiveSubmissionCommand(state, cmd, outcome)) {
         return;
@@ -381,17 +401,27 @@ bool AppCoordinator::ApplySystemAndFileCommand(AppStateSnapshot& state,
             ClearTaskDetailFields(state, true);
             if (engineRuntime_) {
                 engineRuntime_->SetDetailGid({});
+            } else if (!previewMockMode_ && engineReplacing_) {
+                deferredEngineOps_.push_back([](EngineRuntime& rt) { rt.SetDetailGid({}); });
             }
-        } else if (previewMockMode_ || !engineRuntime_) {
+        } else if (previewMockMode_) {
             RefreshMockDetail(state);
         } else {
             if (const auto* existing = FindTaskByGid(state, state.detailedTaskGid)) {
                 state.detailedTask = *existing;
             }
             ClearTaskDetailFields(state, false);
-            engineRuntime_->SetDetailGid(state.detailedTaskGid);
-            outcome.engineWorks.push_back(EngineWorkCommand{.kind = EngineWorkCommand::Kind::FetchDetail,
-                                                            .gid = state.detailedTaskGid});
+            if (engineRuntime_) {
+                engineRuntime_->SetDetailGid(state.detailedTaskGid);
+                outcome.engineWorks.push_back(EngineWorkCommand{
+                    .kind = EngineWorkCommand::Kind::FetchDetail, .gid = state.detailedTaskGid});
+            } else if (engineReplacing_) {
+                const std::string detailGidCopy = state.detailedTaskGid;
+                deferredEngineOps_.push_back(
+                    [detailGidCopy](EngineRuntime& rt) { rt.SetDetailGid(detailGidCopy); });
+                outcome.engineWorks.push_back(EngineWorkCommand{
+                    .kind = EngineWorkCommand::Kind::FetchDetail, .gid = state.detailedTaskGid});
+            }
         }
         return true;
     }
@@ -420,7 +450,8 @@ bool AppCoordinator::ApplySystemAndFileCommand(AppStateSnapshot& state,
         std::scoped_lock lk(engineLifecycleMu_);
         if (!previewMockMode_ && engineRuntime_) {
             const auto dir = ResolveEngineDataDir(persistConfig_, appDataDir_);
-            if (auto w = ApplySavePrefsEngine(*engineRuntime_, state, dir, restartEngine)) {
+            if (auto w = ApplySavePrefsEngine(
+                    *engineRuntime_, state, dir, restartEngine, configPersistMutex_)) {
                 outcome.engineWorks.push_back(std::move(*w));
             }
         }

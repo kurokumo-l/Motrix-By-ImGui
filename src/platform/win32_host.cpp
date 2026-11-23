@@ -28,11 +28,12 @@ inline constexpr UINT kWmAppWakeup = WM_APP + 101;
 struct Win32WindowHost::Impl {
     Win32WindowState state;
     Win32WindowHost* owner = nullptr;
-    UniqueHandle wakeEvent;
+    UniqueHandle wakeEvent{::CreateEventW(nullptr, FALSE, FALSE, nullptr)};
     Dx11Context dx11;
     InitCallback savedImGuiInit;
-    std::atomic<std::uint32_t> uiThreadId{0};
+    std::atomic<DWORD> uiThreadId{0};
     std::atomic<void*> wakeupHwnd{nullptr};
+    std::atomic<std::uint64_t> textureGeneration{1};
     std::mutex uiActionMutex;
     std::vector<std::function<void()>> pendingUiActions;
     bool occluded = false;
@@ -44,8 +45,8 @@ struct Win32WindowHost::Impl {
     std::uint64_t sleepWaits = 0;
 
     void RunOnUiThread(std::function<void()> fn) {
-        const std::uint32_t tid = uiThreadId.load(std::memory_order_acquire);
-        if (tid != 0 && static_cast<std::uint32_t>(::GetCurrentThreadId()) == tid) {
+        const DWORD tid = uiThreadId.load(std::memory_order_acquire);
+        if (tid != 0 && ::GetCurrentThreadId() == tid) {
             fn();
             return;
         }
@@ -94,7 +95,7 @@ struct Win32WindowHost::Impl {
         if (screenshotMode) {
             return false;
         }
-        if (state.hiddenToTray || Win32IsWindowIconic(state.hwnd)) {
+        if (state.hiddenToTray.load(std::memory_order_acquire) || Win32IsWindowIconic(state.hwnd)) {
             return true;
         }
         if (!imguiInitialized || !dx11.IsInitialized()) {
@@ -104,7 +105,7 @@ struct Win32WindowHost::Impl {
             return true;
         }
         occluded = false;
-        return state.activeFramesRemaining <= 0;
+        return state.activeFramesRemaining.load(std::memory_order_acquire) <= 0;
     }
 
     void TrimIdleMemory() noexcept {
@@ -113,7 +114,8 @@ struct Win32WindowHost::Impl {
     }
 
     void SleepUntilEvent(bool wantTextInput) {
-        const bool paused = state.hiddenToTray || Win32IsWindowIconic(state.hwnd);
+        const bool paused =
+            state.hiddenToTray.load(std::memory_order_acquire) || Win32IsWindowIconic(state.hwnd);
         DWORD timeoutMs = INFINITE;
         if (!paused && occluded) {
             timeoutMs = 150u;
@@ -125,15 +127,47 @@ struct Win32WindowHost::Impl {
             ::MsgWaitForMultipleObjectsEx(1, &h, timeoutMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         ++sleepWaits;
         if (waitRes == WAIT_OBJECT_0 || waitRes == WAIT_TIMEOUT) {
-            state.activeFramesRemaining = std::max(state.activeFramesRemaining, 2);
+            state.BumpActiveFrames(2);
         }
+    }
+
+    [[nodiscard]] bool RecoverFromDeviceLost() {
+        if (imguiInitialized) {
+            ImGui_ImplDX11_Shutdown();
+        }
+        dx11.Shutdown();
+        textureGeneration.fetch_add(1, std::memory_order_acq_rel);
+        if (auto dxRes = dx11.Initialize(state.hwnd); !dxRes) {
+            std::cerr << "[dx11] Device recovery failed: " << dxRes.error().message << "\n";
+            if (imguiInitialized) {
+                ImGui_ImplWin32_Shutdown();
+                ImGui::DestroyContext();
+                imguiInitialized = false;
+            }
+            return false;
+        }
+        if (state.pendingResizeW != 0 && state.pendingResizeH != 0) {
+            (void)dx11.Resize(state.pendingResizeW, state.pendingResizeH);
+            state.pendingResizeW = 0;
+            state.pendingResizeH = 0;
+        }
+        if (imguiInitialized) {
+            ImGui_ImplDX11_Init(static_cast<ID3D11Device*>(dx11.DeviceRaw()),
+                                static_cast<ID3D11DeviceContext*>(dx11.ContextRaw()));
+        }
+        occluded = false;
+        state.BumpActiveFrames(3);
+        return true;
     }
 
     [[nodiscard]] bool RenderSingleFrame(const FrameCallback& onFrame, bool screenshotMode) {
         if (state.pendingResizeW != 0 && state.pendingResizeH != 0) {
-            dx11.Resize(state.pendingResizeW, state.pendingResizeH);
+            const bool resized = dx11.Resize(state.pendingResizeW, state.pendingResizeH);
             state.pendingResizeW = 0;
             state.pendingResizeH = 0;
+            if (!resized && dx11.IsDeviceLost() && !RecoverFromDeviceLost()) {
+                return true;
+            }
         }
         state.dpiScale = Win32GetWindowDpiScale(state.hwnd);
         if (state.config.onBeforeNewFrame) {
@@ -164,7 +198,12 @@ struct Win32WindowHost::Impl {
         ImGui::Render();
 
         const ImVec4 clear = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
-        dx11.BeginRenderPass(clear.x, clear.y, clear.z, 1.0f);
+        if (!dx11.BeginRenderPass(clear.x, clear.y, clear.z, 1.0f)) {
+            if (dx11.IsDeviceLost() && !RecoverFromDeviceLost()) {
+                return true;
+            }
+            return false;
+        }
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         ++framesRendered;
 
@@ -175,12 +214,20 @@ struct Win32WindowHost::Impl {
             }
             return true;
         }
-        occluded = dx11.PresentFrame(!screenshotMode);
-        if (state.activeFramesRemaining > 0) {
-            --state.activeFramesRemaining;
+        const PresentResult pres = dx11.PresentFrame(!screenshotMode);
+        occluded = (pres == PresentResult::Occluded);
+        if (pres == PresentResult::DeviceLost) {
+            if (!RecoverFromDeviceLost()) {
+                return true;
+            }
+            return false;
         }
+        int curFrames = state.activeFramesRemaining.load(std::memory_order_acquire);
+        while (curFrames > 0
+               && !state.activeFramesRemaining.compare_exchange_weak(
+                   curFrames, curFrames - 1, std::memory_order_acq_rel, std::memory_order_relaxed)) {}
         if (animationActive) {
-            state.activeFramesRemaining = std::max(state.activeFramesRemaining, 2);
+            state.BumpActiveFrames(2);
         }
         return false;
     }
@@ -190,18 +237,9 @@ struct Win32WindowHost::Impl {
         Win32ReleaseTaskbarList(state);
         Win32DestroyTrayIcons(state);
         wakeupHwnd.store(nullptr, std::memory_order_release);
-        state = Win32WindowState{
-            .config = config,
-            .darkFrame = config.initialDark,
-            .systemDark = QuerySystemDarkMode(),
-            .bindCloseToHide = config.bindCloseToHide,
-            .autoHideOnBlur = config.autoHideOnBlur,
-            .enableTrayIcon = config.enableTrayIcon,
-            .trayIsZhCn = config.initialZhCn,
-            .trayDarkTaskbar = QueryTaskbarDarkMode(),
-        };
+        textureGeneration.fetch_add(1, std::memory_order_acq_rel);
+        state.ResetForSession(config, QuerySystemDarkMode(), QueryTaskbarDarkMode());
 
-        wakeEvent.Reset(::CreateEventW(nullptr, FALSE, FALSE, nullptr));
         if (!wakeEvent.IsValid()) {
             return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Platform,
                                                            motrix::core::ErrorCode::IoFailure,
@@ -221,7 +259,7 @@ struct Win32WindowHost::Impl {
             (!screenshotMode && config.initialBounds && config.initialBounds->maximized);
         firstShowMaximized = (config.startHidden && wantMax);
         if (config.startHidden && !screenshotMode) {
-            state.hiddenToTray = true;
+            state.hiddenToTray.store(true, std::memory_order_release);
             Win32TrimWorkingSet();
             return {};
         }
@@ -244,7 +282,10 @@ struct Win32WindowHost::Impl {
             return false;
         }
         if (state.pendingResizeW != 0 && state.pendingResizeH != 0) {
-            dx11.Resize(state.pendingResizeW, state.pendingResizeH);
+            if (!dx11.Resize(state.pendingResizeW, state.pendingResizeH)) {
+                dx11.Shutdown();
+                return false;
+            }
             state.pendingResizeW = 0;
             state.pendingResizeH = 0;
         }
@@ -305,8 +346,7 @@ motrix::core::Result<int> Win32WindowHost::Run(const WindowHostConfig& config,
                                                const InitCallback& onImGuiInit,
                                                const FrameCallback& onFrame) {
     ScopedComInit comScope;
-    impl_->uiThreadId.store(static_cast<std::uint32_t>(::GetCurrentThreadId()),
-                            std::memory_order_release);
+    impl_->uiThreadId.store(::GetCurrentThreadId(), std::memory_order_release);
     struct RunSessionGuard {
         Impl& impl;
         ~RunSessionGuard() {
@@ -355,7 +395,7 @@ bool Win32WindowHost::IsMaximized() const noexcept {
     return Win32IsWindowZoomed(impl_->state.hwnd);
 }
 bool Win32WindowHost::IsHiddenToTray() const noexcept {
-    return impl_->state.hiddenToTray;
+    return impl_->state.hiddenToTray.load(std::memory_order_acquire);
 }
 bool Win32WindowHost::IsSystemDarkMode() const noexcept {
     return impl_->state.systemDark;
@@ -368,7 +408,7 @@ HostMetricsSnapshot Win32WindowHost::Metrics() const noexcept {
             .sleepWaits = impl_->sleepWaits,
             .occluded = impl_->occluded,
             .minimized = Win32IsWindowIconic(impl_->state.hwnd),
-            .hiddenToTray = impl_->state.hiddenToTray};
+            .hiddenToTray = impl_->state.hiddenToTray.load(std::memory_order_acquire)};
 }
 void Win32WindowHost::Minimize() {
     impl_->RunOnUiThread([this] { Win32MinimizeWindow(impl_->state.hwnd); });
@@ -398,7 +438,7 @@ void Win32WindowHost::ShowFromTray() {
         if (!impl_->EnsureUiInitialized()) {
             return;
         }
-        impl_->state.hiddenToTray = false;
+        impl_->state.hiddenToTray.store(false, std::memory_order_release);
         Win32ShowWindowMode(impl_->state.hwnd, std::exchange(impl_->firstShowMaximized, false), true);
         RequestFrame();
     });
@@ -408,7 +448,7 @@ void Win32WindowHost::HideToTray() {
         if (!impl_->state.hwnd) {
             return;
         }
-        impl_->state.hiddenToTray = true;
+        impl_->state.hiddenToTray.store(true, std::memory_order_release);
         impl_->state.trimRequested = true;
         Win32ShowWindow(impl_->state.hwnd, false, false);
     });
@@ -485,14 +525,15 @@ void Win32WindowHost::SetSleepBlockerEnabled(bool active) noexcept {
     });
 }
 void Win32WindowHost::RequestFrame() {
-    const std::uint32_t tid = impl_->uiThreadId.load(std::memory_order_acquire);
-    if (tid != 0 && static_cast<std::uint32_t>(::GetCurrentThreadId()) != tid) {
-        impl_->TryRunOnUiThread([this] { RequestFrame(); });
-        return;
-    }
-    impl_->state.activeFramesRemaining = std::max(impl_->state.activeFramesRemaining, 3);
+    impl_->state.BumpActiveFrames(3);
     if (impl_->wakeEvent.IsValid()) {
         ::SetEvent(impl_->wakeEvent.Get());
+    }
+    if (void* rawHwnd = impl_->wakeupHwnd.load(std::memory_order_acquire)) {
+        const DWORD tid = impl_->uiThreadId.load(std::memory_order_acquire);
+        if (tid != 0 && ::GetCurrentThreadId() != tid) {
+            ::PostMessageW(static_cast<HWND>(rawHwnd), kWmAppWakeup, 0, 0);
+        }
     }
 }
 void Win32WindowHost::NotifyAnimationActive() {
@@ -518,7 +559,11 @@ std::optional<std::string> Win32WindowHost::PickTorrentFile() {
         return std::nullopt;
     }
     impl_->state.inPickerDialog = true;
-    auto chosen = Win32PickTorrentFile(impl_->state.hwnd);
+    std::optional<std::string> chosen;
+    {
+        ScopedModalLoop modalGuard(impl_->state);
+        chosen = Win32PickTorrentFile(impl_->state.hwnd);
+    }
     impl_->state.inPickerDialog = false;
     RequestFrame();
     return chosen;
@@ -528,7 +573,11 @@ std::optional<std::string> Win32WindowHost::PickFolder(std::string_view initialD
         return std::nullopt;
     }
     impl_->state.inPickerDialog = true;
-    auto chosen = Win32PickFolder(impl_->state.hwnd, initialDir);
+    std::optional<std::string> chosen;
+    {
+        ScopedModalLoop modalGuard(impl_->state);
+        chosen = Win32PickFolder(impl_->state.hwnd, initialDir);
+    }
     impl_->state.inPickerDialog = false;
     RequestFrame();
     return chosen;
@@ -538,6 +587,9 @@ std::uint64_t Win32WindowHost::UploadRgbaTexture(std::uint64_t existingId,
                                                  int height,
                                                  std::span<const std::uint8_t> rgba) {
     return impl_->dx11.UploadRgbaTexture(existingId, width, height, rgba);
+}
+std::uint64_t Win32WindowHost::TextureGeneration() const noexcept {
+    return impl_->textureGeneration.load(std::memory_order_acquire);
 }
 
 }  // namespace motrix::platform

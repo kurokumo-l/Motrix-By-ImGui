@@ -43,7 +43,11 @@ IdGuard::IdGuard(int intId) {
 }
 
 IdGuard::IdGuard(std::string_view strId) {
-    ImGui::PushID(strId.data(), strId.data() + strId.size());
+    if (strId.empty()) {
+        ImGui::PushID("");
+    } else {
+        ImGui::PushID(strId.data(), strId.data() + strId.size());
+    }
 }
 
 IdGuard::~IdGuard() {

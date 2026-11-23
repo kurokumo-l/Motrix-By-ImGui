@@ -31,5 +31,8 @@ export struct ParsedRange {
 
 export [[nodiscard]] ParsedRange ParseByteRange(std::string_view hdr, std::size_t total);
 export [[nodiscard]] std::uint16_t PickFreeLoopbackPort();
+export [[nodiscard]] std::uint16_t PickFreeUdpLoopbackPort();
+export [[nodiscard]] std::filesystem::path MakeUniqueTempDir(std::string_view prefix);
+export [[nodiscard]] bool ShouldRequireLiveTests();
 
 }  // namespace motrix::test

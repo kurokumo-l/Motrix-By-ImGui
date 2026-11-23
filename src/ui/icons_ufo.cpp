@@ -151,9 +151,11 @@ void DrawEmptyUfoIllustration(const UfoIllustrationSpec& spec) {
         const int targetW = std::clamp(((rawW + 63) / 64) * 64, 768, 1280);
         const int targetH = std::max(
             128, static_cast<int>(std::lround(static_cast<float>(targetW) * (309.0f / 504.0f))));
-        if (cache.owner != spec.host) {
+        const std::uint64_t hostGen = spec.host->TextureGeneration();
+        if (cache.owner != spec.host || cache.generation != hostGen) {
             cache.texId = 0;
             cache.owner = spec.host;
+            cache.generation = 0;
         }
         if (cache.texId == 0 || cache.texW != targetW || cache.texH != targetH
             || cache.dark != spec.dark) {
@@ -162,6 +164,7 @@ void DrawEmptyUfoIllustration(const UfoIllustrationSpec& spec) {
                 spec.host->UploadRgbaTexture(cache.texId, targetW, targetH, pixels);
             if (uploaded != 0) {
                 cache.texId = uploaded;
+                cache.generation = hostGen;
                 cache.texW = targetW;
                 cache.texH = targetH;
                 cache.dark = spec.dark;

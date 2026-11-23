@@ -119,6 +119,7 @@ public:
                                                           std::span<const std::uint8_t> /*rgba*/) {
         return 0;
     }
+    [[nodiscard]] virtual std::uint64_t TextureGeneration() const noexcept { return 1; }
 };
 
 }  // namespace motrix::platform
