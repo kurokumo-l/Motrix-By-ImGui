@@ -31,6 +31,8 @@ constexpr UINT kWmAppWakeup = WM_APP + 101;
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 constexpr DWORD kDwmWindowCornerPreference = 33;
 constexpr int kDwmRoundCorner = 2;
+std::mutex gWindowClassMu;
+int gWindowClassInstances = 0;
 
 [[nodiscard]] bool ShouldWakeFrameForMessage(UINT msg) noexcept {
     static constexpr std::array<UINT, 31> kWakeMessages{WM_PAINT,
@@ -332,19 +334,48 @@ float Win32GetWindowDpiScale(void* hwnd) noexcept {
 
 motrix::core::Result<void> Win32CreateWindow(Win32WindowState& state) {
     HINSTANCE hInst = ::GetModuleHandleW(nullptr);
-    state.hInstance = hInst;
+    {
+        std::scoped_lock lk(gWindowClassMu);
+        if (gWindowClassInstances == 0) {
+            WNDCLASSEXW wc{};
+            wc.cbSize = sizeof(wc);
+            wc.style = CS_DBLCLKS;
+            wc.lpfnWndProc = MainWndProc;
+            wc.hInstance = hInst;
+            wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+            wc.lpszClassName = kWindowClassName;
+            if (::RegisterClassExW(&wc) == 0 && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+                return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Platform,
+                                                               motrix::core::ErrorCode::IoFailure,
+                                                               "Failed to register Win32 window class"));
+            }
+        }
+        ++gWindowClassInstances;
+    }
 
-    WNDCLASSEXW wc{};
-    wc.cbSize = sizeof(wc);
-    wc.style = CS_CLASSDC | CS_DBLCLKS;
-    wc.lpfnWndProc = MainWndProc;
-    wc.hInstance = hInst;
-    wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    wc.lpszClassName = kWindowClassName;
-    ::RegisterClassExW(&wc);
+    HMONITOR targetMon = ::MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    if (state.config.initialBounds && state.config.initialBounds->hasPosition) {
+        const auto& b = *state.config.initialBounds;
+        const POINT anchor{
+            b.x + std::max(b.width, 1) / 2,
+            b.y + std::max(b.height, 1) / 2,
+        };
+        targetMon = ::MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
+    }
+    const float monDpi = ImGui_ImplWin32_GetDpiScaleForMonitor(targetMon);
+    if (monDpi > 0.0f) {
+        state.dpiScale = monDpi;
+    }
 
     RECT workArea{};
-    ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(MONITORINFO);
+    if (targetMon && ::GetMonitorInfoW(targetMon, &mi)) {
+        workArea = mi.rcWork;
+    } else {
+        ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    }
+
     const int logicalWorkW =
         static_cast<int>(static_cast<float>(workArea.right - workArea.left) / state.dpiScale);
     const int logicalWorkH =
@@ -371,12 +402,18 @@ motrix::core::Result<void> Win32CreateWindow(Win32WindowState& state) {
                                      hInst,
                                      &state);
     if (!created) {
-        ::UnregisterClassW(kWindowClassName, hInst);
+        std::scoped_lock lk(gWindowClassMu);
+        if (--gWindowClassInstances <= 0) {
+            gWindowClassInstances = 0;
+            ::UnregisterClassW(kWindowClassName, hInst);
+        }
         return std::unexpected(motrix::core::MakeError(motrix::core::ErrorDomain::Platform,
                                                        motrix::core::ErrorCode::IoFailure,
                                                        "Failed to create Win32 window"));
     }
+    state.hInstance = hInst;
     state.hwnd = created;
+    state.dpiScale = Win32GetWindowDpiScale(created);
     Win32RegisterShellMessages(state);
     ::DragAcceptFiles(created, TRUE);
     Win32ApplyDwmChrome(created, state.darkFrame);
@@ -395,8 +432,13 @@ void Win32DestroyWindow(Win32WindowState& state) noexcept {
         state.hwnd = nullptr;
     }
     if (state.hInstance) {
-        ::UnregisterClassW(kWindowClassName, static_cast<HINSTANCE>(state.hInstance));
+        HINSTANCE hInst = static_cast<HINSTANCE>(state.hInstance);
         state.hInstance = nullptr;
+        std::scoped_lock lk(gWindowClassMu);
+        if (--gWindowClassInstances <= 0) {
+            gWindowClassInstances = 0;
+            ::UnregisterClassW(kWindowClassName, hInst);
+        }
     }
 }
 

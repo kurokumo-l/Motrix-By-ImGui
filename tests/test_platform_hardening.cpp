@@ -207,3 +207,36 @@ TEST_CASE(
     host.OpenPathInExplorer(std::string_view("C:\\Temp\\safe\0evil", 17));
     CHECK_FALSE(host.Metrics().hiddenToTray);
 }
+
+TEST_CASE("motrix.platform Win32 window class omits CS_CLASSDC and unregisters cleanly",
+          "[platform][host]") {
+    motrix::platform::Win32WindowHost host;
+    std::atomic<bool> checkedClass{false};
+    std::atomic<bool> hasClassDc{true};
+    std::atomic<bool> hasDblClks{false};
+
+    motrix::platform::WindowHostConfig cfg{};
+    cfg.title = "Motrix Class Style Check";
+    cfg.enableTrayIcon = false;
+    cfg.startHidden = false;
+    cfg.onBeforeNewFrame = [&]() {
+        if (!checkedClass.exchange(true, std::memory_order_acq_rel)) {
+            WNDCLASSEXW wc{};
+            wc.cbSize = sizeof(wc);
+            if (::GetClassInfoExW(::GetModuleHandleW(nullptr), L"MotrixNativeWindowClass", &wc)
+                != FALSE) {
+                hasClassDc.store((wc.style & CS_CLASSDC) != 0, std::memory_order_release);
+                hasDblClks.store((wc.style & CS_DBLCLKS) != 0, std::memory_order_release);
+            }
+            host.RequestQuit();
+        }
+    };
+
+    const auto res =
+        host.Run(cfg, [](motrix::platform::IWindowHost&) {}, [](motrix::platform::IWindowHost&) {});
+    REQUIRE(res.has_value());
+    CHECK(*res == 0);
+    CHECK(checkedClass.load());
+    CHECK_FALSE(hasClassDc.load());
+    CHECK(hasDblClks.load());
+}

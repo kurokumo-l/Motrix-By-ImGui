@@ -120,6 +120,7 @@ private:
     bool enableEngine_ = false;
     std::atomic<bool> sleepBlockerActive_{false};
     std::atomic<bool> hasLiveRuntime_{false};
+    std::atomic<bool> sessionEnding_{false};
     std::atomic<bool> stopping_{false};
     TaskCompletionTracker completionTracker_;
     std::mutex writeMutex_;

@@ -464,4 +464,144 @@ TEST_CASE("motrix.ui CopyUtf8ToBuffer and PrefsFormState preserve UTF-8 boundari
     REQUIRE(saved != nullptr);
     CHECK(saved->sysConfig.maxConcurrentDownloads == 8);
     CHECK(saved->sysConfig.btTracker == hugeTrackers);
+
+    // Verify btMaxPeers 2000 limit, unified metadata flag, and non-destructive sys.split
+    state.sysConfig.btMaxPeers = 2000;
+    state.sysConfig.btSaveMetadata = false;
+    state.sysConfig.rpcSaveUploadMetadata = false;
+    state.sysConfig.maxConnectionPerServer = 16;
+    state.sysConfig.split = 64;
+    motrix::ui::LoadPrefsFromSnapshot(state, ps);
+    CHECK(ps.btMaxPeers == 2000);
+    CHECK_FALSE(ps.rpcSaveUploadMetadata);
+    CHECK_FALSE(motrix::ui::IsPrefsDraftDirty(state, ps));
+
+    ps.maxConcurrent = 10;
+    sink.commands.clear();
+    (void)motrix::ui::ApplyPrefsDraft(state, sink, ps);
+    REQUIRE(sink.commands.size() == 1);
+    const auto* savedSplitPreserved =
+        std::get_if<motrix::app::SavePreferencesCmd>(&sink.commands.front());
+    REQUIRE(savedSplitPreserved != nullptr);
+    CHECK(savedSplitPreserved->sysConfig.btMaxPeers == 2000);
+    CHECK_FALSE(savedSplitPreserved->sysConfig.btSaveMetadata);
+    CHECK_FALSE(savedSplitPreserved->sysConfig.rpcSaveUploadMetadata);
+    CHECK(savedSplitPreserved->sysConfig.split == 64);
+
+    motrix::ui::LoadPrefsFromSnapshot(state, ps);
+    ps.rpcSaveUploadMetadata = true;
+    CHECK(motrix::ui::IsPrefsDraftDirty(state, ps));
+    ps.maxConnPerServer = 32;
+    sink.commands.clear();
+    (void)motrix::ui::ApplyPrefsDraft(state, sink, ps);
+    REQUIRE(sink.commands.size() == 1);
+    const auto* savedSplitUpdated = std::get_if<motrix::app::SavePreferencesCmd>(&sink.commands.front());
+    REQUIRE(savedSplitUpdated != nullptr);
+    CHECK(savedSplitUpdated->sysConfig.rpcSaveUploadMetadata);
+    CHECK(savedSplitUpdated->sysConfig.btSaveMetadata);
+    CHECK(savedSplitUpdated->sysConfig.split == 32);
+}
+
+TEST_CASE("motrix.ui External close of AddTask clears credentials and draft state",
+          "[ui][modals][security]") {
+    HeadlessUiRunner ui(1024.0f, 768.0f);
+    motrix::app::AppStateSnapshot state;
+    state.activeModal = motrix::app::ActiveModal::AddTask;
+    state.prefs.useProxy = true;
+    state.sysConfig.allProxy = "http://secretUser:secretPass@127.0.0.1:7890";
+    state.pendingPrefillUri = "https://example.com/private?token=xyz";
+    state.prefillUriSeq = 1;
+
+    (void)ui.Step(state, 1024.0f, 768.0f);
+    (void)ui.Step(state, 1024.0f, 768.0f);
+
+    // External close transitions activeModal back to None without Cancel/Submit click
+    state.activeModal = motrix::app::ActiveModal::None;
+    (void)ui.Step(state, 1024.0f, 768.0f);
+
+    // Reopen AddTask without new prefill and verify Ctrl+Enter does not submit stale URI
+    state.prefs.useProxy = false;
+    state.sysConfig.allProxy.clear();
+    state.pendingPrefillUri.clear();
+    state.activeModal = motrix::app::ActiveModal::AddTask;
+    (void)ui.Step(state, 1024.0f, 768.0f);
+    (void)ui.Step(state, 1024.0f, 768.0f);
+
+    ui.sink.commands.clear();
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    io.AddKeyEvent(ImGuiKey_Enter, true);
+    (void)ui.Step(state, 1024.0f, 768.0f);
+    io.AddKeyEvent(ImGuiKey_Enter, false);
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    (void)ui.Step(state, 1024.0f, 768.0f);
+
+    for (const auto& cmd : ui.sink.commands) {
+        CHECK_FALSE(std::holds_alternative<motrix::app::SubmitAddUriCmd>(cmd));
+        CHECK_FALSE(std::holds_alternative<motrix::app::SubmitAddTorrentCmd>(cmd));
+    }
+}
+
+TEST_CASE("motrix.ui Narrow task card, narrow drawer tabs, and v0.1.6 About modal render safely",
+          "[ui][narrow][about]") {
+    HeadlessUiRunner ui(380.0f, 440.0f);
+    motrix::app::AppStateSnapshot state;
+    auto bt = MakeSampleTask(true);
+    bt.downloadSpeed = 128'000'000ull;
+    bt.uploadSpeed = 64'000'000ull;
+    motrix::domain::TaskBittorrentInfo btMeta;
+    btMeta.name = bt.name;
+    btMeta.infoHash = std::string(64, 'a');
+    btMeta.comment = "Narrow layout clipping verification comment";
+    bt.btInfo = btMeta;
+    bt.files.push_back(motrix::domain::TaskFileView{.index = 1,
+                                                    .path = "video/movie.mp4",
+                                                    .length = 1024,
+                                                    .completedLength = 512,
+                                                    .selected = true});
+    state.downloadingTasks.push_back(bt);
+
+    ImDrawData* ddCardNarrow = ui.Step(state, 380.0f, 440.0f);
+    REQUIRE(ddCardNarrow != nullptr);
+    CHECK(ddCardNarrow->Valid);
+    CHECK(ddCardNarrow->TotalVtxCount > 0);
+
+    state.detailedTaskGid = bt.gid;
+    state.detailedTask = bt;
+    state.detailedTrackers = {"udp://tracker.example.com:6969/announce"};
+    state.detailedPeers.push_back(motrix::domain::TaskPeerView{.peerId = "-AZ2060-",
+                                                               .client = "Azureus",
+                                                               .ip = "192.0.2.10",
+                                                               .port = 51413,
+                                                               .downloadSpeed = 2000,
+                                                               .uploadSpeed = 1000,
+                                                               .progress = 0.5f});
+
+    for (int tab = 0; tab <= 4; ++tab) {
+        state.activeDetailTab = tab;
+        ImDrawData* dd = ui.Step(state, 380.0f, 440.0f);
+        REQUIRE(dd != nullptr);
+        CHECK(dd->Valid);
+        CHECK(dd->TotalVtxCount > 0);
+    }
+
+    // Slide-out closing transition (wantOpen -> false) disables drawer interaction safely
+    state.detailedTaskGid.clear();
+    state.detailedTask.reset();
+    ImDrawData* ddClosing = ui.Step(state, 380.0f, 440.0f);
+    REQUIRE(ddClosing != nullptr);
+    CHECK(ddClosing->Valid);
+
+    // v0.1.6 About modal renders cleanly at narrow & wide widths
+    state.activeModal = motrix::app::ActiveModal::About;
+    (void)ui.Step(state, 380.0f, 500.0f);
+    ImDrawData* ddAboutNarrow = ui.Step(state, 380.0f, 500.0f);
+    REQUIRE(ddAboutNarrow != nullptr);
+    CHECK(ddAboutNarrow->Valid);
+    CHECK(ddAboutNarrow->TotalVtxCount > 0);
+
+    ImDrawData* ddAboutWide = ui.Step(state, 1024.0f, 768.0f);
+    REQUIRE(ddAboutWide != nullptr);
+    CHECK(ddAboutWide->Valid);
+    CHECK(ddAboutWide->TotalVtxCount > 0);
 }

@@ -240,10 +240,11 @@ void RenderAdvTrackerRow(UiFrameContext& ctx, PrefsFormState& ps) {
         cy += 28.0f * s;
 
         FontGuard fg(ctx.fonts, FontRole::Regular, 13.5f);
-        const std::string syncStr =
+        const std::string timePart =
             (ctx.state.prefs.lastSyncTrackerTime > 0)
                 ? motrix::domain::FormatUnixTimestampUtc(ctx.state.prefs.lastSyncTrackerTime)
                 : std::string(ctx.tr.Tr("prefs.never_synced"));
+        const std::string syncStr = std::format("{} {}", ctx.tr.Tr("prefs.last_sync"), timePart);
         ImGui::GetWindowDrawList()->AddText(
             ImVec2(bx, cy), ToAbgrU32(ctx.palette.taskMetaText), syncStr.c_str());
         ImGui::SetCursorScreenPos(ImVec2(bx, cy + 20.0f * s));
@@ -269,14 +270,15 @@ void RenderAdvRpcRow(UiFrameContext& ctx, PrefsFormState& ps) {
         DrawSubCaption(ctx, bx, cy, ctx.tr.Tr("prefs.rpc_secret"));
         cy += 24.0f * s;
         ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        const ElCompositeResult secRes = ElCompositeInput(elSt,
-                                                          ElCompositeSpec{"##adv_rpc_sec",
-                                                                          ps.rpcSecretBuffer.data(),
-                                                                          ps.rpcSecretBuffer.size(),
-                                                                          fullW,
-                                                                          std::nullopt,
-                                                                          MotrixIcon::Dice,
-                                                                          "RPC Secret"});
+        const ElCompositeResult secRes =
+            ElCompositeInput(elSt,
+                             ElCompositeSpec{"##adv_rpc_sec",
+                                             ps.rpcSecretBuffer.data(),
+                                             ps.rpcSecretBuffer.size(),
+                                             fullW,
+                                             std::nullopt,
+                                             MotrixIcon::Dice,
+                                             ctx.tr.Tr("prefs.rpc_secret")});
         if (secRes.rightClicked) {
             CopyUtf8ToBuffer(
                 GenerateRandomSecret(12), ps.rpcSecretBuffer.data(), ps.rpcSecretBuffer.size());

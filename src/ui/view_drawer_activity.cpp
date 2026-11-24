@@ -23,7 +23,7 @@ constexpr float kDetailColGap = 14.0f;
 constexpr float kDetailRowGap = 12.0f;
 
 struct StatusTagVisual {
-    const char* label = "WAITING";
+    std::string_view label;
     RgbaColor color{};
 };
 
@@ -43,16 +43,17 @@ struct DetailRowSpec {
     switch (task.status) {
         case TaskStatus::Active:
             if (task.isSeeding) {
-                return {"SEEDING", p.progressComplete};
+                const bool zhCn = (ctx.tr.CurrentLocale() == motrix::core::Locale::ZhCN);
+                return {zhCn ? "做种中" : "Seeding", p.progressComplete};
             }
-            return {"ACTIVE", p.primary};
-        case TaskStatus::Waiting: return {"WAITING", p.subLabelText};
-        case TaskStatus::Paused: return {"PAUSED", p.subLabelText};
-        case TaskStatus::Complete: return {"COMPLETE", p.progressComplete};
-        case TaskStatus::Error: return {"ERROR", p.progressError};
-        case TaskStatus::Removed: return {"REMOVED", p.subLabelText};
+            return {ctx.tr.Tr("status.active"), p.primary};
+        case TaskStatus::Waiting: return {ctx.tr.Tr("status.waiting"), p.subLabelText};
+        case TaskStatus::Paused: return {ctx.tr.Tr("status.paused"), p.subLabelText};
+        case TaskStatus::Complete: return {ctx.tr.Tr("status.complete"), p.progressComplete};
+        case TaskStatus::Error: return {ctx.tr.Tr("status.error"), p.progressError};
+        case TaskStatus::Removed: return {ctx.tr.Tr("status.removed"), p.subLabelText};
     }
-    return {"WAITING", p.subLabelText};
+    return {ctx.tr.Tr("status.waiting"), p.subLabelText};
 }
 
 [[nodiscard]] std::string TrimTrailingZeros(std::string text) {
@@ -124,10 +125,14 @@ void DrawDetailValueRow(UiFrameContext& ctx, const DetailRowSpec& row) {
         ImGui::TextUnformatted(row.value.data(), row.value.data() + row.value.size());
         consumedH = std::max(rowH, ImGui::GetItemRectMax().y - origin.y);
     } else {
-        ImGui::GetWindowDrawList()->AddText(ImVec2(origin.x + labelW + gap, textY),
-                                            ToAbgrU32(valCol),
-                                            row.value.data(),
-                                            row.value.data() + row.value.size());
+        const float valX = origin.x + labelW + gap;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ClipRectGuard valClip(dl,
+                              ClipRectSpec{valX, origin.y, origin.x + availW, origin.y + rowH, true});
+        dl->AddText(ImVec2(valX, textY),
+                    ToAbgrU32(valCol),
+                    row.value.data(),
+                    row.value.data() + row.value.size());
     }
     ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + consumedH + 8.0f * s));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
@@ -143,7 +148,7 @@ void DrawStatusTagRow(UiFrameContext& ctx, const motrix::domain::DownloadTaskVie
 
     const StatusTagVisual tag = StatusTagFor(ctx, task);
     FontGuard tf(ctx.fonts, FontRole::Regular, 11.5f);
-    const ImVec2 txtSz = ImGui::CalcTextSize(tag.label);
+    const ImVec2 txtSz = ImGui::CalcTextSize(tag.label.data(), tag.label.data() + tag.label.size());
     const float padX = 9.0f * s;
     const float tagW = txtSz.x + padX * 2.0f;
     const float tagH = 24.0f * s;
@@ -155,8 +160,10 @@ void DrawStatusTagRow(UiFrameContext& ctx, const motrix::domain::DownloadTaskVie
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(tMin, tMax, ToAbgrU32(WithAlpha(tag.color, fillA)), 4.0f * s);
     dl->AddRect(tMin, tMax, ToAbgrU32(WithAlpha(tag.color, borderA)), 4.0f * s, 0, 1.0f);
-    dl->AddText(
-        ImVec2(tMin.x + padX, tMin.y + (tagH - txtSz.y) * 0.5f), ToAbgrU32(tag.color), tag.label);
+    dl->AddText(ImVec2(tMin.x + padX, tMin.y + (tagH - txtSz.y) * 0.5f),
+                ToAbgrU32(tag.color),
+                tag.label.data(),
+                tag.label.data() + tag.label.size());
 
     ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + rowH + 8.0f * s));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
@@ -250,18 +257,29 @@ void DrawInfoHashRow(UiFrameContext& ctx, std::string_view hash) {
     const float labelW = kDetailLabelW * s;
     const float gap = kDetailColGap * s;
     const float rowH = 24.0f * s;
+    const float availW = ImGui::GetContentRegionAvail().x;
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     DrawColonLabel(ctx, {origin, labelW, rowH, ctx.tr.Tr("detail.info_hash")});
 
     FontGuard hf(ctx.fonts, FontRole::Regular, 13.5f);
     const float valX = origin.x + labelW + gap;
     const float textY = origin.y + (rowH - ImGui::GetFontSize()) * 0.5f;
-    const ImVec2 hSz = ImGui::CalcTextSize(hash.data(), hash.data() + hash.size());
-    ImGui::GetWindowDrawList()->AddText(
-        ImVec2(valX, textY), ToAbgrU32(ctx.palette.panelTitle), hash.data(), hash.data() + hash.size());
-
     const float btnSz = 20.0f * s;
-    const ImVec2 btnPos(valX + hSz.x + 6.0f * s, origin.y + (rowH - btnSz) * 0.5f);
+    const float btnGap = 6.0f * s;
+    const float rightEdge = std::max(valX + btnSz + btnGap, origin.x + availW);
+    const float maxHashW = std::max(24.0f * s, rightEdge - valX - btnSz - btnGap);
+    const ImVec2 hSz = ImGui::CalcTextSize(hash.data(), hash.data() + hash.size());
+    const float textEndX = std::min(valX + hSz.x, valX + maxHashW);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    {
+        ClipRectGuard hashClip(dl, ClipRectSpec{valX, origin.y, textEndX, origin.y + rowH, true});
+        dl->AddText(ImVec2(valX, textY),
+                    ToAbgrU32(ctx.palette.panelTitle),
+                    hash.data(),
+                    hash.data() + hash.size());
+    }
+
+    const ImVec2 btnPos(textEndX + btnGap, origin.y + (rowH - btnSz) * 0.5f);
     ImGui::SetCursorScreenPos(btnPos);
     if (ImGui::InvisibleButton("##drw_copy_hash", ImVec2(btnSz, btnSz))) {
         ctx.host.CopyTextToClipboard(hash);
@@ -382,7 +400,7 @@ void DrawActivityProgressBlock(UiFrameContext& ctx, const motrix::domain::Downlo
 
     DrawColonLabel(ctx, {origin, labelW, rowH, ctx.tr.Tr("detail.progress_info")});
 
-    const double frac = static_cast<double>(motrix::domain::ProgressOf(task));
+    const double frac = std::clamp(static_cast<double>(motrix::domain::ProgressOf(task)), 0.0, 1.0);
     const std::string pctStr = FormatTrimmedPercent(frac);
 
     FontGuard pf(ctx.fonts, FontRole::Regular, 13.5f);
@@ -397,7 +415,7 @@ void DrawActivityProgressBlock(UiFrameContext& ctx, const motrix::domain::Downlo
                       ToAbgrU32(ctx.palette.progressTrack),
                       barH * 0.5f);
     if (frac > 0.001) {
-        const float fillW = std::max(barH, barW * static_cast<float>(frac));
+        const float fillW = std::min(barW, std::max(barH, barW * static_cast<float>(frac)));
         dl->AddRectFilled(ImVec2(barX, barY),
                           ImVec2(barX + fillW, barY + barH),
                           ToAbgrU32(ProgressColorFor(ctx.palette, task)),
@@ -409,23 +427,35 @@ void DrawActivityProgressBlock(UiFrameContext& ctx, const motrix::domain::Downlo
         ImVec2(barX + barW + 14.0f * s, pctTextY), ToAbgrU32(ctx.palette.panelTitle), pctStr.c_str());
 
     const float sizeRowY = origin.y + rowH + 6.0f * s;
+    const float lineH = ImGui::GetTextLineHeight();
     const std::string sizeText =
         (task.totalLength == 0 && task.completedLength > 0)
             ? motrix::domain::FormatBytesFixed(task.completedLength, 2)
             : std::format("{} / {}",
                           motrix::domain::FormatBytesFixed(task.completedLength, 2),
                           motrix::domain::FormatBytesFixed(task.totalLength, 2));
-    dl->AddText(ImVec2(barX, sizeRowY), ToAbgrU32(ctx.palette.subLabelText), sizeText.c_str());
-
+    std::string etaText;
+    float etaLeftX = barX + barW;
     if (task.status == motrix::domain::TaskStatus::Active && !task.isSeeding) {
         if (const auto eta = motrix::domain::EtaSecondsOf(task); eta.has_value()) {
-            const std::string etaText = motrix::domain::FormatRemainingEta(
+            etaText = motrix::domain::FormatRemainingEta(
                 motrix::domain::RemainingBytesOf(task), task.downloadSpeed, ctx.tr.Tr("task.remaining"));
             const ImVec2 eSz = ImGui::CalcTextSize(etaText.c_str());
-            dl->AddText(ImVec2(barX + barW - eSz.x, sizeRowY),
-                        ToAbgrU32(ctx.palette.subLabelText),
-                        etaText.c_str());
+            const float minEtaX =
+                barX + std::min(barW * 0.55f, ImGui::CalcTextSize(sizeText.c_str()).x + 8.0f * s);
+            etaLeftX = std::max(minEtaX, barX + barW - eSz.x);
         }
+    }
+    const float sizeClipMaxX = etaText.empty() ? (barX + barW) : std::max(barX, etaLeftX - 8.0f * s);
+    {
+        ClipRectGuard sizeClip(
+            dl, ClipRectSpec{barX, sizeRowY, sizeClipMaxX, sizeRowY + lineH + 2.0f * s, true});
+        dl->AddText(ImVec2(barX, sizeRowY), ToAbgrU32(ctx.palette.subLabelText), sizeText.c_str());
+    }
+    if (!etaText.empty()) {
+        ClipRectGuard etaClip(
+            dl, ClipRectSpec{etaLeftX, sizeRowY, barX + barW, sizeRowY + lineH + 2.0f * s, true});
+        dl->AddText(ImVec2(etaLeftX, sizeRowY), ToAbgrU32(ctx.palette.subLabelText), etaText.c_str());
     }
 
     ImGui::SetCursorScreenPos(ImVec2(origin.x, sizeRowY + 26.0f * s + 4.0f * s));

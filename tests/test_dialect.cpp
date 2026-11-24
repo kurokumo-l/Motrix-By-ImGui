@@ -15,6 +15,13 @@ namespace {
     return std::any_of(opts.begin(), opts.end(), [&](const auto& o) { return o.key == key; });
 }
 
+[[nodiscard]] std::string FindOptionValue(const std::vector<motrix::engine::EngineOptionPair>& opts,
+                                          std::string_view key) {
+    const auto it = std::find_if(opts.begin(), opts.end(), [&](const auto& o) { return o.key == key; });
+    REQUIRE(it != opts.end());
+    return it->value;
+}
+
 }  // namespace
 
 TEST_CASE("motrix.engine detects classic aria2 vs aria2-next", "[engine][dialect]") {
@@ -167,14 +174,6 @@ TEST_CASE("motrix.engine aria2.conf formatting, launch flags, and aria2-next opt
     CHECK(ContainsOptionKey(filteredClassic, "bt-detach-seed-only"));
     CHECK(ContainsOptionKey(filteredClassic, "bt-save-metadata"));
 
-    const auto findOpt = [](const std::vector<EngineOptionPair>& opts,
-                            std::string_view k) -> std::string {
-        const auto it =
-            std::find_if(opts.begin(), opts.end(), [&](const auto& o) { return o.key == k; });
-        REQUIRE(it != opts.end());
-        return it->value;
-    };
-
     const std::vector<EngineOptionPair> reqInput = {
         EngineOptionPair{"bt-encryption", "required"},
         EngineOptionPair{"detach-share-only", "true"},
@@ -186,26 +185,87 @@ TEST_CASE("motrix.engine aria2.conf formatting, launch flags, and aria2-next opt
     CHECK_FALSE(ContainsOptionKey(classicReq, "bt-encryption"));
     CHECK_FALSE(ContainsOptionKey(classicReq, "bt-transport"));
     CHECK_FALSE(ContainsOptionKey(classicReq, "media"));
-    CHECK(findOpt(classicReq, "bt-require-crypto") == "true");
-    CHECK(findOpt(classicReq, "bt-min-crypto-level") == "arc4");
-    CHECK(findOpt(classicReq, "bt-detach-seed-only") == "true");
-    CHECK(findOpt(classicReq, "bt-save-metadata") == "true");
+    CHECK(FindOptionValue(classicReq, "bt-require-crypto") == "true");
+    CHECK(FindOptionValue(classicReq, "bt-min-crypto-level") == "arc4");
+    CHECK(FindOptionValue(classicReq, "bt-detach-seed-only") == "true");
+    CHECK(FindOptionValue(classicReq, "bt-save-metadata") == "true");
 
     const std::vector<EngineOptionPair> optInput = {
         EngineOptionPair{"bt-encryption", "optional"},
         EngineOptionPair{"max-connection-per-server", "64"},
     };
     const auto classicOpt = classicDialect->FilterGlobalOptions(optInput);
-    CHECK(findOpt(classicOpt, "bt-require-crypto") == "false");
-    CHECK(findOpt(classicOpt, "bt-min-crypto-level") == "plain");
-    CHECK(findOpt(classicOpt, "max-connection-per-server") == "16");
+    CHECK(FindOptionValue(classicOpt, "bt-require-crypto") == "false");
+    CHECK(FindOptionValue(classicOpt, "bt-min-crypto-level") == "plain");
+    CHECK(FindOptionValue(classicOpt, "max-connection-per-server") == "16");
 
     const auto classicTaskOpts = classicDialect->FilterTaskOptions(optInput);
-    CHECK(findOpt(classicTaskOpts, "max-connection-per-server") == "16");
+    CHECK(FindOptionValue(classicTaskOpts, "max-connection-per-server") == "16");
 
     const std::vector<EngineOptionPair> nextMaxConnInput = {
         EngineOptionPair{"max-connection-per-server", "128"},
     };
     const auto nextMaxConn = nextDialect->FilterTaskOptions(nextMaxConnInput);
-    CHECK(findOpt(nextMaxConn, "max-connection-per-server") == "128");
+    CHECK(FindOptionValue(nextMaxConn, "max-connection-per-server") == "128");
+}
+
+TEST_CASE("motrix.engine ClassicAria2Dialect normalizes no-proxy, preserves bt-max-peers, and "
+          "FormatAria2Conf rejects invalid keys",
+          "[engine][dialect]") {
+    using namespace motrix::engine;
+    auto classicDialect = CreateDialect(EngineKind::ClassicAria2);
+
+    const std::vector<EngineOptionPair> globalInput = {
+        {"no-proxy", " localhost ; 127.0.0.1 , localhost "},
+        {"bt-max-peers", "64"},
+        {"bt-max-connections", "128"},
+    };
+    const auto globalFiltered = classicDialect->FilterGlobalOptions(globalInput);
+    CHECK(FindOptionValue(globalFiltered, "no-proxy") == "localhost,127.0.0.1");
+    CHECK(FindOptionValue(globalFiltered, "bt-max-peers") == "64");
+    CHECK_FALSE(ContainsOptionKey(globalFiltered, "bt-max-connections"));
+
+    const std::vector<EngineOptionPair> emptyBypassInput = {
+        {"no-proxy", " , ; "},
+    };
+    const auto emptyBypassFiltered = classicDialect->FilterGlobalOptions(emptyBypassInput);
+    CHECK(FindOptionValue(emptyBypassFiltered, "no-proxy").empty());
+
+    const std::vector<EngineOptionPair> taskInput = {
+        {"no-proxy", " *.local ; 10.0.0.0/8 , *.local "},
+        {"bt-max-peers", "32"},
+        {"bt-max-connections", "64"},
+    };
+    const auto taskFiltered = classicDialect->FilterTaskOptions(taskInput);
+    CHECK(FindOptionValue(taskFiltered, "no-proxy") == "*.local,10.0.0.0/8");
+    CHECK(FindOptionValue(taskFiltered, "bt-max-peers") == "32");
+    CHECK_FALSE(ContainsOptionKey(taskFiltered, "bt-max-connections"));
+
+    const std::vector<EngineOptionPair> confEntries = {
+        {"", "ignored_empty"},
+        {"dir\nevil", "C:/evil"},
+        {"split\r16", "ignored_cr"},
+        {"a=b", "ignored_eq"},
+        {"#comment", "ignored_hash"},
+        {"bad key", "ignored_space"},
+        {"tab\tkey", "ignored_tab"},
+        {"slash/key", "ignored_slash"},
+        {std::string("nul\0key", 7), "ignored_nul"},
+        {"dir", "C:/dl"},
+        {"bt-transport", "tcp"},
+        {"user_agent_2", "Motrix/1.0"},
+        {"RPC2", "enabled"},
+    };
+    const std::string confText = FormatAria2Conf(confEntries);
+    CHECK(confText.find("\ndir=C:/dl\n") != std::string::npos);
+    CHECK(confText.find("\nbt-transport=tcp\n") != std::string::npos);
+    CHECK(confText.find("\nuser_agent_2=Motrix/1.0\n") != std::string::npos);
+    CHECK(confText.find("\nRPC2=enabled\n") != std::string::npos);
+    CHECK(confText.find("ignored_") == std::string::npos);
+    CHECK(confText.find("C:/evil") == std::string::npos);
+    CHECK(confText.find("a=b") == std::string::npos);
+    CHECK(confText.find("#comment") == std::string::npos);
+    CHECK(confText.find("bad key") == std::string::npos);
+    CHECK(confText.find("tab\tkey") == std::string::npos);
+    CHECK(confText.find("slash/key") == std::string::npos);
 }

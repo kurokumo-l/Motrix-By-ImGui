@@ -446,6 +446,34 @@ TEST_CASE("motrix.app FactoryResetCmd and ResetSessionCmd reset session and rege
     CHECK(afterFactory->prefs.theme == DefaultUserPreferences().theme);
     CHECK(afterFactory->sysConfig.maxConcurrentDownloads
           == DefaultSystemConfig().maxConcurrentDownloads);
+    CHECK(afterFactory->prefs.engineBinPath.empty());
     CHECK_FALSE(afterFactory->sysConfig.rpcSecret.empty());
     CHECK(afterFactory->sysConfig.rpcSecret != "old_custom_secret");
+}
+
+TEST_CASE("motrix.app SetSessionEnding enables fast BeginShutdown and FactoryReset clears override",
+          "[app][m4]") {
+    motrix::core::Logger logger;
+    motrix::app::CoordinatorOptions opts{};
+    opts.enableEngine = true;
+    opts.loadPersistedConfig = false;
+    opts.enginePathOverride = R"(Z:\nonexistent\motrix_missing_aria2c.exe)";
+
+    motrix::app::AppCoordinator coord(opts, logger);
+    auto prefs = coord.Snapshot()->prefs;
+    prefs.engineBinPath = R"(Z:\nonexistent\prefs_aria2c.exe)";
+    coord.Dispatch(
+        motrix::app::SavePreferencesCmd{std::move(prefs), coord.Snapshot()->sysConfig, false});
+    CHECK(coord.Snapshot()->prefs.engineBinPath == R"(Z:\nonexistent\prefs_aria2c.exe)");
+
+    coord.Dispatch(motrix::app::FactoryResetCmd{});
+    CHECK(coord.Snapshot()->prefs.engineBinPath.empty());
+
+    coord.SetSessionEnding(true);
+    const auto t0 = std::chrono::steady_clock::now();
+    coord.BeginShutdown();
+    const auto elapsedMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0)
+            .count();
+    CHECK(elapsedMs < 1500);
 }

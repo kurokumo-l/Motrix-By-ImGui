@@ -27,7 +27,13 @@ void RenderTitlebarOverlay(UiFrameContext& ctx) {
 
     const ImVec2 stripMin(startX, startY);
     const ImVec2 stripMax(startX + totalW, startY + btnH);
-    const bool groupHovered = ImGui::IsMouseHoveringRect(stripMin, stripMax, false);
+    const bool modalBlocking = (ctx.state.activeModal != motrix::app::ActiveModal::None)
+                               || (ctx.deleteConfirm != nullptr && ctx.deleteConfirm->open)
+                               || !ctx.state.detailedTaskGid.empty()
+                               || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);
+    const bool groupHovered = !modalBlocking
+                              && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)
+                              && ImGui::IsMouseHoveringRect(stripMin, stripMax, true);
     const float groupAlpha =
         ctx.anim.Float(HashId("titlebar.group_alpha"), groupHovered ? 1.0f : 0.40f, 16.0f, 0.40f);
 

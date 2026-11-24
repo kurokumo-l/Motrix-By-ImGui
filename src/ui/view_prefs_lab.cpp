@@ -252,7 +252,7 @@ void RenderLabBtTweaksRow(UiFrameContext& ctx, PrefsFormState& ps) {
         DrawSubCaption(ctx, bx, cy, ctx.tr.Tr("prefs.lab_max_peers"));
         cy += 24.0f * s;
         ImGui::SetCursorScreenPos(ImVec2(bx, cy));
-        ElInputNumberInt(elSt, "##lab_max_peers", ElIntSpec{&ps.btMaxPeers, 0, 1000, 5, 140.0f * s});
+        ElInputNumberInt(elSt, "##lab_max_peers", ElIntSpec{&ps.btMaxPeers, 0, 2000, 5, 140.0f * s});
         ImGui::SetCursorScreenPos(ImVec2(bx, cy + 32.0f * s));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     });

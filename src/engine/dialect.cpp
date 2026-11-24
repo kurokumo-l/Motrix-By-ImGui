@@ -229,11 +229,8 @@ public:
             if (key == "async-dns") {
                 hasAsyncDns = true;
             }
-            if (key == "max-connection-per-server") {
-                out.push_back({std::move(key), ClampClassicMaxConnPerServer(opt.value)});
-                continue;
-            }
-            out.push_back({std::move(key), opt.value});
+            std::string val = NormalizeSharedOptionValue(key, opt.value);
+            out.push_back({std::move(key), std::move(val)});
         }
         if (!hasAsyncDns) {
             out.push_back({"async-dns", "false"});
@@ -250,9 +247,7 @@ public:
             if (key.empty() || IsAria2NextOnlyOption(key)) {
                 continue;
             }
-            std::string val = (key == "max-connection-per-server")
-                                  ? ClampClassicMaxConnPerServer(opt.value)
-                                  : opt.value;
+            std::string val = NormalizeSharedOptionValue(key, opt.value);
             out.push_back({std::move(key), std::move(val)});
         }
         return out;
@@ -300,6 +295,19 @@ public:
             pos = sep + 1;
         }
         return JoinTokens(tokens);
+    }
+
+private:
+    /// Normalizes option values shared between classic global and per-task scopes.
+    [[nodiscard]] std::string NormalizeSharedOptionValue(std::string_view key,
+                                                         std::string_view value) const {
+        if (key == "max-connection-per-server") {
+            return ClampClassicMaxConnPerServer(value);
+        }
+        if (key == "no-proxy") {
+            return NormalizeNoProxy(value);
+        }
+        return std::string(value);
     }
 };
 
@@ -457,6 +465,23 @@ void ParseCliHeaderLine(std::string_view line, EngineVersionInfo& info) {
     }
 }
 
+/// Validates that an aria2.conf option key contains only safe [A-Za-z0-9_-] characters.
+[[nodiscard]] bool IsValidConfKey(std::string_view key) noexcept {
+    if (key.empty()) {
+        return false;
+    }
+    for (const char ch : key) {
+        const bool isLower = (ch >= 'a' && ch <= 'z');
+        const bool isUpper = (ch >= 'A' && ch <= 'Z');
+        const bool isDigit = (ch >= '0' && ch <= '9');
+        const bool isPunct = (ch == '-' || ch == '_');
+        if (!isLower && !isUpper && !isDigit && !isPunct) {
+            return false;
+        }
+    }
+    return true;
+}
+
 [[nodiscard]] std::string SanitizeConfValue(std::string_view raw) {
     std::string out;
     out.reserve(raw.size());
@@ -510,7 +535,7 @@ std::string FormatAria2Conf(std::span<const EngineOptionPair> options) {
     std::string out = "# Auto-generated and synchronized by Motrix Native for aria2-next.\n"
                       "# Modify settings from Preferences inside Motrix Native.\n\n";
     for (const auto& opt : options) {
-        if (opt.key.empty()) {
+        if (!IsValidConfKey(opt.key)) {
             continue;
         }
         out += std::format("{}={}\n", opt.key, SanitizeConfValue(opt.value));

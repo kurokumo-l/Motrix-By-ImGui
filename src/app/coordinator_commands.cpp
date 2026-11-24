@@ -430,6 +430,7 @@ bool AppCoordinator::ApplySystemAndFileCommand(AppStateSnapshot& state,
     }
     bool restartEngine = false;
     bool prefsCommitted = false;
+    bool clearEngineOverride = false;
     if (const auto* savePrefsCmd = std::get_if<SavePreferencesCmd>(&cmd)) {
         state.prefs = savePrefsCmd->prefs;
         state.sysConfig = savePrefsCmd->sysConfig;
@@ -441,6 +442,7 @@ bool AppCoordinator::ApplySystemAndFileCommand(AppStateSnapshot& state,
         ApplyFactoryResetDefaults(state, GenerateHexSecret());
         restartEngine = true;
         prefsCommitted = true;
+        clearEngineOverride = true;
     }
     if (prefsCommitted) {
         logger_.SetMinLevel(motrix::core::ParseLogLevel(state.prefs.logLevel));
@@ -448,6 +450,9 @@ bool AppCoordinator::ApplySystemAndFileCommand(AppStateSnapshot& state,
         outcome.saveSystemCfg = persistConfig_;
         outcome.prefsUpdated = true;
         std::scoped_lock lk(engineLifecycleMu_);
+        if (clearEngineOverride) {
+            enginePathOverride_.clear();
+        }
         if (!previewMockMode_ && engineRuntime_) {
             const auto dir = ResolveEngineDataDir(persistConfig_, appDataDir_);
             if (auto w = ApplySavePrefsEngine(

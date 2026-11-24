@@ -33,8 +33,7 @@ void RenderAboutTopSection(UiFrameContext& ctx, const AboutCardMetrics& m, float
     const float closeX = m.winPos.x + m.modalW - 20.0f * m.s - closeSize;
     const float closeY = m.winPos.y + 18.0f * m.s;
     ImGui::SetCursorScreenPos(ImVec2(closeX, closeY));
-    ImGui::InvisibleButton("##about_close", ImVec2(closeSize, closeSize));
-    if (ImGui::IsItemClicked()) {
+    if (ImGui::InvisibleButton("##about_close", ImVec2(closeSize, closeSize))) {
         ctx.sink.Dispatch(motrix::app::CloseModalCmd{});
         ImGui::CloseCurrentPopup();
     }
@@ -63,11 +62,14 @@ void RenderAboutTopSection(UiFrameContext& ctx, const AboutCardMetrics& m, float
 
     const RgbaColor verCol = ctx.palette.isDark ? HexColor(0xA2A3A4) : HexColor(0x606266);
     {
+        constexpr std::string_view kVersionLabel = "By ImGui  v0.1.6";
         FontGuard verF(ctx.fonts, FontRole::Regular, 18.0f);
-        const ImVec2 vsz = ImGui::CalcTextSize("By ImGui  v0.1.5");
+        const ImVec2 vsz =
+            ImGui::CalcTextSize(kVersionLabel.data(), kVersionLabel.data() + kVersionLabel.size());
         dl->AddText(ImVec2(m.x0 + logoW + 20.0f * m.s, curY + logoH - vsz.y + 2.0f * m.s),
                     ToAbgrU32(verCol),
-                    "By ImGui  v0.1.5");
+                    kVersionLabel.data(),
+                    kVersionLabel.data() + kVersionLabel.size());
     }
     curY += logoH + 50.0f * m.s;
 }
@@ -121,9 +123,15 @@ void RenderAboutEngineSection(UiFrameContext& ctx, const AboutCardMetrics& m, fl
 void RenderAboutFooter(UiFrameContext& ctx, const AboutCardMetrics& m, float& curY) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const RgbaColor footCol = ctx.palette.isDark ? HexColor(0xA2A3A4) : HexColor(0x606266);
+    constexpr std::string_view kCopyright = "©2026 Motrix By ImGui";
+    float copyW = 0.0f;
     {
         FontGuard cf(ctx.fonts, FontRole::Regular, 12.0f);
-        dl->AddText(ImVec2(m.x0, curY), ToAbgrU32(footCol), "©2026 Motrix By ImGui");
+        copyW = ImGui::CalcTextSize(kCopyright.data(), kCopyright.data() + kCopyright.size()).x;
+        dl->AddText(ImVec2(m.x0, curY),
+                    ToAbgrU32(footCol),
+                    kCopyright.data(),
+                    kCopyright.data() + kCopyright.size());
     }
 
     struct FooterLink {
@@ -149,8 +157,23 @@ void RenderAboutFooter(UiFrameContext& ctx, const AboutCardMetrics& m, float& cu
             totalW += widths[i];
         }
     }
-    const float gap = 30.0f * m.s;
+    const float defaultGap = 30.0f * m.s;
+    const float minSameRowGap = 12.0f * m.s;
+    const float minMargin = 14.0f * m.s;
+    float gap = defaultGap;
     float linkX = m.x0 + m.bodyW - totalW - gap * 3.0f;
+    if (linkX < m.x0 + copyW + minMargin) {
+        const float availLinksW = m.bodyW - copyW - minMargin;
+        const float shrunkGap = (availLinksW - totalW) / 3.0f;
+        if (shrunkGap >= minSameRowGap) {
+            gap = shrunkGap;
+            linkX = m.x0 + m.bodyW - totalW - gap * 3.0f;
+        } else {
+            curY += 22.0f * m.s;
+            gap = std::max(minSameRowGap, std::min(defaultGap, (m.bodyW - totalW) / 3.0f));
+            linkX = m.x0;
+        }
+    }
     for (std::size_t i = 0; i < kLinks.size(); ++i) {
         IdGuard gid(kLinks[i].id);
         ImGui::SetCursorScreenPos(ImVec2(linkX, curY));

@@ -196,7 +196,7 @@ void RenderTaskPanel(UiFrameContext& ctx, const PanelRect& rect) {
         ChildWindowSpec{
             rect.w, contentH, ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None});
     if (scrollChild.IsVisible()) {
-        const float cardW = std::max(120.0f * s, rect.w - marginX * 2.0f);
+        const float cardW = std::max(120.0f * s, ImGui::GetContentRegionAvail().x);
         for (const auto& task : tasks) {
             RenderTaskCard(ctx, task, cardW);
         }

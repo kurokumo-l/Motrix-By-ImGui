@@ -29,6 +29,7 @@ struct DrawerBox {
 struct DrawerFooterSpec {
     const motrix::domain::DownloadTaskView& task;
     bool showFileButtons = false;
+    bool interactive = true;
     float drawerW = 0.0f;
     float padX = 24.0f;
 };
@@ -165,7 +166,8 @@ void ApplyDrawerFilesDraft(UiFrameContext& ctx,
 void RenderDrawerPill(UiFrameContext& ctx,
                       const motrix::domain::DownloadTaskView& task,
                       ImVec2 pillMin,
-                      float pillH) {
+                      float pillH,
+                      bool interactive) {
     const float s = ctx.dpiScale;
     const auto actions = ActionsForDrawer(task);
     const float padX = 12.0f * s;
@@ -173,7 +175,12 @@ void RenderDrawerPill(UiFrameContext& ctx,
     const float iconSz = 14.0f * s;
     const float pillW = padX * 2.0f + static_cast<float>(actions.size()) * slotW;
     const ImVec2 pillMax(pillMin.x + pillW, pillMin.y + pillH);
-    const bool pillHovered = ImGui::IsMouseHoveringRect(pillMin, pillMax, false);
+    const bool modalBlocking = (ctx.state.activeModal != motrix::app::ActiveModal::None)
+                               || (ctx.deleteConfirm != nullptr && ctx.deleteConfirm->open)
+                               || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);
+    const bool pillHovered = interactive && !modalBlocking
+                             && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)
+                             && ImGui::IsMouseHoveringRect(pillMin, pillMax, true);
     const float pillHovT =
         AnimStep(&ctx.anim, {HashId("drawer.pill.hover"), pillHovered ? 1.0f : 0.0f, 18.0f, 0.0f});
 
@@ -189,10 +196,10 @@ void RenderDrawerPill(UiFrameContext& ctx,
         IdGuard id(static_cast<int>(i));
         const float sx = pillMin.x + padX + static_cast<float>(i) * slotW;
         ImGui::SetCursorScreenPos(ImVec2(sx, pillMin.y));
-        if (ImGui::InvisibleButton("##drw_act", ImVec2(slotW, pillH))) {
+        if (ImGui::InvisibleButton("##drw_act", ImVec2(slotW, pillH)) && interactive) {
             DispatchDrawerAction(ctx, task, actions[i].kind);
         }
-        const bool hovered = ImGui::IsItemHovered();
+        const bool hovered = interactive && ImGui::IsItemHovered();
         if (hovered) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
             ElDrawTooltip({ctx.palette, ctx.fonts, s, &ctx.anim},
@@ -229,7 +236,7 @@ void RenderDrawerFooter(UiFrameContext& ctx, DrawerUiState& ds, const DrawerFoot
     const float pillW = 24.0f * s + static_cast<float>(actions.size()) * 36.0f * s;
     const float pillX = footOrigin.x + (spec.drawerW - pillW) * 0.5f;
     const float pillY = footOrigin.y + (footerH - pillH) * 0.5f;
-    RenderDrawerPill(ctx, spec.task, ImVec2(pillX, pillY), pillH);
+    RenderDrawerPill(ctx, spec.task, ImVec2(pillX, pillY), pillH, spec.interactive);
 
     if (!spec.showFileButtons || !ds.dirty) {
         return;
@@ -248,13 +255,16 @@ void RenderDrawerFooter(UiFrameContext& ctx, DrawerUiState& ds, const DrawerFoot
     const float saveW = std::max(64.0f * s, saveSz.x + 26.0f * s);
 
     ImGui::SetCursorScreenPos(ImVec2(footOrigin.x + spec.padX, btnY));
-    if (ElSecondaryButton(elSt, ElButtonSpec{"##drw_reset", resetLbl, resetW, btnH})) {
+    if (ElSecondaryButton(elSt, ElButtonSpec{"##drw_reset", resetLbl, resetW, btnH, !spec.interactive})
+        && spec.interactive) {
         ResetDrawerFilesDraft(ds, spec.task);
     }
 
     const bool anySelected = std::ranges::any_of(ds.draftSelected, [](bool v) { return v; });
     ImGui::SetCursorScreenPos(ImVec2(footOrigin.x + spec.drawerW - spec.padX - saveW, btnY));
-    if (ElPrimaryButton(elSt, ElButtonSpec{"##drw_save", saveLbl, saveW, btnH, !anySelected})) {
+    if (ElPrimaryButton(
+            elSt, ElButtonSpec{"##drw_save", saveLbl, saveW, btnH, !spec.interactive || !anySelected})
+        && spec.interactive) {
         ApplyDrawerFilesDraft(ctx, ds, spec.task);
     }
 }
@@ -278,7 +288,8 @@ void RenderDrawerFooter(UiFrameContext& ctx, DrawerUiState& ds, const DrawerFoot
 
 int RenderDrawerHeaderAndTabs(UiFrameContext& ctx,
                               const motrix::domain::DownloadTaskView& task,
-                              const DrawerBox& box) {
+                              const DrawerBox& box,
+                              bool interactive) {
     const float s = ctx.dpiScale;
     const float headerY = box.y + 38.0f * s;
     const float contentL = box.x + box.padX;
@@ -297,10 +308,10 @@ int RenderDrawerHeaderAndTabs(UiFrameContext& ctx,
     const float closeSz = 26.0f * s;
     const ImVec2 closePos(contentR - closeSz, headerY - 2.0f * s);
     ImGui::SetCursorScreenPos(closePos);
-    if (ImGui::InvisibleButton("##drw_close", ImVec2(closeSz, closeSz))) {
+    if (ImGui::InvisibleButton("##drw_close", ImVec2(closeSz, closeSz)) && interactive) {
         ctx.sink.Dispatch(motrix::app::SelectTaskCmd{ctx.state.detailedTaskGid, true});
     }
-    const bool closeHov = ImGui::IsItemHovered();
+    const bool closeHov = interactive && ImGui::IsItemHovered();
     if (closeHov) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     }
@@ -338,10 +349,10 @@ int RenderDrawerHeaderAndTabs(UiFrameContext& ctx,
         IdGuard tid(tabs[i].index);
         const float tx = contentL + static_cast<float>(i) * slotPitch;
         ImGui::SetCursorScreenPos(ImVec2(tx, tabsY));
-        if (ImGui::InvisibleButton("##drw_tab", ImVec2(slotW, tabH))) {
+        if (ImGui::InvisibleButton("##drw_tab", ImVec2(slotW, tabH)) && interactive) {
             ctx.sink.Dispatch(motrix::app::SetDetailTabCmd{tabs[i].index});
         }
-        const bool hovered = ImGui::IsItemHovered();
+        const bool hovered = interactive && ImGui::IsItemHovered();
         const bool isActive = (tabs[i].index == activeTab);
         if (hovered) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -403,6 +414,7 @@ void RenderTaskDetailDrawer(UiFrameContext& ctx, DrawerUiState& ds) {
             ds.dirty = false;
             ds.pendingApply = false;
             ds.pendingExpected.clear();
+            ds.draftSelected.clear();
             ds.draftFileIndices.clear();
             ds.loadedGid.clear();
             ds.fileFilter = 0;
@@ -446,7 +458,7 @@ void RenderTaskDetailDrawer(UiFrameContext& ctx, DrawerUiState& ds) {
     const float backdropW = std::max(0.0f, box.x - vp->Pos.x);
     if (backdropW > 1.0f) {
         ImGui::SetCursorScreenPos(vp->Pos);
-        if (ImGui::InvisibleButton("##drawer_backdrop", ImVec2(backdropW, box.h))) {
+        if (ImGui::InvisibleButton("##drawer_backdrop", ImVec2(backdropW, box.h)) && wantOpen) {
             ctx.sink.Dispatch(motrix::app::SelectTaskCmd{ctx.state.detailedTaskGid, true});
         }
     }
@@ -456,12 +468,7 @@ void RenderTaskDetailDrawer(UiFrameContext& ctx, DrawerUiState& ds) {
     dl->AddLine(
         ImVec2(box.x, box.y), ImVec2(box.x, box.y + box.h), ToAbgrU32(ctx.palette.borderSubtle), 1.0f);
 
-    const int activeTab = RenderDrawerHeaderAndTabs(ctx, *taskPtr, box);
-    if (ds.prevTab == 4 && activeTab != 4) {
-        ds.dirty = false;
-        ds.loadedGid.clear();
-        ds.fileFilter = 0;
-    }
+    const int activeTab = RenderDrawerHeaderAndTabs(ctx, *taskPtr, box, wantOpen);
     ds.prevTab = activeTab;
 
     const float bodyY = box.y + 124.0f * s;
@@ -470,16 +477,16 @@ void RenderTaskDetailDrawer(UiFrameContext& ctx, DrawerUiState& ds) {
 
     ImGui::SetCursorScreenPos(ImVec2(box.x + box.padX, bodyY));
     {
-        ChildGuard bodyChild(
-            "##drawer_body",
-            {box.w - box.padX * 2.0f, bodyH, ImGuiChildFlags_None, ImGuiWindowFlags_None});
+        const ImGuiWindowFlags bodyFlags = wantOpen ? ImGuiWindowFlags_None : ImGuiWindowFlags_NoInputs;
+        ChildGuard bodyChild("##drawer_body",
+                             {box.w - box.padX * 2.0f, bodyH, ImGuiChildFlags_None, bodyFlags});
         if (bodyChild.IsVisible()) {
             RenderDrawerTabBody(ctx, ds, *taskPtr, activeTab);
         }
     }
 
     ImGui::SetCursorScreenPos(ImVec2(box.x, box.y + box.h - footerH));
-    RenderDrawerFooter(ctx, ds, {*taskPtr, activeTab == 4, box.w, box.padX});
+    RenderDrawerFooter(ctx, ds, {*taskPtr, activeTab == 4, wantOpen, box.w, box.padX});
 }
 
 }  // namespace motrix::ui

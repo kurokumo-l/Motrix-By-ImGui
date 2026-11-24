@@ -84,11 +84,23 @@ struct CliOptions {
 
 void ApplyValueFlag(CliOptions& opts, std::string_view arg, const std::string& rawVal) {
     if (arg == "--theme") {
-        const bool dark = (motrix::core::AsciiLower(rawVal) == "dark");
-        opts.host.initialDark = dark;
-        opts.app.initialTheme =
-            dark ? motrix::domain::ThemePreference::Dark : motrix::domain::ThemePreference::Light;
-        opts.app.themeOverride = true;
+        const std::string val = motrix::core::AsciiLower(rawVal);
+        if (val == "dark") {
+            opts.host.initialDark = true;
+            opts.app.initialTheme = motrix::domain::ThemePreference::Dark;
+            opts.app.themeOverride = true;
+        } else if (val == "light") {
+            opts.host.initialDark = false;
+            opts.app.initialTheme = motrix::domain::ThemePreference::Light;
+            opts.app.themeOverride = true;
+        } else if (val == "auto") {
+            opts.host.initialDark = motrix::platform::QuerySystemDarkMode();
+            opts.app.initialTheme = motrix::domain::ThemePreference::Auto;
+            opts.app.themeOverride = true;
+        } else {
+            opts.parseWarnings.push_back(
+                std::format("Unknown --theme value '{}' (expected dark/light/auto); ignoring", rawVal));
+        }
     } else if (arg == "--locale") {
         const std::string val = motrix::core::AsciiLower(rawVal);
         opts.app.initialLocale =
@@ -492,7 +504,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         .logFilePath = appDataLogs / "motrix_native.log",
         .minLevel = motrix::core::LogLevel::Info,
     });
-    logger.Info("main", "Starting Motrix Native (Milestone 4)");
+    logger.Info("main", "Starting Motrix Native v0.1.6");
     for (const auto& warning : cli.parseWarnings) {
         logger.Warn("cli", "{}", warning);
     }

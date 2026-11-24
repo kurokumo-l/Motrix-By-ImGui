@@ -45,6 +45,20 @@ void AppCoordinator::HandleEngineSyncUpdate(const EngineSyncUpdate& update) {
             state.engineInfo = *update.version;
         }
         if (!update.sync) {
+            for (auto& t : state.downloadingTasks) {
+                t.downloadSpeed = 0;
+                t.uploadSpeed = 0;
+            }
+            for (auto& t : state.waitingTasks) {
+                t.downloadSpeed = 0;
+                t.uploadSpeed = 0;
+            }
+            if (state.detailedTask) {
+                state.detailedTask->downloadSpeed = 0;
+                state.detailedTask->uploadSpeed = 0;
+            }
+            state.globalStat.downloadSpeed = 0;
+            state.globalStat.uploadSpeed = 0;
             return;
         }
         state.downloadingTasks = update.sync->active;

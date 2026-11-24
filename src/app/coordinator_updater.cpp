@@ -163,13 +163,31 @@ void AppCoordinator::FinishAria2NextInstall(const std::stop_token& st,
     }
 
     const std::string installedUtf8 = motrix::core::PathToUtf8(spec.targetExePath);
+    bool hasCustomCliOverride = false;
+    {
+        std::scoped_lock lk(engineLifecycleMu_);
+        if (!enginePathOverride_.empty()) {
+            const auto normPath = [](std::filesystem::path p) {
+                p.make_preferred();
+                return motrix::core::AsciiLower(motrix::core::PathToUtf8(p.lexically_normal()));
+            };
+            if (normPath(motrix::core::PathFromUtf8(enginePathOverride_))
+                == normPath(spec.targetExePath)) {
+                enginePathOverride_.clear();
+            } else {
+                hasCustomCliOverride = true;
+            }
+        }
+    }
     PublishMutated([&](AppStateSnapshot& s) {
         s.prefs.engineBinPath = installedUtf8;
-        s.resolvedEnginePath = installedUtf8;
-        s.engineError.clear();
-        s.engineInfo.kind = stage.detectedKind;
-        s.engineInfo.version = stage.detectedVersion;
-        s.engineInfo.product = "aria2-next";
+        if (!hasCustomCliOverride) {
+            s.resolvedEnginePath = installedUtf8;
+            s.engineError.clear();
+            s.engineInfo.kind = stage.detectedKind;
+            s.engineInfo.version = stage.detectedVersion;
+            s.engineInfo.product = "aria2-next";
+        }
         s.engineUpdateStatus = EngineUpdateStatus::Succeeded;
         s.engineUpdateVersion = stage.detectedVersion;
         s.engineUpdateMessage = std::format("v{}", stage.detectedVersion);
@@ -178,11 +196,7 @@ void AppCoordinator::FinishAria2NextInstall(const std::stop_token& st,
         PersistConfigs(*Snapshot(), true, false, true);
     }
     if (!st.stop_requested() && enableEngine_) {
-        {
-            std::scoped_lock lk(engineLifecycleMu_);
-            enginePathOverride_ = installedUtf8;
-        }
-        CreateAndStartEngineRuntime(*Snapshot(), installedUtf8);
+        CreateAndStartEngineRuntime(*Snapshot());
     }
 }
 

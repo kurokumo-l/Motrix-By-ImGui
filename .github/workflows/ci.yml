@@ -52,8 +52,12 @@ jobs:
           if (-not $cf) {
             choco install llvm --yes --no-progress
             Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\LLVM\bin"
+            $cf = "C:\Program Files\LLVM\bin\clang-format.exe"
           } else {
             Write-Host "Using clang-format at $cf"
+          }
+          if ($cf -and (Test-Path $cf)) {
+            & $cf --version
           }
 
       - name: Setup aria2-next engine for live tests

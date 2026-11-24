@@ -72,9 +72,15 @@ void ResetAddFormFields(const UiFrameContext& ctx, AddTaskFormState& form) {
     form.initialized = true;
 }
 
-void CloseAddModalAndReset(UiFrameContext& ctx, AddTaskFormState& form) {
+void ClearAddTaskFormState(AddTaskFormState& form) {
     form.uriBuffer.fill('\0');
     form.nameBuffer.fill('\0');
+    form.dirBuffer.fill('\0');
+    form.userAgentBuffer.fill('\0');
+    form.authBuffer.fill('\0');
+    form.refererBuffer.fill('\0');
+    form.cookieBuffer.fill('\0');
+    form.proxyBuffer.fill('\0');
     form.torrentMeta.reset();
     form.torrentBase64.clear();
     form.torrentFileSelected.clear();
@@ -82,8 +88,13 @@ void CloseAddModalAndReset(UiFrameContext& ctx, AddTaskFormState& form) {
     form.torrentError.clear();
     form.uriError.clear();
     form.autoFilledTorrentName.clear();
+    form.torrentFileFilter = 0;
     form.showAdvanced = false;
     form.initialized = false;
+}
+
+void CloseAddModalAndReset(UiFrameContext& ctx, AddTaskFormState& form) {
+    ClearAddTaskFormState(form);
     ctx.sink.Dispatch(motrix::app::CloseModalCmd{});
     ImGui::CloseCurrentPopup();
 }
@@ -509,8 +520,7 @@ void RenderModals(UiFrameContext& ctx, AddTaskFormState& addForm) {
         addForm.wasAddOpen = true;
         RenderAddTaskModal(ctx, addForm, justOpened);
     } else if (addForm.wasAddOpen) {
-        addForm.uriBuffer.fill('\0');
-        addForm.uriError.clear();
+        ClearAddTaskFormState(addForm);
         addForm.wasAddOpen = false;
     }
 

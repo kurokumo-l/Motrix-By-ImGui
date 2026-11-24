@@ -312,3 +312,91 @@ TEST_CASE("motrix.domain ParseSystemConfigJson migrates legacy aria2 keys", "[do
     CHECK(migrated->btEncryption == "required");
     CHECK(migrated->btForceEncryption);
 }
+
+TEST_CASE(
+    "motrix.domain config schema clamps bounds, validates enums, strips controls, and syncs encryption",
+    "[domain][config][security]") {
+    using namespace motrix::domain;
+
+    // Encryption bidirectional sync through JSON roundtrip.
+    SystemConfig encByForce = DefaultSystemConfig();
+    encByForce.btForceEncryption = true;
+    encByForce.btEncryption = "preferred";
+    const auto encParsed = ParseSystemConfigJson(SerializeSystemConfigJson(encByForce));
+    REQUIRE(encParsed.has_value());
+    CHECK(encParsed->btForceEncryption);
+    CHECK(encParsed->btEncryption == "required");
+
+    const auto optEnc = ParseSystemConfigJson(R"({"bt-encryption": "optional"})");
+    REQUIRE(optEnc.has_value());
+    CHECK(optEnc->btEncryption == "optional");
+    CHECK_FALSE(optEnc->btForceEncryption);
+
+    // Out-of-bounds numbers, invalid enums, and control characters in SystemConfig JSON.
+    const auto badSys = ParseSystemConfigJson(R"json({
+        "rpc-listen-port": 0,
+        "listen-port": -10,
+        "dht-listen-port": 70000,
+        "max-concurrent-downloads": 0,
+        "max-connection-per-server": -5,
+        "split": -2,
+        "bt-max-peers": 9999,
+        "seed-time": -30,
+        "seed-ratio": -2.5,
+        "bt-encryption": "bogus",
+        "bt-transport": "quic",
+        "file-allocation": "magic",
+        "media": "unknown",
+        "media-format": "avi",
+        "dir": "D:/Dl\r\nevil",
+        "rpc-secret": "sec\n--flag",
+        "all-proxy": "http://127.0.0.1:8080\r\n",
+        "no-proxy": "localhost\n127.0.0.1",
+        "user-agent": "Motrix\r\nX-Evil: 1"
+    })json");
+    REQUIRE(badSys.has_value());
+    CHECK(badSys->rpcListenPort == 16800);
+    CHECK(badSys->listenPort == 21301);
+    CHECK(badSys->dhtListenPort == 26701);
+    CHECK(badSys->maxConcurrentDownloads == 1);
+    CHECK(badSys->maxConnectionPerServer == 1);
+    CHECK(badSys->split == 1);
+    CHECK(badSys->btMaxPeers == 2000);
+    CHECK(badSys->seedTime == 0);
+    CHECK(badSys->seedRatio == 1.0);
+    CHECK(badSys->btEncryption == "preferred");
+    CHECK_FALSE(badSys->btForceEncryption);
+    CHECK(badSys->btTransport == "both");
+    CHECK(badSys->fileAllocation == "none");
+    CHECK(badSys->mediaMode == "auto");
+    CHECK(badSys->mediaFormat == "mp4");
+    CHECK(badSys->dir == "D:/Dlevil");
+    CHECK(badSys->rpcSecret == "sec--flag");
+    CHECK(badSys->allProxy == "http://127.0.0.1:8080");
+    CHECK(badSys->noProxy == "localhost127.0.0.1");
+    CHECK(badSys->userAgent == "MotrixX-Evil: 1");
+
+    // In-memory NaN seedRatio sanitized in BuildEffectiveSystemConfig & SystemConfigToOptionPairs.
+    SystemConfig nanSys = DefaultSystemConfig();
+    nanSys.seedRatio = std::numeric_limits<double>::quiet_NaN();
+    const auto nanEff = BuildEffectiveSystemConfig(nanSys, DefaultUserPreferences());
+    CHECK(std::isfinite(nanEff.seedRatio));
+    CHECK(nanEff.seedRatio == 1.0);
+    const auto nanPairs = SystemConfigToOptionPairs(nanSys);
+    CHECK(std::ranges::any_of(
+        nanPairs, [](const auto& p) { return p.first == "seed-ratio" && p.second == "1.00"; }));
+
+    // UserPreferences clamping, enum fallback, and control-char stripping.
+    const auto badPrefs = ParseUserPreferencesJson(R"json({
+        "logLevel": "verbose",
+        "engineBinPath": "C:/bin/aria2\r\n.exe",
+        "fontFamily": "MiSans\nEvil",
+        "windowState": {"width": -100, "height": 100}
+    })json");
+    REQUIRE(badPrefs.has_value());
+    CHECK(badPrefs->logLevel == "warn");
+    CHECK(badPrefs->engineBinPath == "C:/bin/aria2.exe");
+    CHECK(badPrefs->fontFamily == "MiSansEvil");
+    CHECK(badPrefs->windowWidth == 1024);
+    CHECK(badPrefs->windowHeight == 420);
+}

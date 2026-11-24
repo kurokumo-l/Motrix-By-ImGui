@@ -99,7 +99,13 @@ void RenderFloatingPillActions(UiFrameContext& ctx,
     const ImVec2 pMin(pillRightX - pillW, pillTopY);
     const ImVec2 pMax(pillRightX, pillTopY + pillH);
 
-    const bool pillHov = ImGui::IsMouseHoveringRect(pMin, pMax, false);
+    const bool modalBlocking = (ctx.state.activeModal != motrix::app::ActiveModal::None)
+                               || (ctx.deleteConfirm != nullptr && ctx.deleteConfirm->open)
+                               || !ctx.state.detailedTaskGid.empty()
+                               || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);
+    const bool pillHov = !modalBlocking
+                         && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)
+                         && ImGui::IsMouseHoveringRect(pMin, pMax, true);
     const float hovT = ctx.anim.Float(HashId(task.gid) ^ 0x5111u, pillHov ? 1.0f : 0.0f, 18.0f, 0.0f);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -231,8 +237,13 @@ struct TaskMetaChip {
 
 void DrawActiveMetaChips(UiFrameContext& ctx,
                          const TaskCardGeometry& g,
-                         std::span<const TaskMetaChip> chips) {
+                         std::span<const TaskMetaChip> chips,
+                         float minRightX) {
     const float s = ctx.dpiScale;
+    const float rightEdge = g.cardMax.x - g.padX;
+    if (rightEdge <= minRightX + 4.0f * s) {
+        return;
+    }
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float iconW = 10.0f * s;
     const float iconH = 10.0f * s;
@@ -241,7 +252,9 @@ void DrawActiveMetaChips(UiFrameContext& ctx,
     const float lineH = ImGui::GetTextLineHeight();
     const float iconY = g.metaY + (lineH - iconH) * 0.5f;
 
-    float curX = g.cardMax.x - g.padX - MeasureChipsWidth(chips, s);
+    float curX = std::max(minRightX, rightEdge - MeasureChipsWidth(chips, s));
+    ClipRectGuard chipsClip(
+        dl, ClipRectSpec{minRightX, g.metaY - 2.0f * s, rightEdge, g.metaY + lineH + 2.0f * s, true});
     for (const auto& chip : chips) {
         if (chip.hasIcon) {
             DrawMotrixIcon(IconSpec{chip.icon, curX, iconY, iconW, iconH, ctx.palette.taskMetaText, s});
@@ -297,7 +310,7 @@ void RenderActiveTaskMeta(UiFrameContext& ctx,
     if (g.cardMax.x - g.padX - MeasureChipsWidth(chips, s) < minRightX && chips.size() > 1) {
         chips.back().text = std::to_string(task.connections);
     }
-    DrawActiveMetaChips(ctx, g, chips);
+    DrawActiveMetaChips(ctx, g, chips, minRightX);
 }
 
 void RenderTaskCardMeta(UiFrameContext& ctx,
@@ -354,7 +367,13 @@ void RenderTaskCard(UiFrameContext& ctx, const motrix::domain::DownloadTaskView&
         ctx.sink.Dispatch(motrix::app::SelectTaskCmd{task.gid, true});
     }
 
-    const bool hovered = ImGui::IsMouseHoveringRect(cardPos, cardMax, false);
+    const bool modalBlocking = (ctx.state.activeModal != motrix::app::ActiveModal::None)
+                               || (ctx.deleteConfirm != nullptr && ctx.deleteConfirm->open)
+                               || !ctx.state.detailedTaskGid.empty()
+                               || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);
+    const bool hovered = !modalBlocking
+                         && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)
+                         && ImGui::IsMouseHoveringRect(cardPos, cardMax, true);
     const bool inMultiSel =
         std::ranges::find(ctx.state.selectedTaskGids, task.gid) != ctx.state.selectedTaskGids.end();
     const bool selected =

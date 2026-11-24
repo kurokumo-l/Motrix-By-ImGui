@@ -141,7 +141,7 @@ bool Win32HandleShellOrEndSession(Win32WindowState& state,
             if (state.config.onQuitRequested) {
                 state.config.onQuitRequested();
             }
-            Win32PostCloseWindow(state.hwnd);
+            ::PostQuitMessage(0);
         } else if (state.config.onSessionEnding) {
             state.config.onSessionEnding(false);
         }

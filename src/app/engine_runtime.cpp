@@ -52,16 +52,23 @@ void EngineRuntime::Start() {
 }
 
 void EngineRuntime::Stop() {
+    const bool fast = IsFastShutdown();
     if (worker_.joinable()) {
         worker_.request_stop();
         queueCv_.notify_all();
+        if (fast && rpc_) {
+            rpc_->Disconnect();
+        }
         worker_.join();
     }
     if (upnpWorker_.joinable()) {
         upnpWorker_.request_stop();
+        if (fast && upnp_) {
+            upnp_->UnmapAll();
+        }
         upnpWorker_.join();
     }
-    if (upnp_) {
+    if (!fast && upnp_) {
         upnp_->UnmapAll();
     }
 }
@@ -90,8 +97,20 @@ void EngineRuntime::SetShutdownSuspended(bool suspended) noexcept {
     queueCv_.notify_all();
 }
 
+void EngineRuntime::RequestFastShutdown() noexcept {
+    fastShutdown_.store(true, std::memory_order_release);
+    shutdownSuspended_.store(true, std::memory_order_release);
+    queueCv_.notify_all();
+}
+
 bool EngineRuntime::IsShutdownBlocked() const noexcept {
     return shutdownSuspended_.load(std::memory_order_acquire)
+           || motrix::engine::IsOsSessionShuttingDown();
+}
+
+bool EngineRuntime::IsFastShutdown() const noexcept {
+    return fastShutdown_.load(std::memory_order_acquire)
+           || shutdownSuspended_.load(std::memory_order_acquire)
            || motrix::engine::IsOsSessionShuttingDown();
 }
 
@@ -235,12 +254,13 @@ void EngineRuntime::RunConnectedSession(std::stop_token st) {
 }
 
 void EngineRuntime::ShutdownEngineGracefully() {
-    if (rpc_->IsConnected()) {
+    const bool fast = IsFastShutdown();
+    if (!fast && rpc_->IsConnected()) {
         (void)rpc_->SaveSession();
         (void)rpc_->Shutdown(false);
-        rpc_->Disconnect();
     }
-    (void)proc_->Stop(std::chrono::milliseconds(3000));
+    rpc_->Disconnect();
+    (void)proc_->Stop(fast ? std::chrono::milliseconds(500) : std::chrono::milliseconds(3000));
 }
 
 EngineRuntime::PreparedLaunch EngineRuntime::PrepareLaunchSpec(const std::filesystem::path& binPath,

@@ -11,6 +11,113 @@ namespace motrix::domain {
 
 namespace {
 
+constexpr std::array<std::string_view, 5> kLogLevelOpts{"debug", "info", "warn", "error", "notice"};
+constexpr std::array<std::string_view, 4> kBtEncryptionOpts{
+    "preferred", "required", "disabled", "optional"};
+constexpr std::array<std::string_view, 3> kBtTransportOpts{"both", "tcp", "utp"};
+constexpr std::array<std::string_view, 4> kFileAllocOpts{"none", "prealloc", "falloc", "trunc"};
+constexpr std::array<std::string_view, 5> kMediaModeOpts{"auto", "file", "hls", "dash", "collection"};
+constexpr std::array<std::string_view, 4> kMediaFormatOpts{"mp4", "mkv", "webm", "ts"};
+
+void SanitizeSingleLine(std::string& value) {
+    std::erase_if(value, [](char ch) noexcept {
+        const auto uch = static_cast<unsigned char>(ch);
+        return uch < 0x20u || uch == 0x7Fu;
+    });
+}
+
+[[nodiscard]] std::string NormalizeEnum(std::string_view raw,
+                                        std::span<const std::string_view> allowed,
+                                        std::string_view fallback) {
+    std::string lower = motrix::core::AsciiLower(motrix::core::TrimAscii(raw));
+    for (const auto item : allowed) {
+        if (lower == item) {
+            return lower;
+        }
+    }
+    return std::string(fallback);
+}
+
+void NormalizeUserPreferences(UserPreferences& prefs) {
+    SanitizeSingleLine(prefs.engineBinPath);
+    SanitizeSingleLine(prefs.aria2NextUpdateUrl);
+    if (motrix::core::TrimAscii(prefs.aria2NextUpdateUrl).empty()) {
+        prefs.aria2NextUpdateUrl = std::string(kDefaultAria2NextUpdateUrl);
+    }
+    SanitizeSingleLine(prefs.aria2NextMirrorPrefix);
+    SanitizeSingleLine(prefs.fontFamily);
+    SanitizeSingleLine(prefs.monoFontFamily);
+    prefs.logLevel = NormalizeEnum(prefs.logLevel, kLogLevelOpts, "warn");
+    if (prefs.logLevel == "notice") {
+        prefs.logLevel = "warn";
+    }
+    for (auto& d : prefs.favoriteDirectories) {
+        SanitizeSingleLine(d);
+    }
+    for (auto& d : prefs.historyDirectories) {
+        SanitizeSingleLine(d);
+    }
+    for (auto& s : prefs.trackerSource) {
+        SanitizeSingleLine(s);
+    }
+    prefs.windowWidth = (prefs.windowWidth <= 0) ? 1024 : std::clamp(prefs.windowWidth, 478, 16384);
+    prefs.windowHeight = (prefs.windowHeight <= 0) ? 768 : std::clamp(prefs.windowHeight, 420, 16384);
+}
+
+void NormalizeSystemConfig(SystemConfig& cfg) {
+    if (cfg.rpcListenPort == 0) {
+        cfg.rpcListenPort = 16800;
+    }
+    if (cfg.listenPort < 1 || cfg.listenPort > 65535) {
+        cfg.listenPort = 21301;
+    }
+    if (cfg.dhtListenPort < 1 || cfg.dhtListenPort > 65535) {
+        cfg.dhtListenPort = 26701;
+    }
+    cfg.maxConcurrentDownloads = std::clamp(cfg.maxConcurrentDownloads, 1, 1024);
+    cfg.maxConnectionPerServer = std::clamp(cfg.maxConnectionPerServer, 1, 1024);
+    cfg.split = std::clamp(cfg.split, 1, 1024);
+    cfg.btMaxPeers = std::clamp(cfg.btMaxPeers, 0, 2000);
+    cfg.seedTime = std::max(0, cfg.seedTime);
+    if (!std::isfinite(cfg.seedRatio) || cfg.seedRatio < 0.0) {
+        cfg.seedRatio = 1.0;
+    }
+
+    cfg.btEncryption = NormalizeEnum(cfg.btEncryption, kBtEncryptionOpts, "preferred");
+    if (cfg.btForceEncryption) {
+        cfg.btEncryption = "required";
+    }
+    cfg.btForceEncryption = (cfg.btEncryption == "required");
+    cfg.btTransport = NormalizeEnum(cfg.btTransport, kBtTransportOpts, "both");
+    cfg.fileAllocation = NormalizeEnum(cfg.fileAllocation, kFileAllocOpts, "none");
+    cfg.mediaMode = NormalizeEnum(cfg.mediaMode, kMediaModeOpts, "auto");
+    cfg.mediaFormat = NormalizeEnum(cfg.mediaFormat, kMediaFormatOpts, "mp4");
+    cfg.btSaveMetadata = cfg.rpcSaveUploadMetadata;
+
+    SanitizeSingleLine(cfg.rpcSecret);
+    SanitizeSingleLine(cfg.dir);
+    SanitizeSingleLine(cfg.btTracker);
+    SanitizeSingleLine(cfg.allProxy);
+    SanitizeSingleLine(cfg.noProxy);
+    SanitizeSingleLine(cfg.userAgent);
+}
+
+void ApplyEncryptionFromJson(const nlohmann::json& parsed, SystemConfig& cfg) {
+    bool hasForceEnc = false;
+    bool forceEncVal = false;
+    if (const auto it = parsed.find("bt-force-encryption"); it != parsed.end() && it->is_boolean()) {
+        hasForceEnc = true;
+        forceEncVal = it->get<bool>();
+    }
+    if (const auto it = parsed.find("bt-encryption"); it != parsed.end() && it->is_string()) {
+        cfg.btEncryption =
+            NormalizeEnum(it->get_ref<const std::string&>(), kBtEncryptionOpts, "preferred");
+    } else if (hasForceEnc && forceEncVal) {
+        cfg.btEncryption = "required";
+    }
+    cfg.btForceEncryption = (cfg.btEncryption == "required");
+}
+
 void ReadBool(const nlohmann::json& j, const char* key, bool& out) {
     if (const auto it = j.find(key); it != j.end() && it->is_boolean()) {
         out = it->get<bool>();
@@ -263,10 +370,15 @@ motrix::core::Result<UserPreferences> ParseUserPreferencesJson(std::string_view 
         ReadInt(*winIt, "height", prefs.windowHeight);
         ReadBool(*winIt, "maximized", prefs.windowMaximized);
     }
+    NormalizeUserPreferences(prefs);
     return prefs;
 }
 
 std::string SerializeSystemConfigJson(const SystemConfig& cfg) {
+    const std::string normEnc = NormalizeEnum(cfg.btEncryption, kBtEncryptionOpts, "preferred");
+    const bool forceEnc = cfg.btForceEncryption || (normEnc == "required");
+    const std::string effectiveEnc = forceEnc ? "required" : normEnc;
+
     nlohmann::json j = {
         {"rpc-listen-port", cfg.rpcListenPort},
         {"rpc-secret", cfg.rpcSecret},
@@ -284,8 +396,8 @@ std::string SerializeSystemConfigJson(const SystemConfig& cfg) {
         {"follow-torrent", cfg.followTorrent},
         {"bt-save-metadata", cfg.btSaveMetadata},
         {"rpc-save-upload-metadata", cfg.rpcSaveUploadMetadata},
-        {"bt-force-encryption", cfg.btEncryption == "required"},
-        {"bt-encryption", cfg.btEncryption},
+        {"bt-force-encryption", forceEnc},
+        {"bt-encryption", effectiveEnc},
         {"bt-transport", cfg.btTransport},
         {"file-allocation", cfg.fileAllocation},
         {"auto-file-renaming", cfg.autoFileRenaming},
@@ -339,12 +451,7 @@ motrix::core::Result<SystemConfig> ParseSystemConfigJson(std::string_view jsonTe
     cfg.rpcSaveUploadMetadata = cfg.btSaveMetadata;
     ReadBool(parsed, "rpc-save-upload-metadata", cfg.rpcSaveUploadMetadata);
     cfg.btSaveMetadata = cfg.rpcSaveUploadMetadata;
-    ReadBool(parsed, "bt-force-encryption", cfg.btForceEncryption);
-    if (cfg.btForceEncryption) {
-        cfg.btEncryption = "required";
-    }
-    ReadString(parsed, "bt-encryption", cfg.btEncryption);
-    cfg.btForceEncryption = (cfg.btEncryption == "required");
+    ApplyEncryptionFromJson(parsed, cfg);
     ReadString(parsed, "bt-transport", cfg.btTransport);
     ReadString(parsed, "file-allocation", cfg.fileAllocation);
     ReadBool(parsed, "auto-file-renaming", cfg.autoFileRenaming);
@@ -367,6 +474,7 @@ motrix::core::Result<SystemConfig> ParseSystemConfigJson(std::string_view jsonTe
     ReadString(parsed, "all-proxy", cfg.allProxy);
     ReadString(parsed, "no-proxy", cfg.noProxy);
     ReadString(parsed, "user-agent", cfg.userAgent);
+    NormalizeSystemConfig(cfg);
     return cfg;
 }
 
@@ -386,67 +494,66 @@ SystemConfig BuildEffectiveSystemConfig(const SystemConfig& cfg,
         out.seedRatio = 0.0;
         out.seedTime = 0;
     }
+    NormalizeSystemConfig(out);
     if (suspendSpeedLimit) {
         out.maxOverallDownloadLimit = 0;
         out.maxOverallUploadLimit = 0;
     }
-    out.btForceEncryption = (out.btEncryption == "required");
-    out.btSaveMetadata = out.rpcSaveUploadMetadata;
     return out;
 }
 
 std::vector<std::pair<std::string, std::string>> SystemConfigToOptionPairs(const SystemConfig& cfg) {
+    SystemConfig norm = cfg;
+    NormalizeSystemConfig(norm);
+
     std::vector<std::pair<std::string, std::string>> out;
-    out.reserve(32);
-    out.emplace_back("max-concurrent-downloads", std::to_string(cfg.maxConcurrentDownloads));
-    out.emplace_back("max-connection-per-server", std::to_string(cfg.maxConnectionPerServer));
-    out.emplace_back("split", std::to_string(cfg.split));
-    out.emplace_back("listen-port", std::to_string(cfg.listenPort));
-    out.emplace_back("dht-listen-port", std::to_string(cfg.dhtListenPort));
-    out.emplace_back("seed-ratio", std::format("{:.2f}", cfg.seedRatio));
-    out.emplace_back("seed-time", std::to_string(cfg.seedTime));
-    out.emplace_back("max-overall-download-limit", std::to_string(cfg.maxOverallDownloadLimit));
-    out.emplace_back("max-overall-upload-limit", std::to_string(cfg.maxOverallUploadLimit));
-    out.emplace_back("continue", cfg.continueDownloads ? "true" : "false");
-    out.emplace_back("follow-torrent", cfg.followTorrent ? "true" : "false");
-    out.emplace_back("rpc-save-upload-metadata", cfg.rpcSaveUploadMetadata ? "true" : "false");
-    out.emplace_back("pause-metadata", cfg.pauseMetadata ? "true" : "false");
+    out.reserve(36);
+    out.emplace_back("max-concurrent-downloads", std::to_string(norm.maxConcurrentDownloads));
+    out.emplace_back("max-connection-per-server", std::to_string(norm.maxConnectionPerServer));
+    out.emplace_back("split", std::to_string(norm.split));
+    out.emplace_back("listen-port", std::to_string(norm.listenPort));
+    out.emplace_back("dht-listen-port", std::to_string(norm.dhtListenPort));
+    out.emplace_back("seed-ratio", std::format("{:.2f}", norm.seedRatio));
+    out.emplace_back("seed-time", std::to_string(norm.seedTime));
+    out.emplace_back("max-overall-download-limit", std::to_string(norm.maxOverallDownloadLimit));
+    out.emplace_back("max-overall-upload-limit", std::to_string(norm.maxOverallUploadLimit));
+    out.emplace_back("continue", norm.continueDownloads ? "true" : "false");
+    out.emplace_back("follow-torrent", norm.followTorrent ? "true" : "false");
+    out.emplace_back("rpc-save-upload-metadata", norm.rpcSaveUploadMetadata ? "true" : "false");
+    out.emplace_back("pause-metadata", norm.pauseMetadata ? "true" : "false");
+    out.emplace_back("bt-encryption", norm.btEncryption);
+    out.emplace_back("bt-transport", norm.btTransport);
+    out.emplace_back("file-allocation", norm.fileAllocation);
+    out.emplace_back("auto-file-renaming", norm.autoFileRenaming ? "true" : "false");
+    out.emplace_back("allow-overwrite", norm.allowOverwrite ? "true" : "false");
+    out.emplace_back("check-integrity", norm.checkIntegrity ? "true" : "false");
+    out.emplace_back("enable-dht", norm.enableDht ? "true" : "false");
+    out.emplace_back("enable-peer-exchange", norm.enablePeerExchange ? "true" : "false");
+    out.emplace_back("bt-enable-lpd", norm.btEnableLpd ? "true" : "false");
+    out.emplace_back("bt-anonymous-mode", norm.btAnonymousMode ? "true" : "false");
+    out.emplace_back("bt-max-peers", std::to_string(norm.btMaxPeers));
+    out.emplace_back("check-certificate", norm.checkCertificate ? "true" : "false");
+    out.emplace_back("disable-ipv6", norm.disableIpv6 ? "true" : "false");
+    out.emplace_back("remote-time", norm.remoteTime ? "true" : "false");
+    out.emplace_back("media", norm.mediaMode);
+    out.emplace_back("media-format", norm.mediaFormat);
+    out.emplace_back("bt-first-last-piece-first", norm.btFirstLastPieceFirst ? "true" : "false");
+    out.emplace_back("detach-share-only", norm.detachShareOnly ? "true" : "false");
 
-    const std::string enc =
-        cfg.btForceEncryption ? "required" : (cfg.btEncryption.empty() ? "preferred" : cfg.btEncryption);
-    out.emplace_back("bt-encryption", enc);
-    out.emplace_back("bt-transport", cfg.btTransport.empty() ? "both" : cfg.btTransport);
-    out.emplace_back("file-allocation", cfg.fileAllocation.empty() ? "none" : cfg.fileAllocation);
-    out.emplace_back("auto-file-renaming", cfg.autoFileRenaming ? "true" : "false");
-    out.emplace_back("allow-overwrite", cfg.allowOverwrite ? "true" : "false");
-    out.emplace_back("check-integrity", cfg.checkIntegrity ? "true" : "false");
-    out.emplace_back("enable-dht", cfg.enableDht ? "true" : "false");
-    out.emplace_back("enable-peer-exchange", cfg.enablePeerExchange ? "true" : "false");
-    out.emplace_back("bt-enable-lpd", cfg.btEnableLpd ? "true" : "false");
-    out.emplace_back("bt-anonymous-mode", cfg.btAnonymousMode ? "true" : "false");
-    out.emplace_back("bt-max-peers", std::to_string(std::clamp(cfg.btMaxPeers, 0, 2000)));
-    out.emplace_back("check-certificate", cfg.checkCertificate ? "true" : "false");
-    out.emplace_back("disable-ipv6", cfg.disableIpv6 ? "true" : "false");
-    out.emplace_back("remote-time", cfg.remoteTime ? "true" : "false");
-    out.emplace_back("media", cfg.mediaMode.empty() ? "auto" : cfg.mediaMode);
-    out.emplace_back("media-format", cfg.mediaFormat.empty() ? "mp4" : cfg.mediaFormat);
-    out.emplace_back("bt-first-last-piece-first", cfg.btFirstLastPieceFirst ? "true" : "false");
-    out.emplace_back("detach-share-only", cfg.detachShareOnly ? "true" : "false");
-
-    if (!cfg.dir.empty()) {
-        out.emplace_back("dir", cfg.dir);
+    if (!norm.dir.empty()) {
+        out.emplace_back("dir", norm.dir);
     }
-    if (!cfg.btTracker.empty()) {
-        out.emplace_back("bt-tracker", cfg.btTracker);
+    if (!norm.btTracker.empty()) {
+        out.emplace_back("bt-tracker", norm.btTracker);
     }
-    if (!cfg.allProxy.empty()) {
-        out.emplace_back("all-proxy", cfg.allProxy);
+    if (!norm.allProxy.empty()) {
+        out.emplace_back("all-proxy", norm.allProxy);
     }
-    if (!cfg.noProxy.empty()) {
-        out.emplace_back("no-proxy", cfg.noProxy);
+    if (!norm.noProxy.empty()) {
+        out.emplace_back("no-proxy", norm.noProxy);
     }
-    if (!cfg.userAgent.empty()) {
-        out.emplace_back("user-agent", cfg.userAgent);
+    if (!norm.userAgent.empty()) {
+        out.emplace_back("user-agent", norm.userAgent);
     }
     return out;
 }

@@ -80,6 +80,7 @@ public:
     void UpdateUpnpPreference(bool enabled, int btPort, int dhtPort);
     void Reconfigure(EngineRuntimeConfig cfg, bool restartEngine);
     void SetShutdownSuspended(bool suspended) noexcept;
+    void RequestFastShutdown() noexcept;
 
 private:
     struct PreparedLaunch {
@@ -91,6 +92,7 @@ private:
     void RunConnectedSession(std::stop_token st);
     void ShutdownEngineGracefully();
     [[nodiscard]] bool IsShutdownBlocked() const noexcept;
+    [[nodiscard]] bool IsFastShutdown() const noexcept;
     [[nodiscard]] bool WaitWhileShutdownSuspended(std::stop_token st);
     void WaitReconnectBackoff(std::stop_token st, std::chrono::milliseconds delay);
     [[nodiscard]] bool TryStartAndConnect(std::stop_token st);
@@ -129,6 +131,7 @@ private:
     std::atomic<bool> disconnectedFlag_{false};
     std::atomic<bool> restartRequested_{false};
     std::atomic<bool> shutdownSuspended_{false};
+    std::atomic<bool> fastShutdown_{false};
     bool resetSessionRequested_ = false;
     bool hasActiveTasks_ = false;
     bool didLaunchResume_ = false;

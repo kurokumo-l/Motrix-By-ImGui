@@ -155,7 +155,7 @@ void LoadSysPrefsFromSnapshot(const motrix::domain::SystemConfig& sys, PrefsForm
     ps.enablePeerExchange = sys.enablePeerExchange;
     ps.btEnableLpd = sys.btEnableLpd;
     ps.btAnonymousMode = sys.btAnonymousMode;
-    ps.btMaxPeers = std::clamp(sys.btMaxPeers, 0, 1000);
+    ps.btMaxPeers = std::clamp(sys.btMaxPeers, 0, 2000);
     ps.checkCertificate = sys.checkCertificate;
     ps.disableIpv6 = sys.disableIpv6;
     ps.remoteTime = sys.remoteTime;
@@ -173,8 +173,12 @@ void LoadSysPrefsFromSnapshot(const motrix::domain::SystemConfig& sys, PrefsForm
 void ApplySysPrefsDraft(const PrefsFormState& ps, motrix::domain::SystemConfig& sys) {
     sys.dir = ps.dirBuffer.data();
     sys.maxConcurrentDownloads = std::clamp(ps.maxConcurrent, 1, 64);
-    sys.maxConnectionPerServer = std::clamp(ps.maxConnPerServer, 1, 128);
-    sys.split = sys.maxConnectionPerServer;
+    const int nextConnPerServer = std::clamp(ps.maxConnPerServer, 1, 128);
+    const int prevConnPerServer = std::clamp(sys.maxConnectionPerServer, 1, 128);
+    sys.maxConnectionPerServer = nextConnPerServer;
+    if (nextConnPerServer != prevConnPerServer) {
+        sys.split = nextConnPerServer;
+    }
 
     const std::uint64_t dlMul = ps.dlUnitMb ? (1024ULL * 1024ULL) : 1024ULL;
     sys.maxOverallDownloadLimit = static_cast<std::uint64_t>(std::max(0, ps.dlLimitKbps)) * dlMul;
@@ -206,7 +210,7 @@ void ApplySysPrefsDraft(const PrefsFormState& ps, motrix::domain::SystemConfig& 
     sys.enablePeerExchange = ps.enablePeerExchange;
     sys.btEnableLpd = ps.btEnableLpd;
     sys.btAnonymousMode = ps.btAnonymousMode;
-    sys.btMaxPeers = std::clamp(ps.btMaxPeers, 0, 1000);
+    sys.btMaxPeers = std::clamp(ps.btMaxPeers, 0, 2000);
     sys.checkCertificate = ps.checkCertificate;
     sys.disableIpv6 = ps.disableIpv6;
     sys.remoteTime = ps.remoteTime;
@@ -339,7 +343,7 @@ bool IsSysConfigDraftDirty(const motrix::domain::SystemConfig& sys, const PrefsF
         || IsPortFieldDirty(ps.rpcPortBuf.data(), ps.rpcPort, static_cast<int>(sys.rpcListenPort))
         || IsPortFieldDirty(ps.btPortBuf.data(), ps.btPort, sys.listenPort)
         || IsPortFieldDirty(ps.dhtPortBuf.data(), ps.dhtPort, sys.dhtListenPort)
-        || std::clamp(ps.btMaxPeers, 0, 1000) != std::clamp(sys.btMaxPeers, 0, 1000)) {
+        || std::clamp(ps.btMaxPeers, 0, 2000) != std::clamp(sys.btMaxPeers, 0, 2000)) {
         return true;
     }
     if (std::string_view(ps.dirBuffer.data()) != sys.dir

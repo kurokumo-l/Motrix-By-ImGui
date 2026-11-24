@@ -10,6 +10,17 @@ namespace motrix::app {
 
 namespace {
 
+[[nodiscard]] std::string StripControlNewlines(std::string_view value) {
+    std::string clean;
+    clean.reserve(value.size());
+    for (const char ch : value) {
+        if (ch != '\r' && ch != '\n' && ch != '\0') {
+            clean.push_back(ch);
+        }
+    }
+    return clean;
+}
+
 [[nodiscard]] std::vector<motrix::engine::EngineOptionPair>
 BuildAddUriOptions(const EngineWorkCommand& cmd) {
     std::vector<motrix::engine::EngineOptionPair> out;
@@ -24,20 +35,20 @@ BuildAddUriOptions(const EngineWorkCommand& cmd) {
         out.push_back({"split", std::to_string(clampedSplit)});
         out.push_back({"max-connection-per-server", std::to_string(clampedSplit)});
     }
-    if (!cmd.userAgent.empty()) {
-        out.push_back({"user-agent", cmd.userAgent});
+    if (const std::string ua = StripControlNewlines(cmd.userAgent); !ua.empty()) {
+        out.push_back({"user-agent", ua});
     }
-    if (!cmd.referer.empty()) {
-        out.push_back({"referer", cmd.referer});
+    if (const std::string ref = StripControlNewlines(cmd.referer); !ref.empty()) {
+        out.push_back({"referer", ref});
     }
-    if (!cmd.allProxy.empty()) {
-        out.push_back({"all-proxy", cmd.allProxy});
+    if (const std::string proxy = StripControlNewlines(cmd.allProxy); !proxy.empty()) {
+        out.push_back({"all-proxy", proxy});
     }
-    if (!cmd.authorization.empty()) {
-        out.push_back({"header", std::format("Authorization: {}", cmd.authorization)});
+    if (const std::string auth = StripControlNewlines(cmd.authorization); !auth.empty()) {
+        out.push_back({"header", std::format("Authorization: {}", auth)});
     }
-    if (!cmd.cookie.empty()) {
-        out.push_back({"header", std::format("Cookie: {}", cmd.cookie)});
+    if (const std::string cookie = StripControlNewlines(cmd.cookie); !cookie.empty()) {
+        out.push_back({"header", std::format("Cookie: {}", cookie)});
     }
     return out;
 }

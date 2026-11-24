@@ -92,6 +92,11 @@ void AppCoordinator::BeginShutdown() {
         deferredEngineOps_.clear();
         oldRt = std::move(engineRuntime_);
     }
+    if (oldRt
+        && (sessionEnding_.load(std::memory_order_acquire)
+            || motrix::engine::IsOsSessionShuttingDown())) {
+        oldRt->RequestFastShutdown();
+    }
     oldRt.reset();
     if (trackerWorker.joinable()) {
         trackerWorker.join();
@@ -102,6 +107,7 @@ void AppCoordinator::BeginShutdown() {
 }
 
 void AppCoordinator::SetSessionEnding(bool ending) {
+    sessionEnding_.store(ending, std::memory_order_release);
     std::scoped_lock lock(engineLifecycleMu_);
     if (engineRuntime_) {
         engineRuntime_->SetShutdownSuspended(ending);
@@ -197,6 +203,9 @@ void AppCoordinator::CreateAndStartEngineRuntime(const AppStateSnapshot& state,
     if (!state.detailedTaskGid.empty()) {
         runtime->SetDetailGid(state.detailedTaskGid);
     }
+    if (sessionEnding_.load(std::memory_order_acquire)) {
+        runtime->SetShutdownSuspended(true);
+    }
     runtime->Start();
     std::unique_ptr<EngineRuntime> discarded;
     {
@@ -210,6 +219,9 @@ void AppCoordinator::CreateAndStartEngineRuntime(const AppStateSnapshot& state,
             hasLiveRuntime_.store(true, std::memory_order_release);
             engineReplacing_ = false;
             engineRuntime_ = std::move(runtime);
+            if (sessionEnding_.load(std::memory_order_acquire)) {
+                engineRuntime_->SetShutdownSuspended(true);
+            }
             auto ops = std::move(deferredEngineOps_);
             deferredEngineOps_.clear();
             for (auto& op : ops) {
